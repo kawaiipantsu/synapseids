@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120" role="img" aria-label="SynapseIDS">
+  <title>SynapseIDS</title>
+  <rect width="320" height="120" rx="14" fill="#0E3A4B"/>
+  <g stroke="#3E7C8C" stroke-width="1.6" fill="none">
+    <path d="M20 40 L52 24 M20 40 L44 66 M52 24 L44 66 M44 66 L24 90 M44 66 L82 50 M52 24 L82 50 M24 90 L66 92 M66 92 L82 50 M44 66 L66 92"/>
+  </g>
+  <g fill="#DFEEF3">
+    <circle cx="20" cy="40" r="4.5"/>
+    <circle cx="52" cy="24" r="4.5"/>
+    <circle cx="44" cy="66" r="5"/>
+    <circle cx="24" cy="90" r="4.5"/>
+    <circle cx="66" cy="92" r="4.5"/>
+  </g>
+  <rect x="75" y="43" width="14" height="14" rx="2" fill="#35C1D6"/>
+  <text x="104" y="73" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif" font-size="33" font-weight="700" fill="#DFEEF3">Synapse<tspan fill="#35C1D6">&#9642;</tspan>IDS</text>
+</svg>

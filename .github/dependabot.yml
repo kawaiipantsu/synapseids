@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+    labels:
+      - dependencies
+    target-branch: develop
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+    target-branch: develop
+
+  # Reserved for the Phase 2 Python trainer; harmless until trainer/ exists.
+  - package-ecosystem: pip
+    directory: "/trainer"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"
+    labels:
+      - dependencies
+      - "area:trainer"
+    target-branch: develop

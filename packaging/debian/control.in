@@ -1,0 +1,20 @@
+Package: synapseids
+Version: @VERSION@
+Architecture: @ARCH@
+Section: net
+Priority: optional
+Maintainer: kawaiipantsu <12233528+kawaiipantsu@users.noreply.github.com>
+Homepage: https://github.com/kawaiipantsu/synapseids
+Installed-Size: 24576
+Description: Neural-network network intrusion detection and live traffic classification
+ SynapseIDS converts captured or replayed traffic into versioned bidirectional
+ flow features, classifies those flows with neural-network models, and streams
+ every result to a live web UI. This package contains three static binaries:
+ .
+   synapsed         the capture / flow / feature / inference daemon and API
+   synapse          the administrative CLI (talks to a running synapsed)
+   synapse-sensor   placeholder for the Phase 6 distributed capture agent
+ .
+ The management API binds to localhost by default. This build classifies PCAP
+ replays with a transparent rule-based model; trained ONNX models arrive in a
+ later release. For authorized defensive monitoring, lab analysis and research.
