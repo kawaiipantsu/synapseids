@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-31
+
+First tagged release: the Phase 1 vertical slice plus the full build, packaging
+and CI foundation. It classifies replayed PCAP traffic end to end with a
+transparent rule-based model — real trained models, live capture and persistence
+land in later phases.
+
 ### Added
 
 - Repository foundation: MIT licence, Git Flow layout, `PROJECT.md` specification,
