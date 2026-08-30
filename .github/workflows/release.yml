@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: Verify the tag matches CHANGELOG
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          make_ver="$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -1)"
+          echo "tag=$tag changelog=$make_ver"
+          test "$tag" = "$make_ver"
+
+      - name: Build archives and packages
+        run: |
+          make dist
+          make deb
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="$(awk '/^## \[/{n++} n==1{print} n==2{exit}' CHANGELOG.md)"
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "SynapseIDS $GITHUB_REF_NAME" \
+            --notes "$notes" \
+            $prerelease \
+            dist/*.tar.gz dist/*.deb dist/SHA256SUMS

@@ -1,0 +1,6 @@
+synapseids (@VERSION@) unstable; urgency=medium
+
+  * Release @VERSION@. See https://github.com/kawaiipantsu/synapseids/blob/main/CHANGELOG.md
+    for the full changelog.
+
+ -- kawaiipantsu <12233528+kawaiipantsu@users.noreply.github.com>  @DATE@

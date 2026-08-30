@@ -1,0 +1,84 @@
+.TH SYNAPSED 1 "2026" "synapseids" "System Administration"
+.SH NAME
+synapsed \- SynapseIDS capture, flow, feature and inference daemon
+.SH SYNOPSIS
+.B synapsed
+[\fB\-\-config\fR \fIfile\fR]
+[\fB\-\-listen\fR \fIhost:port\fR]
+.br
+.B synapsed \-\-version
+.SH DESCRIPTION
+.B synapsed
+manages capture sources, decodes packets, builds bidirectional flows, extracts
+the frozen
+.I flow-features-v1
+vector for each flow, scores it with one or more inference models, persists the
+results, and exposes a versioned REST API together with a single live WebSocket
+channel.
+.PP
+This build wires PCAP replay end to end: a replayed capture runs through exactly
+the same flow, feature and classification pipeline as live traffic, so the UI
+behaves identically. Live capture backends and trained ONNX models arrive in
+later releases.
+.PP
+The management API binds to
+.B 127.0.0.1:8080
+by default. Binding it to a non\-loopback address is logged as a warning; put an
+authenticating reverse proxy in front for remote access.
+.SH OPTIONS
+.TP
+.BI \-\-config " file"
+Load configuration from a JSON file. See
+.B contrib/config/synapse.json
+for an annotated example. Environment variables
+.RB ( SYNAPSE_LISTEN ", " SYNAPSE_STORAGE_DRIVER ", " SYNAPSE_MODELS_DIR ", ...)
+override file values.
+.TP
+.BI \-\-listen " host:port"
+Override
+.B server.listen
+from the command line.
+.TP
+.B \-\-version
+Print build metadata and exit.
+.SH ENDPOINTS
+.TP
+.B GET /api/v1/status
+Daemon, storage, event\-bus, live\-channel and replay status.
+.TP
+.B GET /api/v1/flows \fR/\fB /api/v1/flows/{id}
+Recent flow records; one flow with its raw feature vector.
+.TP
+.B GET /api/v1/classifications
+Recent ensemble verdicts (the rolling log feed).
+.TP
+.B GET /api/v1/schemas/features \fR/\fB /api/v1/schemas/classes
+The frozen feature and output contracts.
+.TP
+.B POST /api/v1/replay
+Start a PCAP replay: JSON body
+.RB { \(dqpath\(dq ,\  \(dqspeed\(dq }.
+.TP
+.B GET /api/v1/stream
+WebSocket channel of batched event envelopes.
+.SH FILES
+.TP
+.B /etc/synapseids/synapse.json
+Recommended configuration path (see contrib/).
+.TP
+.B /var/lib/synapseids
+Recommended state directory.
+.SH EXIT STATUS
+.B 0
+clean shutdown;
+.B 1
+configuration or server error;
+.B 2
+usage error.
+.SH SEE ALSO
+.BR synapse (1),
+.BR synapse-sensor (1),
+.BR tcpdump (1),
+.BR editcap (1)
+.SH AUTHOR
+kawaiipantsu / THUGS. Source at https://github.com/kawaiipantsu/synapseids

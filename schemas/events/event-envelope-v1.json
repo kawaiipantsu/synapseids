@@ -1,0 +1,32 @@
+{
+  "schema": "event-envelope-v1",
+  "version": 1,
+  "frozen": true,
+  "description": "Envelope for every event on the internal bus and every frame pushed over the live WebSocket channel (PROJECT.md §17, §18). The daemon batches multiple envelopes into a single WebSocket frame as a JSON array.",
+  "fields": {
+    "type": "string  — one of the event types below",
+    "ts":   "string  — RFC3339Nano UTC timestamp",
+    "seq":  "integer — monotonic per-process sequence number",
+    "data": "object  — type-specific payload"
+  },
+  "event_types": [
+    "CaptureSourceConnected",
+    "CaptureSourceDisconnected",
+    "FlowStarted",
+    "FlowUpdated",
+    "FlowClosed",
+    "FeaturesGenerated",
+    "ClassificationCreated",
+    "ModelDisagreementDetected",
+    "AlertCreated",
+    "ReviewUpdated",
+    "ReplayStarted",
+    "ReplayProgress",
+    "ReplayFinished",
+    "ModelRegistered",
+    "ModelActivated",
+    "ModelDeactivated",
+    "SensorConnected",
+    "SensorDisconnected"
+  ]
+}

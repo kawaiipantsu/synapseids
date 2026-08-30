@@ -1,0 +1,52 @@
+name: Branch flow
+
+# Enforces the Git Flow rules documented in CLAUDE.md (Git workflow):
+#   - main only receives merges from release/<version> or hotfix/<...> branches
+#   - everything else (feature/<name>, fix/<name>, chore/<name>, ...) targets develop
+#
+# This is a required status check on both the main and develop rulesets, so a PR
+# opened with the wrong base fails CI instead of silently merging.
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  check-base:
+    name: Branch flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate base/head pair against Git Flow
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "PR: $HEAD_REF -> $BASE_REF"
+
+          if [ "$BASE_REF" = "main" ]; then
+            case "$HEAD_REF" in
+              release/*|hotfix/*)
+                echo "OK: $HEAD_REF is an allowed source for main."
+                ;;
+              *)
+                echo "::error::main only accepts merges from release/<version> or hotfix/<...> branches (CLAUDE.md, Git workflow). '$HEAD_REF' targets main directly — retarget this PR at develop, or branch as release/* or hotfix/* if this really is a release or a production hotfix."
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ "$BASE_REF" = "develop" ]; then
+            case "$HEAD_REF" in
+              main)
+                echo "::error::main must not be merged back into develop directly; releases flow through release/<version>."
+                exit 1
+                ;;
+              *)
+                echo "OK: $HEAD_REF -> develop."
+                ;;
+            esac
+          fi
