@@ -44,19 +44,27 @@ func run(args []string) int {
 	limit := fs.Int("limit", 20, "row limit for list commands")
 	speed := fs.String("speed", "1", "replay speed: 0.5, 1, 2, 10, or max")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	if err := fs.Parse(args); err != nil {
+
+	// Go's flag package stops at the first non-flag token, so split the command
+	// word out and parse the flags on either side of it. This lets flags come
+	// before or after the subcommand: `synapse classifications --limit 50` and
+	// `synapse --limit 50 classifications` both work.
+	cmd, rest, err := splitCommand(fs, args)
+	if err != nil {
 		return 2
 	}
-	rest := fs.Args()
-	if len(rest) == 0 {
+	if cmd == "" {
 		fs.Usage()
 		return 2
 	}
 
 	c := &client{base: strings.TrimRight(*server, "/")}
-	switch rest[0] {
-	case "version", "--version":
+	switch cmd {
+	case "version", "--version", "-V":
 		fmt.Println(version.String("synapse"))
+		return 0
+	case "help", "--help", "-h":
+		fs.Usage()
 		return 0
 	case "status":
 		return c.getPretty("/api/v1/status")
@@ -67,17 +75,41 @@ func run(args []string) int {
 	case "classifications":
 		return c.classifications(*limit)
 	case "replay":
-		if len(rest) < 2 {
+		if len(rest) < 1 {
 			fmt.Fprintln(os.Stderr, "synapse: replay needs a .pcap path")
 			return 2
 		}
-		return c.replay(rest[1], *speed)
+		return c.replay(rest[0], *speed)
 	case "replay-stop":
 		return c.post("/api/v1/replay/stop", nil)
 	default:
-		fmt.Fprintf(os.Stderr, "synapse: unknown command %q\n", rest[0])
+		fmt.Fprintf(os.Stderr, "synapse: unknown command %q\n", cmd)
 		fs.Usage()
 		return 2
+	}
+}
+
+// splitCommand parses fs's flags interspersed with positional arguments — Go's
+// flag package stops at the first bare word, so this repeatedly parses, peels
+// off one positional, and parses again. The first positional is returned as the
+// subcommand; `synapse --limit 5 classifications`, `synapse classifications
+// --limit 5` and `synapse replay f.pcap --speed max` all work.
+func splitCommand(fs *flag.FlagSet, args []string) (cmd string, positional []string, err error) {
+	remaining := args
+	for {
+		if err = fs.Parse(remaining); err != nil {
+			return "", nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return cmd, positional, nil
+		}
+		if cmd == "" {
+			cmd = rest[0]
+		} else {
+			positional = append(positional, rest[0])
+		}
+		remaining = rest[1:]
 	}
 }
 

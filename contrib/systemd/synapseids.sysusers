@@ -1,0 +1,14 @@
+# SynapseIDS system user — THUGS(red) SynapseIDS
+#
+# Install:
+#   install -m 0644 contrib/systemd/synapseids.sysusers /usr/lib/sysusers.d/synapseids.conf
+#   systemd-sysusers            # or: systemd-sysusers /usr/lib/sysusers.d/synapseids.conf
+#
+# Creates an unprivileged, no-login system user+group that synapsed and
+# synapse-sensor run as (PROJECT.md §21 — do not run the daemon as root).
+# Run this BEFORE systemd-tmpfiles so the state directory can be chowned.
+#
+# Type Name    ID   GECOS                Home directory       Shell
+u      synapse -    "SynapseIDS daemon"  /var/lib/synapseids  /usr/sbin/nologin
+# The 'u' line already creates a matching group; declared explicitly for clarity.
+g      synapse -

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Questions and general discussion
+    url: https://github.com/kawaiipantsu/synapseids/discussions
+    about: Setup help, how to read a classification, deployment questions — anything that is not a defect or a concrete proposal.
+  - name: 🔐 Report a security vulnerability
+    url: https://github.com/kawaiipantsu/synapseids/blob/main/SECURITY.md
+    about: SynapseIDS ingests untrusted traffic and handles sensitive telemetry. Report crashes-as-exploits, resource exhaustion, unauthorized capture or egress privately, not in a public issue.

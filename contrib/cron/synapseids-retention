@@ -1,0 +1,18 @@
+# SynapseIDS retention backstop — THUGS(red) SynapseIDS
+#
+# Install:  install -m 0644 contrib/cron/synapseids-retention /etc/cron.d/synapseids-retention
+# Requires: /usr/local/bin/synapseids-retention-prune
+#           (from contrib/scripts/synapseids-retention-prune.sh, mode 0755)
+#
+# Retention is primarily configured in /etc/synapseids/synapse.json
+# (retention.flows, retention.classifications — PROJECT.md §20). This cron entry
+# is a belt-and-braces EXTERNAL prune: it records what the daemon is holding on
+# every run (audit trail) and is where on-disk artefact cleanup will live once a
+# durable store and a prune endpoint exist. Runs daily at 03:17 as 'synapse'.
+
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=root
+
+# m  h  dom mon dow  user     command
+17  3  *   *   *     synapse  /usr/local/bin/synapseids-retention-prune

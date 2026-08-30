@@ -1,0 +1,32 @@
+name: 💡 Idea / discussion starter
+description: A rougher thought — a detection heuristic, a feature, a model direction, a visualisation. Not a fully-formed feature request.
+labels: ["type:idea", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For half-formed ideas and "what if SynapseIDS could…". If you would rather
+        talk it through first, the
+        [Discussions tab](https://github.com/kawaiipantsu/synapseids/discussions)
+        is the better home. `PROJECT.md` §30 already lists a number of these.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: One or two paragraphs. What is it, and what would it let an operator or an analyst see or do that they can't today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Rough sketch (optional)
+      description: An example feature, a rule, a mock of a view, a snippet of API — whatever makes it concrete.
+      render: text
+
+  - type: textarea
+    id: prior
+    attributes:
+      label: Prior art
+      description: Other IDS/NSM tools, datasets, papers or blog posts that do something like this.

@@ -81,6 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backup / retention / authorized-remote-capture helper scripts.
 - `docs/`: architecture, the REST + WebSocket API, the frozen `flow-features-v1`
   reference, packaging, and three ADRs.
+- `README.md` with the project overview, box-art views of the rolling log and
+  flow inspector, install and usage, and the phase roadmap; `assets/` logo and
+  pipeline diagram.
+- GitHub issue templates (bug / feature / idea), a pull-request template, and
+  `dependabot.yml` (gomod + github-actions, and pip reserved for the trainer).
+
+### Changed
+
+- `synapse` now accepts flags on either side of the subcommand, so
+  `synapse classifications --limit 50` and `synapse replay f.pcap --speed max`
+  work as written (Go's `flag` package otherwise stops at the first bare word).
+- `flow-features-v1` `bytes_forward` / `bytes_backward` `calc` text corrected to
+  "IP datagram lengths (IP header included)" — the values were always the full
+  datagram length; only the description was wrong.
 
 ### Known limitations
 

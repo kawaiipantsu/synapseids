@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 970 380" width="970" height="380" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif" role="img" aria-label="SynapseIDS Phase 1 data-plane pipeline: capture source to rolling log">
+  <title>SynapseIDS data-plane pipeline</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8fbecb"/>
+    </marker>
+    <marker id="ahd" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5f93a4"/>
+    </marker>
+  </defs>
+
+  <rect width="970" height="380" fill="#0E3A4B"/>
+  <text x="20" y="27" fill="#a9cdd8" font-size="13" font-weight="600">packets  &#8594;  flows  &#8594;  flow-features-v1  &#8594;  classification  &#8594;  REST + WebSocket  &#8594;  rolling log</text>
+  <text x="20" y="45" fill="#6f9fb0" font-size="11">Solid = shipped in Phase 1 and run identically for replay and live capture. Dashed = Phase 2+.</text>
+
+  <!-- pipeline boxes -->
+  <g fill="#123f52" stroke="#3f8296" stroke-width="1.5">
+    <rect x="18"  y="80"  width="112" height="58" rx="7"/>
+    <rect x="150" y="80"  width="96"  height="58" rx="7"/>
+    <rect x="266" y="80"  width="96"  height="58" rx="7"/>
+    <rect x="382" y="80"  width="132" height="58" rx="7"/>
+    <rect x="704" y="78"  width="122" height="50" rx="7"/>
+    <rect x="704" y="140" width="122" height="50" rx="7"/>
+    <rect x="846" y="80"  width="106" height="58" rx="7"/>
+    <rect x="534" y="204" width="150" height="50" rx="7"/>
+  </g>
+  <rect x="534" y="80"  width="150" height="58" rx="7" fill="#12495f" stroke="#35C1D6" stroke-width="1.8"/>
+  <rect x="382" y="292" width="302" height="54" rx="7" fill="#0f3646" stroke="#5f93a4" stroke-width="1.5" stroke-dasharray="6 4"/>
+
+  <!-- box labels -->
+  <g fill="#DFEEF3" font-size="12" text-anchor="middle">
+    <text x="74"  y="105">PCAP / NIC /</text><text x="74"  y="121">remote sensor</text>
+    <text x="198" y="105">packet</text><text x="198" y="121">decode</text>
+    <text x="314" y="105">flow</text><text x="314" y="121">engine</text>
+    <text x="448" y="105">flow-features-v1</text><text x="448" y="122" fill="#9fc4d0" font-size="11">48 numeric features</text>
+    <text x="609" y="105">inference runtime</text><text x="609" y="122" fill="#9fc4d0" font-size="11">N models &#183; ensemble</text>
+    <text x="765" y="99">REST</text><text x="765" y="115" fill="#9fc4d0" font-size="11">/api/v1</text>
+    <text x="765" y="161">WebSocket</text><text x="765" y="177" fill="#9fc4d0" font-size="11">/api/v1/stream</text>
+    <text x="899" y="105">web UI</text><text x="899" y="122" fill="#9fc4d0" font-size="11">rolling log</text>
+    <text x="609" y="225">in-memory store</text><text x="609" y="241" fill="#9fc4d0" font-size="11">SQLite tracked</text>
+  </g>
+  <text x="533" y="315" fill="#cfe4ea" font-size="12" text-anchor="middle">Phase 2+ :  Python trainer  &#8594;  ONNX model bundle</text>
+  <text x="533" y="333" fill="#6f9fb0" font-size="10.5" text-anchor="middle">contract-checked against flow-features-v1 / traffic-classes-v1 before load</text>
+
+  <!-- pipeline arrows -->
+  <g stroke="#8fbecb" stroke-width="1.6" fill="none" marker-end="url(#ah)">
+    <line x1="130" y1="109" x2="147" y2="109"/>
+    <line x1="246" y1="109" x2="263" y2="109"/>
+    <line x1="362" y1="109" x2="379" y2="109"/>
+    <line x1="514" y1="109" x2="531" y2="109"/>
+    <line x1="684" y1="107" x2="701" y2="103"/>
+    <line x1="684" y1="112" x2="701" y2="150"/>
+    <line x1="826" y1="103" x2="843" y2="107"/>
+    <line x1="826" y1="165" x2="843" y2="113"/>
+    <line x1="609" y1="138" x2="609" y2="201"/>
+  </g>
+  <line x1="470" y1="292" x2="540" y2="140" stroke="#5f93a4" stroke-width="1.5" stroke-dasharray="6 4" fill="none" marker-end="url(#ahd)"/>
+
+  <!-- legend -->
+  <g font-size="10.5" fill="#6f9fb0">
+    <line x1="690" y1="360" x2="716" y2="360" stroke="#8fbecb" stroke-width="1.6"/>
+    <text x="722" y="363">Phase 1</text>
+    <line x1="792" y1="360" x2="818" y2="360" stroke="#5f93a4" stroke-width="1.5" stroke-dasharray="6 4"/>
+    <text x="824" y="363">Phase 2+</text>
+  </g>
+</svg>
