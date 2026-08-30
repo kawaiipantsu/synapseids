@@ -1,0 +1,57 @@
+.TH SYNAPSE 1 "2026" "synapseids" "User Commands"
+.SH NAME
+synapse \- SynapseIDS administrative CLI
+.SH SYNOPSIS
+.B synapse
+[\fB\-\-server\fR \fIurl\fR]
+.I command
+[\fIargs\fR]
+.SH DESCRIPTION
+.B synapse
+is a thin client for a running
+.BR synapsed .
+It holds no analysis logic of its own; every command is an HTTP request to the
+daemon.
+.SH COMMANDS
+.TP
+.B status
+Print daemon status as JSON.
+.TP
+.B models
+List the loaded inference models.
+.TP
+.BI "flows " "[\-\-limit N]"
+Print recent flow records.
+.TP
+.BI "classifications " "[\-\-limit N]"
+Print recent classifications as a compact rolling\-log table.
+.TP
+.BI "replay " "file.pcap [\-\-speed S]"
+Start a PCAP replay on the daemon.
+.I S
+is one of
+.BR 0.5 ", " 1 ", " 2 ", " 10 " or " max .
+.TP
+.B replay-stop
+Stop the running replay.
+.TP
+.B version
+Print CLI build metadata.
+.SH OPTIONS
+.TP
+.BI \-\-server " url"
+Base URL of the daemon. Defaults to
+.B $SYNAPSE_SERVER
+or
+.BR http://127.0.0.1:8080 .
+.SH EXIT STATUS
+.B 0
+success;
+.B 1
+request failed;
+.B 2
+usage error.
+.SH SEE ALSO
+.BR synapsed (1)
+.SH AUTHOR
+kawaiipantsu / THUGS. Source at https://github.com/kawaiipantsu/synapseids

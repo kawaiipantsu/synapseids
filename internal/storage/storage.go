@@ -1,0 +1,98 @@
+// Package storage persists flows and classifications behind a small interface so
+// the backend can change without touching the rest of the daemon. Phase 1 ships
+// an in-memory ring buffer; SQLite and later ClickHouse are tracked separately
+// (PROJECT.md §20).
+package storage
+
+import (
+	"net/netip"
+	"time"
+
+	"github.com/kawaiipantsu/synapseids/internal/features"
+	"github.com/kawaiipantsu/synapseids/internal/flow"
+	"github.com/kawaiipantsu/synapseids/internal/inference"
+)
+
+// FlowRecord is a stored flow: its identity and accumulators plus the raw
+// feature vector that was extracted from it.
+type FlowRecord struct {
+	ID            uint64          `json:"id"`
+	Proto         string          `json:"proto"`
+	InitiatorIP   string          `json:"initiator_ip"`
+	InitiatorPort uint16          `json:"initiator_port"`
+	ResponderIP   string          `json:"responder_ip"`
+	ResponderPort uint16          `json:"responder_port"`
+	FirstSeen     time.Time       `json:"first_seen"`
+	LastSeen      time.Time       `json:"last_seen"`
+	DurationSec   float64         `json:"duration_sec"`
+	FwdPackets    uint64          `json:"fwd_packets"`
+	BwdPackets    uint64          `json:"bwd_packets"`
+	FwdBytes      uint64          `json:"fwd_bytes"`
+	BwdBytes      uint64          `json:"bwd_bytes"`
+	CloseReason   string          `json:"close_reason"`
+	SnapshotIndex int             `json:"snapshot_index"`
+	Features      features.Vector `json:"features"`
+}
+
+// Classification is a stored ensemble verdict for a flow, denormalized with just
+// enough of the tuple to render the rolling log without a join.
+type Classification struct {
+	FlowID        uint64           `json:"flow_id"`
+	TS            time.Time        `json:"ts"`
+	Sensor        string           `json:"sensor"`
+	Proto         string           `json:"proto"`
+	InitiatorIP   string           `json:"initiator_ip"`
+	InitiatorPort uint16           `json:"initiator_port"`
+	ResponderIP   string           `json:"responder_ip"`
+	ResponderPort uint16           `json:"responder_port"`
+	Result        inference.Result `json:"result"`
+}
+
+// Stats is a persistence-layer counter snapshot.
+type Stats struct {
+	Flows           int    `json:"flows"`
+	Classifications int    `json:"classifications"`
+	FlowsEvicted    uint64 `json:"flows_evicted"`
+	ClassEvicted    uint64 `json:"classifications_evicted"`
+	Driver          string `json:"driver"`
+}
+
+// Store is the persistence contract.
+type Store interface {
+	PutFlow(FlowRecord)
+	PutClassification(Classification)
+	Flow(id uint64) (FlowRecord, bool)
+	RecentFlows(limit int) []FlowRecord
+	RecentClassifications(limit int) []Classification
+	Stats() Stats
+	Close() error
+}
+
+// FlowRecordFrom builds a stored FlowRecord from a flow record and its features.
+func FlowRecordFrom(r flow.Record, fv features.Vector) FlowRecord {
+	return FlowRecord{
+		ID:            r.ID,
+		Proto:         r.Proto.String(),
+		InitiatorIP:   ipString(r.InitiatorIP),
+		InitiatorPort: r.InitiatorPort,
+		ResponderIP:   ipString(r.ResponderIP),
+		ResponderPort: r.ResponderPort,
+		FirstSeen:     r.FirstSeen,
+		LastSeen:      r.LastSeen,
+		DurationSec:   r.Duration().Seconds(),
+		FwdPackets:    r.FwdPackets,
+		BwdPackets:    r.BwdPackets,
+		FwdBytes:      r.FwdBytes,
+		BwdBytes:      r.BwdBytes,
+		CloseReason:   string(r.Reason),
+		SnapshotIndex: r.SnapshotIndex,
+		Features:      fv,
+	}
+}
+
+func ipString(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
+}

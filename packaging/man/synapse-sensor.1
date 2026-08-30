@@ -1,0 +1,35 @@
+.TH SYNAPSE-SENSOR 1 "2026" "synapseids" "System Administration"
+.SH NAME
+synapse-sensor \- SynapseIDS distributed capture agent (placeholder)
+.SH SYNOPSIS
+.B synapse-sensor version
+.SH DESCRIPTION
+.B synapse-sensor
+is a placeholder for the lightweight remote capture agent described in
+.BR PROJECT.md " \[char167] 5.3."
+Distributed sensors \(em an authenticated, encrypted transport with
+.BR raw ", " flow " and " feature
+modes, reconnect, and sensor/location identity \(em are planned for Phase 6.
+.PP
+Until then this binary only reports its version so that packaging and release
+tooling can treat all three SynapseIDS commands uniformly. Any other invocation
+prints guidance and exits non\-zero.
+.PP
+For now, capture on the daemon host or feed
+.B synapsed
+a capture file:
+.PP
+.RS
+.B synapse replay ./capture.pcap \-\-speed 2
+.RE
+.SH EXIT STATUS
+.B 0
+for
+.BR version ;
+.B 1
+otherwise.
+.SH SEE ALSO
+.BR synapsed (1),
+.BR synapse (1)
+.SH AUTHOR
+kawaiipantsu / THUGS. Source at https://github.com/kawaiipantsu/synapseids

@@ -1,0 +1,16 @@
+{
+  "schema": "traffic-classes-v1",
+  "version": 1,
+  "frozen": true,
+  "description": "Supervised traffic-classification output vector for the flow-classifier-v1 model family. The class count and ordering are locked for every model in the family (PROJECT.md §9). 'suspicious' is a supervised class, NOT a substitute for anomaly detection — a separate anomaly model produces a novelty score (PROJECT.md §13).",
+  "output_size": 7,
+  "classes": [
+    { "index": 0, "name": "normal",      "description": "Benign traffic." },
+    { "index": 1, "name": "scan",        "description": "Host / port / service discovery." },
+    { "index": 2, "name": "dos_ddos",    "description": "Denial-of-service or distributed denial-of-service." },
+    { "index": 3, "name": "brute_force", "description": "Credential brute force against a service." },
+    { "index": 4, "name": "botnet_c2",   "description": "Botnet command-and-control channel." },
+    { "index": 5, "name": "web_attack",  "description": "Web application attack (injection, traversal, RCE attempt)." },
+    { "index": 6, "name": "suspicious",  "description": "Anomalous but unattributed; a supervised catch-all, not an anomaly score." }
+  ]
+}

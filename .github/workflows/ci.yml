@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+      - run: make deps
+      - run: make fmt-check
+      - run: make vet
+      - run: make test
+      - run: make race
+
+  build:
+    name: Cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+      - run: make build-linux
+      - name: Confirm the fixtures are up to date
+        run: |
+          go run ./testdata/gen
+          git diff --exit-code testdata/pcap || {
+            echo "::error::testdata/pcap is stale — run 'make generate' and commit"; exit 1; }
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+      # Build golangci-lint from source with this runner's Go so it does not
+      # refuse a go.mod that targets a newer language version than the prebuilt
+      # release binary was compiled with.
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - run: golangci-lint run ./...
+
+  security:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: false
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...

@@ -1,0 +1,32 @@
+# Binaries
+/synapsed
+/synapse
+/synapse-sensor
+*.test
+*.out
+
+# Build / release output
+/dist/
+/build/
+
+# Coverage
+coverage.out
+coverage.html
+
+# Runtime data
+/data/
+*.db
+*.db-journal
+*.db-wal
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
