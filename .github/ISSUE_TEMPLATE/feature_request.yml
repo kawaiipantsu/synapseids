@@ -1,0 +1,73 @@
+name: ✨ Feature request
+description: Suggest a capability or a change to how SynapseIDS behaves.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you write this up: **[PROJECT.md](https://github.com/kawaiipantsu/synapseids/blob/main/PROJECT.md)**
+        is the authoritative spec, and most planned work is already tracked as a
+        GitHub issue under an `EPIC: Phase N`. Check there first — your idea may
+        already be on the roadmap, or it may be an explicit non-goal (§28.17):
+        SynapseIDS observes, classifies, explains and alerts. It does not attack,
+        counter-attack, or modify traffic.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution. What were you trying to detect or investigate, and what did the current behaviour not give you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like SynapseIDS to do?
+      description: Be concrete. If it is a flag, an endpoint or a config key, show it. If it is a UI view, sketch it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else did you consider?
+      description: Including "do nothing" and "use another tool". Which alternatives you rejected, and why, is usually the most useful part.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      options:
+        - Not sure
+        - Capture sources
+        - Flow engine
+        - Feature schema / a new feature-schema version
+        - Inference / models / model bundles
+        - Datasets & training
+        - REST API / WebSocket
+        - Web UI
+        - Distributed sensors
+        - Storage / retention
+        - Build / packaging / release
+        - Documentation
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Does this fit the project's constraints?
+      description: Unticked boxes are fine — they are prompts, not requirements.
+      options:
+        - label: It does not require reordering or re-meaning a released schema (a new version is fine).
+        - label: It does not require cgo or a heavy new dependency.
+        - label: It keeps measurement in the flow/features layer and rendering separate.
+        - label: It is a defensive capability — no exploitation, counter-attack or traffic modification.
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you like to implement it?
+      options:
+        - label: I would be willing to open a pull request for this.

@@ -1,0 +1,92 @@
+# synapsed.service — THUGS(red) SynapseIDS daemon (capture → flow → feature → inference → REST/WebSocket API)
+#
+# Install:
+#   install -m 0644 contrib/systemd/synapsed.service      /etc/systemd/system/synapsed.service
+#   install -m 0644 contrib/systemd/synapseids.sysusers   /usr/lib/sysusers.d/synapseids.conf
+#   install -m 0644 contrib/systemd/synapseids.tmpfiles   /usr/lib/tmpfiles.d/synapseids.conf
+#   systemd-sysusers                    # create the 'synapse' system user/group first
+#   systemd-tmpfiles --create           # then /var/lib/synapseids and /etc/synapseids
+#   install -D -m 0640 -o root -g synapse contrib/config/synapse.json /etc/synapseids/synapse.json
+#   install -m 0640 -o root -g synapse contrib/systemd/synapsed.env    /etc/synapseids/synapsed.env   # optional
+#   systemctl daemon-reload
+#   systemctl enable --now synapsed
+#
+# Ordering matters: sysusers before tmpfiles (tmpfiles chowns to 'synapse'),
+# tmpfiles/config before the first start. StateDirectory=/ConfigurationDirectory=
+# below also create the dirs, so a package that runs neither still starts clean.
+#
+# PROJECT.md §21: do not run the whole daemon as root. This unit runs as an
+# unprivileged user and grants only the two capabilities live capture will need.
+# Phase 1 is PCAP replay only and needs NO capabilities — comment out
+# AmbientCapabilities= and CapabilityBoundingSet= for a replay-only host.
+#
+# There is no config hot-reload: `systemctl restart synapsed` to apply changes.
+
+[Unit]
+Description=SynapseIDS daemon (flow capture, feature extraction, inference, API)
+Documentation=man:synapsed(1) https://github.com/kawaiipantsu/synapseids
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=synapse
+Group=synapse
+
+ExecStart=/usr/bin/synapsed --config /etc/synapseids/synapse.json
+EnvironmentFile=-/etc/synapseids/synapsed.env
+
+Restart=on-failure
+RestartSec=5
+
+# --- filesystem layout ------------------------------------------------------
+# StateDirectory  -> /var/lib/synapseids  (0750 synapse:synapse, auto-created)
+# ConfigurationDirectory -> /etc/synapseids (auto-created). If you would rather
+#   keep /etc/synapseids strictly root-owned (the daemon only ever reads it),
+#   drop the next line and let the tmpfiles.d fragment / package own that dir.
+StateDirectory=synapseids
+ConfigurationDirectory=synapseids
+ReadWritePaths=/var/lib/synapseids
+WorkingDirectory=/var/lib/synapseids
+# LogsDirectory=synapseids   # only if you redirect output to files; default is journald
+
+# --- capabilities: future live capture only (AF_PACKET, promisc, BPF) ------
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+# --- sandbox / least privilege (PROJECT.md §21) ---------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Go binaries never need writable+executable memory. Keep this. Only revisit if
+# a future cgo/JIT inference runtime (ONNX) is linked in.
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+# AF_INET/AF_INET6 API listener · AF_NETLINK interface enumeration + CAP_NET_ADMIN
+# AF_UNIX journald stdout · AF_PACKET live capture (future)
+
+# --- resource ceilings: tune to the host ---------------------------------
+MemoryMax=2G
+LimitNOFILE=65536
+# TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

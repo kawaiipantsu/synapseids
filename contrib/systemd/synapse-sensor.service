@@ -1,0 +1,82 @@
+# synapse-sensor.service — THUGS(red) SynapseIDS distributed capture agent
+#
+# ############################################################################
+# #  PHASE-6 PLACEHOLDER — DO NOT ENABLE YET
+# #
+# #  synapse-sensor is the not-yet-implemented remote capture agent
+# #  (PROJECT.md §5.3, Phase 6: authenticated + encrypted transport, raw/flow/
+# #  feature modes, reconnect, sensor/location identity). The shipped binary
+# #  only answers `synapse-sensor version`; any other invocation — including the
+# #  bare ExecStart below — prints guidance and exits non-zero. Started now, this
+# #  unit will fail immediately.
+# #
+# #  It is provided for packaging completeness and so the hardening is reviewed
+# #  once. The [Install] section is intentionally commented out: `systemctl
+# #  enable synapse-sensor` will refuse until you deliberately uncomment it.
+# ############################################################################
+#
+# Install (unit file only; do not enable):
+#   install -m 0644 contrib/systemd/synapse-sensor.service /etc/systemd/system/synapse-sensor.service
+#   systemctl daemon-reload
+#
+# Until Phase 6 lands, capture on the daemon host or feed synapsed a file:
+#   synapse replay ./capture.pcap --speed 2
+
+[Unit]
+Description=SynapseIDS distributed capture agent (Phase 6 placeholder — not functional)
+Documentation=man:synapse-sensor(1) https://github.com/kawaiipantsu/synapseids
+After=network-online.target
+Wants=network-online.target
+# Do not hot-loop on the guaranteed failure while this is a placeholder.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=synapse
+Group=synapse
+
+ExecStart=/usr/bin/synapse-sensor
+Restart=on-failure
+RestartSec=15
+
+# --- filesystem layout ---------------------------------------------------
+StateDirectory=synapseids-sensor
+ConfigurationDirectory=synapseids
+ReadWritePaths=/var/lib/synapseids-sensor
+WorkingDirectory=/var/lib/synapseids-sensor
+
+# --- capabilities: a sensor's whole job is capture ---------------------
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+# --- sandbox / least privilege (PROJECT.md §21) — same posture as synapsed
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+
+MemoryMax=1G
+LimitNOFILE=65536
+
+# [Install]
+# WantedBy=multi-user.target

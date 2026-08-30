@@ -1,0 +1,19 @@
+# SynapseIDS runtime directories — THUGS(red) SynapseIDS
+#
+# Install:
+#   install -m 0644 contrib/systemd/synapseids.tmpfiles /usr/lib/tmpfiles.d/synapseids.conf
+#   systemd-tmpfiles --create   # or: systemd-tmpfiles --create /usr/lib/tmpfiles.d/synapseids.conf
+#
+# Run AFTER systemd-sysusers (the 'synapse' user must exist) and BEFORE the
+# first `systemctl start synapsed`. The unit's StateDirectory=/ConfigurationDirectory=
+# would create these too; this fragment pins ownership/mode for packages and for
+# operators who manage the tree by hand.
+#
+# Type Path                 Mode UID     GID     Age Argument
+d     /var/lib/synapseids   0750 synapse synapse -
+d     /etc/synapseids       0755 root    root    -
+
+# Optional, uncomment if you use them:
+# d   /var/lib/synapseids/models  0750 synapse synapse -   # model bundle drop-dir (Phase 2)
+# d   /var/lib/synapseids/pcaps   0750 synapse synapse -   # replay input staging
+# d   /var/log/synapseids         0750 synapse synapse -   # only if you redirect logs to files

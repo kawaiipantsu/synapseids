@@ -1,0 +1,108 @@
+name: 🐛 Bug report
+description: Something in SynapseIDS does not behave the way it should.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        **Not a bug — a security vulnerability?** A crafted PCAP or packet that
+        crashes, hangs or OOMs `synapsed`, unbounded resource use, unauthorized
+        capture, or any unexpected network egress goes through
+        [SECURITY.md](https://github.com/kawaiipantsu/synapseids/blob/main/SECURITY.md),
+        not here.
+
+        **Is the classifier just wrong?** The Phase-1 model is a transparent
+        heuristic — a misclassification is a normal bug, file it here, but say so.
+
+  - type: textarea
+    id: version
+    attributes:
+      label: synapsed version
+      description: Paste the complete output of `synapsed --version`.
+      render: text
+      placeholder: |
+        synapsed v0.1.0
+        commit:  b7829b9
+        built:   2026-08-31T16:42:47Z
+        go:      go1.27.0
+        os/arch: linux/amd64
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      placeholder: "Debian 12 (kernel 6.1), linux/amd64"
+    validations:
+      required: true
+
+  - type: input
+    id: install
+    attributes:
+      label: How did you get this binary?
+      placeholder: "make build from source / synapseids_0.1.0_linux_amd64.tar.gz / synapseids_0.1.0_amd64.deb"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this affect?
+      options:
+        - Not sure
+        - Packet decoding
+        - Flow engine / lifecycle
+        - Feature extraction (flow-features-v1)
+        - Classification / inference runtime
+        - REST API
+        - WebSocket live channel
+        - Web UI (rolling log)
+        - PCAP replay
+        - Event bus
+        - Storage
+        - Configuration
+        - Build / cross-compilation / .deb packaging
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, and — for a capture problem — the smallest PCAP that still shows it. Attach it if it is small; otherwise attach a generator.
+      placeholder: |
+        1. synapsed --listen 127.0.0.1:8080 &
+        2. synapse replay ./sample.pcap --speed max
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Full error text, the `synapsed` log lines, and/or the relevant API response.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this has not been reported.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

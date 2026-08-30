@@ -1,0 +1,30 @@
+# SynapseIDS log rotation — THUGS(red) SynapseIDS
+#
+# Install:  install -m 0644 contrib/logrotate/synapseids /etc/logrotate.d/synapseids
+#
+# synapsed and synapse-sensor log to stdout/stderr, which systemd sends to the
+# journal — journald rotation is governed by journald.conf (SystemMaxUse=, etc.),
+# NOT by this file. This fragment is only for deployments that redirect daemon
+# output to files under /var/log/synapseids, e.g. a unit drop-in with:
+#
+#   [Service]
+#   StandardOutput=append:/var/log/synapseids/synapsed.log
+#   StandardError=append:/var/log/synapseids/synapsed.log
+#
+# (and LogsDirectory=synapseids, or the tmpfiles.d line, to create the dir).
+#
+# copytruncate is used because synapsed does not currently reopen its log files
+# on SIGHUP; there is a small race window where lines written during the copy can
+# be lost. Switch to `create` + a reload once the daemon learns to reopen.
+
+/var/log/synapseids/*.log {
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su synapse synapse
+    create 0640 synapse synapse
+}
