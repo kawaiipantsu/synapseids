@@ -21,10 +21,13 @@ jobs:
 
       - name: Verify the tag matches CHANGELOG
         run: |
+          # Strip a leading v and any -rc.N / -beta.N pre-release suffix before
+          # comparing to the first dated changelog heading.
           tag="${GITHUB_REF_NAME#v}"
+          base="${tag%%-*}"
           make_ver="$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -1)"
-          echo "tag=$tag changelog=$make_ver"
-          test "$tag" = "$make_ver"
+          echo "tag=$tag base=$base changelog=$make_ver"
+          test "$base" = "$make_ver"
 
       - name: Build archives and packages
         run: |
@@ -35,7 +38,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="$(awk '/^## \[/{n++} n==1{print} n==2{exit}' CHANGELOG.md)"
+          # Notes = the changelog section for this release's base version
+          # (skips the empty [Unreleased] heading).
+          base="${GITHUB_REF_NAME#v}"; base="${base%%-*}"
+          notes="$(awk -v v="## [$base]" '
+            $0 ~ /^## \[/ { if (ins) exit; if (index($0, v) == 1) { ins=1; next } }
+            ins { print }
+          ' CHANGELOG.md)"
+          [ -n "$notes" ] || notes="See CHANGELOG.md for $GITHUB_REF_NAME."
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" \
