@@ -69,8 +69,22 @@ type Selection struct {
 	Disagreement bool `json:"disagreement,omitempty"`
 	// Limit caps the result at the newest N matching flows (0 = no cap).
 	Limit int `json:"limit,omitempty"`
-	// Scan is how many recent classifications to walk (0 = defaultScan).
+	// Scan is how many recent classifications to walk (0 = defaultScan). It has
+	// no meaning with Reviewed: reviews are not a ring, they are all walked.
 	Scan int `json:"scan,omitempty"`
+
+	// Reviewed switches the build to the curated path (PROJECT.md §16; issues
+	// #42, #64): the rows come from human review decisions instead of from the
+	// classification ring, and the CSV label column carries the *human's* label,
+	// not the model's prediction. This is the only way labeling_source can say
+	// "human_review" — see reviewed.go.
+	Reviewed bool `json:"reviewed,omitempty"`
+	// IncludeIgnored opts ignored_pattern reviews into a reviewed cut. They are
+	// excluded by default: "stop showing me this" is a judgement about the review
+	// queue, not the claim "this traffic is class X". Included, they are labelled
+	// with the model's unconfirmed prediction and the cut becomes mixed
+	// ("human_review+model_prediction:…"). It requires Reviewed.
+	IncludeIgnored bool `json:"include_ignored,omitempty"`
 }
 
 // MarshalJSON omits the two time bounds when they are unset. time.Time has no
@@ -115,6 +129,12 @@ func (s Selection) validate() error {
 	}
 	if s.Scan < 0 {
 		return fmt.Errorf("%w: scan %d is negative", ErrInvalid, s.Scan)
+	}
+	if s.IncludeIgnored && !s.Reviewed {
+		return fmt.Errorf("%w: include_ignored only means something with reviewed:true — it opts ignored_pattern reviews into a curated cut", ErrInvalid)
+	}
+	if s.Reviewed && s.Disagreement {
+		return fmt.Errorf("%w: disagreement cannot be combined with reviewed:true — a review record keeps the model's class, score and id, not the ensemble's disagreement flag, so there is nothing to filter on", ErrInvalid)
 	}
 	return nil
 }
@@ -218,8 +238,12 @@ type row struct {
 }
 
 // build reads the flow store, applies the selection, and renders the CSV plus
-// everything the manifest reports about it.
-func build(src FlowSource, sel Selection) (*built, error) {
+// everything the manifest reports about it. A Reviewed selection takes the
+// curated path in reviewed.go instead.
+func build(src FlowSource, rv ReviewSource, sel Selection) (*built, error) {
+	if sel.Reviewed {
+		return buildReviewed(src, rv, sel)
+	}
 	scan := sel.Scan
 	if scan == 0 {
 		scan = defaultScan
@@ -286,7 +310,15 @@ func build(src FlowSource, sel Selection) (*built, error) {
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("%w: the selection matched no classifications (scanned %d, %d matched a verdict whose flow record had already been evicted)", ErrUnusable, len(candidates), missingFlow)
 	}
+	return finish(rows, labelingSource(models), TimeRange{From: rfc3339(minTS), To: rfc3339(maxTS)}, missingFlow, nonFinite, nil)
+}
 
+// finish is the shared tail of both build paths: it enforces the guard rails,
+// renders the CSV deterministically and fills in everything the manifest
+// reports. Keeping it in one place is what guarantees a reviewed cut inherits
+// every existing promise — the content hash over the CSV bytes and the
+// one-class / too-few-rows refusals.
+func finish(rows []row, labelSource string, tr TimeRange, missingFlow, nonFinite int, extraWarnings []string) (*built, error) {
 	// Deterministic row order so the content hash is reproducible: two builds
 	// from the same store must produce byte-identical CSVs.
 	sort.Slice(rows, func(i, j int) bool { return rows[i].flowID < rows[j].flowID })
@@ -314,11 +346,11 @@ func build(src FlowSource, sel Selection) (*built, error) {
 		columns:        columns,
 		rows:           len(rows),
 		labelCounts:    counts,
-		labelingSource: labelingSource(models),
-		timeRange:      TimeRange{From: rfc3339(minTS), To: rfc3339(maxTS)},
+		labelingSource: labelSource,
+		timeRange:      tr,
 		contentHash:    contentHash(csv),
 	}
-	b.warnings = warningsFor(counts, len(rows), dupes, missingFlow, nonFinite)
+	b.warnings = append(extraWarnings, warningsFor(counts, len(rows), dupes, missingFlow, nonFinite)...)
 	return b, nil
 }
 
@@ -415,14 +447,15 @@ func contentHash(csv []byte) string {
 
 // labelingSource states, literally, where the labels came from.
 //
-// Phase 4 has no human review loop (issue #42), so every label in a dataset
-// built today is a model's own prediction — the daemon grading its own homework.
-// Training on it teaches a new model to imitate the old one, which is a real and
-// useful thing to do (distillation, bootstrapping a location model) and is not
-// the same thing as ground truth. The manifest says so in a field the UI shows
-// on every row, so no one can mistake one for the other. When #42 lands and an
-// operator can confirm or correct a label, a reviewed dataset will record
-// "human_review"; nothing in this package can write that value today.
+// A default (non-Reviewed) cut is labelled by the daemon's own model predictions
+// — the daemon grading its own homework. Training on it teaches a new model to
+// imitate the old one, which is a real and useful thing to do (distillation,
+// bootstrapping a location model) and is not the same thing as ground truth. The
+// manifest says so in a field the UI shows on every row, so no one can mistake
+// one for the other.
+//
+// A Reviewed cut is the other case and the only one that may write
+// "human_review": see reviewedLabelingSource in reviewed.go.
 func labelingSource(models map[string]bool) string {
 	if len(models) == 0 {
 		return "model_prediction:unknown"

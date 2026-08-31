@@ -17,6 +17,13 @@ import type {
   FlowRecord,
   HostProfile,
   ModelInfo,
+  Review,
+  ReviewListResponse,
+  ReviewQueueResponse,
+  ReviewSort,
+  ReviewState,
+  ReviewStatsResponse,
+  ReviewWriteInput,
   TimelineSeries,
   TrainingList,
   TrainingRun,
@@ -292,4 +299,86 @@ export function getTrainingRuns(limit = 50): Promise<TrainingList> {
 
 export function getTrainingRun(id: string): Promise<TrainingRun> {
   return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
+}
+
+// ---- human review loop (§16, issues #42 + #64) --------------------------
+// The ranked review queue, the review records and the write route. Every
+// response carries the model's original prediction next to the human label, and
+// no request here can set that prediction — the daemon captures it itself
+// (PROJECT.md §16). Sending predicted_class/predicted_score/model_id is a 400.
+
+export interface ReviewQueueParams extends ClassFilterParams {
+  sort?: ReviewSort
+}
+
+export function getReviewQueue(p: ReviewQueueParams = {}): Promise<ReviewQueueResponse> {
+  const q = new URLSearchParams()
+  if (p.sort) q.set('sort', p.sort)
+  if (p.limit != null) q.set('limit', String(p.limit))
+  if (p.class) q.set('class', p.class)
+  if (p.model) q.set('model', p.model)
+  if (p.min_confidence != null && p.min_confidence > 0) {
+    q.set('min_confidence', String(p.min_confidence))
+  }
+  if (p.disagreement) q.set('disagreement', 'true')
+  const s = q.toString()
+  return getJSON<ReviewQueueResponse>('/api/v1/review/queue' + (s ? '?' + s : ''))
+}
+
+export function getReviews(state?: ReviewState, limit = 500): Promise<ReviewListResponse> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (state) q.set('state', state)
+  return getJSON<ReviewListResponse>('/api/v1/review?' + q.toString())
+}
+
+export function getReviewStats(): Promise<ReviewStatsResponse> {
+  return getJSON<ReviewStatsResponse>('/api/v1/review/stats')
+}
+
+/** GET /api/v1/review/{flow_id}. Resolves to null on a 404 — a flow nobody has
+ *  reviewed is the normal case, not an error. */
+export async function getReview(flowID: number): Promise<Review | null> {
+  const res = await fetch(`/api/v1/review/${flowID}`, { headers: { accept: 'application/json' } })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`/api/v1/review/${flowID} failed: ${res.status}${body ? ` ${body.trim()}` : ''}`)
+  }
+  const body = (await res.json()) as { review: Review }
+  return body.review
+}
+
+export interface ReviewMutationResult {
+  ok: boolean
+  /** the server's error text verbatim on failure, a short note on success */
+  message: string
+  status: number
+  review?: Review
+}
+
+export async function putReview(
+  flowID: number,
+  body: ReviewWriteInput,
+): Promise<ReviewMutationResult> {
+  const res = await fetch(`/api/v1/review/${flowID}`, {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (res.ok) {
+    let review: Review | undefined
+    try {
+      review = (JSON.parse(text) as { review: Review }).review
+    } catch {
+      review = undefined
+    }
+    return {
+      ok: true,
+      message: res.status === 201 ? 'reviewed' : 'updated',
+      status: res.status,
+      review,
+    }
+  }
+  return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
 }

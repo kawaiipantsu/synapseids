@@ -56,6 +56,7 @@ type Config struct {
 	Models    Models    `json:"models"`
 	Datasets  Datasets  `json:"datasets"`
 	Training  Training  `json:"training"`
+	Review    Review    `json:"review"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
 }
@@ -148,6 +149,15 @@ type Training struct {
 	Directory string `json:"directory"`
 }
 
+// Review points at the directory holding human review records, one JSON file
+// per reviewed flow (PROJECT.md §16; ADR 0021). Reviews are operator-created and
+// therefore human-paced, so unlike the flow and classification stores this one
+// is not capped — a hand-labelled decision is the most expensive datum in the
+// system and is never evicted.
+type Review struct {
+	Directory string `json:"directory"`
+}
+
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
 type Live struct {
 	WebSocketBatch  Duration `json:"websocket_batch"`
@@ -175,6 +185,7 @@ func Default() Config {
 		Models:   Models{Directory: "./data/models"},
 		Datasets: Datasets{Directory: "./data/datasets"},
 		Training: Training{Directory: "./data/training"},
+		Review:   Review{Directory: "./data/review"},
 		Live:     Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
@@ -187,8 +198,9 @@ func Default() Config {
 // empty path returns Default with environment overrides applied. Environment
 // variables (SYNAPSE_LISTEN, SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH,
 // SYNAPSE_MODELS_DIR, SYNAPSE_DATASETS_DIR, SYNAPSE_TRAINING_DIR,
-// SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS, SYNAPSE_CAPTURE_IFACE) always win so
-// secrets and deployment paths stay out of the file.
+// SYNAPSE_REVIEW_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS,
+// SYNAPSE_CAPTURE_IFACE) always win so secrets and deployment paths stay out of
+// the file.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -230,6 +242,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("SYNAPSE_TRAINING_DIR"); v != "" {
 		c.Training.Directory = v
+	}
+	if v := os.Getenv("SYNAPSE_REVIEW_DIR"); v != "" {
+		c.Review.Directory = v
 	}
 	if v := os.Getenv("SYNAPSE_MAX_FLOWS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -288,6 +303,9 @@ func (c Config) validate() error {
 	}
 	if strings.TrimSpace(c.Training.Directory) == "" {
 		return fmt.Errorf("config: training.directory is empty")
+	}
+	if strings.TrimSpace(c.Review.Directory) == "" {
+		return fmt.Errorf("config: review.directory is empty")
 	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {

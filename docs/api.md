@@ -581,7 +581,9 @@ dataset version on disk. Body is JSON, unknown fields rejected, 64 KiB cap.
     "min_confidence": 0.8,
     "disagreement": false,
     "limit": 5000,
-    "scan": 200000
+    "scan": 200000,
+    "reviewed": false,
+    "include_ignored": false
   }
 }
 ```
@@ -607,6 +609,39 @@ flows. `scan` is how many recent verdicts to walk (default 200 000, capped at
 A flow contributes exactly **one row**; where it was classified more than once
 (a long flow's periodic snapshots) the newest verdict wins. Rows are sorted by
 flow id, which is what makes `content_hash` reproducible.
+
+**`selection.reviewed` — a curated, human-labelled cut** (PROJECT.md §16, issue
+#42; ADR 0021). With `"reviewed": true` the rows come from the human review store
+instead of the classification ring, and the CSV `label` column carries the
+**operator's** label rather than the model's prediction. This is the only way
+`labeling_source` can become `human_review`; there is no request field that could
+assert it directly.
+
+Eligibility by review state:
+
+| state | included | label |
+|---|---|---|
+| `correct` | yes | the prediction the human confirmed |
+| `incorrect` | yes | the human's correction |
+| `ignored_pattern` | only with `"include_ignored": true` | the model's *unconfirmed* prediction |
+| `unsure` | no | — |
+| `unreviewed` | no | — |
+
+`labeling_source` is therefore `human_review` when every row's label was asserted
+by a person, and `human_review+model_prediction:<ids>` for a mixed cut (which
+also carries a `warnings` entry naming how many rows are unconfirmed). Every
+other guarantee is unchanged: immutability, `content_hash` over the CSV bytes,
+sort by flow id, `parent_datasets` lineage, and the zero-rows / one-class /
+`min_rows` refusals.
+
+In a reviewed cut the remaining predicates read differently, because there is no
+classification to match against: `class` filters on the **human** label, `model`
+and `min_confidence` on the *captured* prediction, `from`/`to` on the flow's
+last-seen time, and `proto`/`initiator_ip`/`responder_ip` on the stored flow
+record. `scan` is ignored (reviews are not a ring). `disagreement` combined with
+`reviewed` is a `400`: a review record keeps the model's class, score and id, not
+the ensemble's disagreement flag, so there is nothing to filter on.
+`include_ignored` without `reviewed` is also a `400`.
 
 Responses:
 
@@ -737,6 +772,205 @@ derive and delete are written to `models.directory/audit.log` with
 `subject_type: "dataset"`. There is deliberately no `DatasetCreated` event on the
 live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
 (see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
+
+### GET /api/v1/review/queue
+
+The flows that still need a human, ranked (PROJECT.md §16; issues #42, #64. See
+[ADR 0021](adr/0021-human-review-loop-and-curated-datasets.md)).
+
+Query parameters:
+
+| Param | Meaning |
+|---|---|
+| `sort` | `uncertainty` \| `recent` (default) \| `disagreement`. An unknown value is a `400` echoing the valid set. |
+| `limit` | Page size, default 100, max 2000. Applied **after** ranking. |
+| `class`, `model`, `min_confidence`, `disagreement` | The shared classification filters — identical meaning to `GET /api/v1/classifications`, including `min_confidence > 1` read as a percentage. |
+
+```json
+{
+  "queue": [
+    {
+      "flow_id": 15,
+      "ts": "2026-08-31T08:41:39Z",
+      "sensor": "local",
+      "proto": "TCP",
+      "initiator_ip": "10.10.10.22", "initiator_port": 36862,
+      "responder_ip": "160.79.104.10", "responder_port": 443,
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "disagreement": false,
+      "scores": [0.1580, 0.0, 0.0, 0.0, 0.0, 0.8366, 0.0053],
+      "top1": "web_attack", "top2": "normal",
+      "margin": 0.6786, "uncertainty": 0.3214, "entropy": 0.245,
+      "scores_available": true,
+      "review_state": "unreviewed"
+    }
+  ],
+  "sort": "uncertainty",
+  "scanned": 1176,
+  "vocabulary": { "states": [ … ], "classes": [ … ], "sorts": [ … ] },
+  "ranking": {
+    "uncertainty": "1 - (p_top1 - p_top2) over the authoritative model's 7-class probability vector; larger = review sooner",
+    "entropy": "normalised Shannon entropy over the 7 classes, 0 (certain) .. 1 (uniform)"
+  }
+}
+```
+
+**The ranking.** `sort=uncertainty` is the active-learning order issue #64 asks
+for: **smallest margin first**, where `margin = p_top1 - p_top2` over the
+authoritative model's 7-class vector (normalised by its sum first, so an
+unnormalised vector cannot skew it). `uncertainty` is reported as `1 - margin` so
+bigger always means "review sooner". Normalised entropy is reported alongside.
+A uniform vector gives margin 0 / entropy 1 and ranks first; a one-hot vector
+gives margin 1 / entropy 0 and ranks last; a verdict with no usable vector
+reports `scores_available: false` and is treated as maximally uncertain rather
+than hidden. `top1`/`top2` name the two classes the margin is between, so the UI
+can show *why* a row is near the top. Ties break by newest first, then flow id.
+
+`sort=disagreement` puts `disagreement` flows first and falls back to the margin
+order inside each group. `sort=recent` is newest verdict first.
+
+**Membership.** A flow leaves the queue once its review state is terminal —
+`correct`, `incorrect` or `ignored_pattern`. **`unsure` stays in the queue** by
+design: "I don't know" is a request to come back to it, not an answer, and the
+note is carried forward on the queue item so the next reviewer sees it. One entry
+per flow; the newest verdict wins.
+
+- `400` — unknown `sort`, unknown `class`, bad `min_confidence`.
+- `503` — the daemon is running without a review store.
+
+### GET /api/v1/review
+
+Every stored review decision, most recently updated first.
+
+| Param | Meaning |
+|---|---|
+| `state` | Keep only this §16 state. An unknown value is a `400`. |
+| `limit` | Default 100, max 5000. |
+
+```json
+{
+  "reviews": [
+    {
+      "flow_id": 15,
+      "state": "incorrect",
+      "human_label": "scan",
+      "effective_label": "scan",
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "reviewer": "local",
+      "note": "nmap probe, not a web attack",
+      "created_at": "2026-08-31T13:32:52Z",
+      "updated_at": "2026-08-31T13:33:53Z",
+      "history": [
+        { "ts": "2026-08-31T13:32:52Z", "state": "correct", "reviewer": "local" }
+      ]
+    }
+  ],
+  "stats": { … },
+  "vocabulary": { … }
+}
+```
+
+`predicted_class`, `predicted_score` and `model_id` are the model's **original**
+claim, captured when the flow was first reviewed and never overwritten
+(PROJECT.md §16). `effective_label` is derived on every read: the confirmed
+prediction for `correct`, the correction for `incorrect`, `""` otherwise.
+`history` holds the superseded decisions, oldest first.
+
+### GET /api/v1/review/stats
+
+Counts per §16 state. Every one of the five keys is always present, zero
+included, so a UI strip does not change shape.
+
+```json
+{
+  "stats": {
+    "total": 40,
+    "by_state": { "unreviewed": 0, "correct": 36, "incorrect": 2, "unsure": 1, "ignored_pattern": 1 },
+    "terminal": 39,
+    "open": 1,
+    "labelled": 38,
+    "directory": "/var/lib/synapseids/review"
+  },
+  "vocabulary": { … }
+}
+```
+
+`terminal` is `correct + incorrect + ignored_pattern` (out of the queue), `open`
+is `unreviewed + unsure` (still in it), and `labelled` is
+`correct + incorrect` — the rows a curated dataset can use.
+
+### GET /api/v1/review/{flow_id}
+
+One review record, `{"review": {…}, "vocabulary": {…}}`.
+
+- `400` — the path segment is not a positive integer.
+- `404` — the flow has never been reviewed.
+- `503` — no review store wired.
+
+### PUT /api/v1/review/{flow_id}
+
+Record a decision, or correct an earlier one. `POST` is accepted identically.
+Body is JSON, unknown fields rejected, 16 KiB cap.
+
+```json
+{ "state": "incorrect", "human_label": "scan", "note": "nmap probe, not a web attack" }
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | Required. One of `unreviewed`, `correct`, `incorrect`, `unsure`, `ignored_pattern`. |
+| `human_label` | A `traffic-classes-v1` class. **Required** for `incorrect`; optional for `correct` (and then must equal the prediction); must be empty for every other state. |
+| `note` | Optional free text, 4096 bytes max. |
+
+There is deliberately **no** `predicted_class`, `predicted_score` or `model_id`
+field, and there never will be. The daemon captures the model's prediction itself
+on the first review of a flow and copies it forward untouched on every later one;
+sending one of those keys is a `400 unknown field`. This is PROJECT.md §16's
+"always retain the original model prediction separately from the human-reviewed
+label", enforced structurally — see ADR 0021.
+
+Rules, and why:
+
+- `correct` means *the prediction is the label*, so the label is derived from the
+  prediction. Supplying one that differs is a `400` pointing at `incorrect`.
+- `incorrect` requires a label, and it must **differ** from the prediction —
+  saying the model was both wrong and right is a `400` pointing at `correct`.
+- `unsure`, `ignored_pattern` and `unreviewed` assert no class, so a label is a
+  `400`. `ignored_pattern` means "stop showing me this", not "this is class X".
+- Writing `unreviewed` is how an operator un-reviews a flow: the decision is
+  cleared and the flow returns to the queue, with the previous state preserved in
+  `history`.
+
+Responses:
+
+- `201` — first review of this flow; `{"review": {…}, "vocabulary": {…}}`.
+- `200` — a correction to an existing review. The previous decision is appended
+  to `history` and `updated_at` moves; `created_at` and the three `predicted_*`
+  values do not.
+- `400` — bad body, unknown field, unknown `state`, a `human_label` that is not a
+  `traffic-classes-v1` class (the error echoes the valid set), or a state/label
+  combination that contradicts itself.
+- `404` — the flow has no stored classification: it was never classified, or its
+  verdict has already been evicted from the bounded ring, so there is no
+  prediction to review against. You cannot review a flow the store has forgotten.
+- `503` — no review store wired.
+
+### Review write routes are state-changing and unauthenticated
+
+`PUT`/`POST /api/v1/review/{flow_id}` inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same as
+the dataset, replay, capture and model-activation routes. Every write appends a
+line to `models.directory/audit.log` with `subject_type: "review"` and the flow
+id as the subject, carrying both the human label and the prediction — this is the
+"human label changes" audit §21 asks for. Each write also publishes a
+`ReviewUpdated` envelope on the live bus with
+`{flow_id, state, human_label, predicted_class}`; `ReviewUpdated` was already a
+member of the frozen `event-envelope-v1` enum, so nothing about the event schema
+changed.
 
 ### GET /api/v1/training
 

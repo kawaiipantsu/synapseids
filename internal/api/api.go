@@ -25,6 +25,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
@@ -102,6 +103,7 @@ type Server struct {
 	cap     CaptureStatusProvider
 	insight *insight.Index
 	tr      *training.Store
+	rv      *review.Store
 	hub     *wshub.Hub
 	start   time.Time
 }
@@ -115,12 +117,14 @@ type Server struct {
 // an empty list); ix may be nil (/api/v1/hosts then returns an empty list and
 // /api/v1/timeline an empty series — *insight.Index is nil-safe on every read);
 // tr may be nil (GET /api/v1/training then returns an empty list and the
-// trainer-facing POST routes return 503).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store) *Server {
+// trainer-facing POST routes return 503); rv may be nil (every /api/v1/review*
+// route then returns 503).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, rv *review.Store) *Server {
 	return &Server{
 		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, ds: ds, rc: rc, fs: fs, cap: cp,
 		insight: ix,
 		tr:      tr,
+		rv:      rv,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
 		start:   time.Now(),
 	}
@@ -149,6 +153,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/datasets/{ref}", s.handleDatasetDelete)
 	mux.HandleFunc("GET /api/v1/datasets/{ref}/download", s.handleDatasetDownload)
 	mux.HandleFunc("GET /api/v1/datasets/{ref}/stats", s.handleDatasetStats)
+	mux.HandleFunc("GET /api/v1/review/queue", s.handleReviewQueue)
+	mux.HandleFunc("GET /api/v1/review/stats", s.handleReviewStats)
+	mux.HandleFunc("GET /api/v1/review", s.handleReviews)
+	mux.HandleFunc("GET /api/v1/review/{flow_id}", s.handleReview)
+	mux.HandleFunc("PUT /api/v1/review/{flow_id}", s.handleReviewWrite)
+	mux.HandleFunc("POST /api/v1/review/{flow_id}", s.handleReviewWrite)
 	mux.HandleFunc("GET /api/v1/training", s.handleTrainings)
 	mux.HandleFunc("POST /api/v1/training", s.handleTrainingCreate)
 	mux.HandleFunc("GET /api/v1/training/{id}", s.handleTraining)

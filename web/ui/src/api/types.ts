@@ -307,6 +307,13 @@ export interface DatasetSelection {
   disagreement?: boolean
   limit?: number
   scan?: number
+  /** Cut from the human review store, using the operator's label instead of the
+   *  model's prediction (§16, issue #42). The only way labeling_source can say
+   *  "human_review". */
+  reviewed?: boolean
+  /** With `reviewed`, also include ignored_pattern reviews — labelled with the
+   *  model's *unconfirmed* prediction, so the cut becomes honestly mixed. */
+  include_ignored?: boolean
 }
 
 /** dataset.Dataset — the §14 manifest plus where it lives on disk. */
@@ -324,8 +331,10 @@ export interface Dataset {
   output_schema: string
   flow_count: number
   label_counts: Record<string, number>
-  /** "model_prediction:<model ids>" today. "human_review" becomes possible
-   *  when the review loop (issue #42) lands — see the banner on the page. */
+  /** Where the labels came from, literally:
+   *  - "model_prediction:<model ids>" — the daemon's own verdicts
+   *  - "human_review" — every label was asserted by a person (issue #42)
+   *  - "human_review+model_prediction:<ids>" — a mixed cut (include_ignored) */
   labeling_source: string
   parent_datasets: string[]
   /** "sha256:<lowercase hex>" over the schema identity + the CSV bytes. */
@@ -583,4 +592,158 @@ export interface TrainingList {
   runs: TrainingRun[]
   history_cap: number
   stale_after_seconds: number
+}
+
+// ============================================================================
+// Human review loop (PROJECT.md §16; issues #42, #64) — feature/review-queue
+// ---------------------------------------------------------------------------
+// Mirrors internal/review, served by /api/v1/review*. A sibling branch also
+// edits this file; keep additions inside this block so the merges stay clean.
+//
+// The one rule this whole block exists to make visible: `predicted_class`,
+// `predicted_score` and `model_id` are the model's ORIGINAL claim, captured when
+// the flow was first reviewed. They sit *alongside* `human_label` and are never
+// replaced by it. There is deliberately no request type here that can set them.
+// ============================================================================
+
+/** review.State — the five §16 states. */
+export type ReviewState = 'unreviewed' | 'correct' | 'incorrect' | 'unsure' | 'ignored_pattern'
+
+export const REVIEW_STATES: ReviewState[] = [
+  'unreviewed',
+  'correct',
+  'incorrect',
+  'unsure',
+  'ignored_pattern',
+]
+
+/** The states that settle a flow and remove it from the queue. `unsure` is not
+ *  one of them: "I don't know" is a request to come back, not an answer. */
+export const TERMINAL_REVIEW_STATES: ReviewState[] = ['correct', 'incorrect', 'ignored_pattern']
+
+/** review.Sort — the queue orderings. */
+export type ReviewSort = 'uncertainty' | 'recent' | 'disagreement'
+
+/** review.Change — one superseded decision. */
+export interface ReviewChange {
+  /** when this decision was replaced */
+  ts: string
+  state: ReviewState
+  human_label?: string
+  note?: string
+  reviewer: string
+}
+
+/** review.Review — one flow's decision plus the frozen model prediction. */
+export interface Review {
+  flow_id: number
+  state: ReviewState
+  /** what the operator typed; empty for `correct` (it is derived) */
+  human_label: string
+  /** the class a curated dataset would use: the confirmed prediction for
+   *  `correct`, the correction for `incorrect`, "" otherwise. Derived server-side
+   *  on every read, so it can never drift from state/human_label. */
+  effective_label: string
+  /** the model's original claim — frozen at first review, never overwritten */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  /** "local" until auth lands (issue #58) */
+  reviewer: string
+  note: string
+  created_at: string
+  updated_at: string
+  history: ReviewChange[]
+}
+
+/** review.QueueItem — one flow awaiting review, with its ranking numbers. */
+export interface ReviewQueueItem {
+  flow_id: number
+  ts: string
+  sensor: string
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  /** the *live* verdict being asked about (nothing is captured until review) */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  disagreement: boolean
+  scores: number[] // length 7, traffic-classes-v1 order
+  /** the two classes the margin is between */
+  top1: string
+  top2: string
+  /** p_top1 - p_top2, 0..1. Smaller = the model is less sure. */
+  margin: number
+  /** 1 - margin, so larger = review sooner. The `uncertainty` sort key. */
+  uncertainty: number
+  /** normalised Shannon entropy over the 7 classes, 0..1 */
+  entropy: number
+  /** false when the verdict carried no usable probability vector */
+  scores_available: boolean
+  /** 'unreviewed' or 'unsure' — the only states that reach the queue */
+  review_state: ReviewState
+  /** an earlier `unsure` note, carried forward to the next reviewer */
+  note?: string
+}
+
+/** review.Stats — the counts strip. */
+export interface ReviewStats {
+  total: number
+  /** every one of the five states is present, zero included */
+  by_state: Record<string, number>
+  /** correct + incorrect + ignored_pattern */
+  terminal: number
+  /** unreviewed + unsure — still in the queue */
+  open: number
+  /** correct + incorrect — rows a curated dataset can use */
+  labelled: number
+  directory: string
+}
+
+/** The enum block every review response carries, so nothing is hardcoded. */
+export interface ReviewVocabulary {
+  states: ReviewState[]
+  classes: string[]
+  sorts: ReviewSort[]
+}
+
+/** GET /api/v1/review/queue */
+export interface ReviewQueueResponse {
+  queue: ReviewQueueItem[]
+  sort: ReviewSort
+  /** how many stored verdicts were walked to build this page */
+  scanned: number
+  vocabulary: ReviewVocabulary
+  /** the ranking formulas, in words, served next to the ranking */
+  ranking: { uncertainty: string; entropy: string }
+}
+
+/** GET /api/v1/review */
+export interface ReviewListResponse {
+  reviews: Review[]
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/** GET /api/v1/review/stats */
+export interface ReviewStatsResponse {
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/**
+ * PUT|POST /api/v1/review/{flow_id} body.
+ *
+ * Note what is absent and always will be: predicted_class, predicted_score and
+ * model_id. The daemon captures the prediction itself and rejects a body that
+ * mentions them (400, unknown field) — PROJECT.md §16.
+ */
+export interface ReviewWriteInput {
+  state: ReviewState
+  /** required for `incorrect`; must be empty for every other state */
+  human_label?: string
+  note?: string
 }
