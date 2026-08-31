@@ -80,7 +80,8 @@ type Runtime struct {
 }
 
 // NewRuntime returns a Runtime over the given models. The first model with
-// RolePrimary is authoritative; if none is primary the first model wins.
+// RolePrimary is authoritative; if none is primary the first non-experimental
+// model wins (see Score for the full role contract).
 func NewRuntime(models ...Classifier) *Runtime {
 	return &Runtime{models: models}
 }
@@ -88,13 +89,35 @@ func NewRuntime(models ...Classifier) *Runtime {
 // Models returns the loaded classifiers.
 func (r *Runtime) Models() []Classifier { return r.models }
 
-// Score runs every model over v and combines the outputs.
+// Score runs every loaded model over v and combines their outputs into one
+// ensemble Result. Each model's individual verdict is always recorded in
+// Result.Models — never just the combined decision (PROJECT.md §12).
+//
+// Role contract (locked here, exercised by inference_test.go):
+//
+//   - primary — authoritative; drives Result.Class / ClassID / Score.
+//   - location, global — supervised peers; never drive the verdict, but a top
+//     class differing from another driving model raises Result.Disagreement.
+//   - experimental — shadow model (PROJECT.md §12): recorded in Result.Models,
+//     but never influences the verdict and never contributes to
+//     Result.Disagreement.
+//   - anomaly — novelty detector: a score, not a supervised class; excluded from
+//     the verdict and the disagreement set (unchanged behaviour).
+//
+// Verdict driver: the first primary model; absent any primary, the first
+// non-experimental model; if every loaded model is experimental, the first model
+// (so Result is never left empty).
+//
+// Disagreement is true when the alert-driving models — every role except
+// experimental and anomaly — predict more than one distinct top class.
 func (r *Runtime) Score(v features.Vector) Result {
 	res := Result{FlowID: v.FlowID}
-	var primary *ModelOutput
+	var driver *ModelOutput
+	primaryLocked := false
 	seen := map[int]int{}
 
-	for _, m := range r.models {
+	for i := range r.models {
+		m := r.models[i]
 		sc := m.Classify(v)
 		id, p := sc.Top()
 		mo := ModelOutput{
@@ -102,24 +125,31 @@ func (r *Runtime) Score(v features.Vector) Result {
 			Class: schema.ClassName(id), ClassID: id, Score: p, Scores: sc,
 		}
 		res.Models = append(res.Models, mo)
-		if m.Role() != RoleAnomaly {
+
+		if m.Role() != RoleAnomaly && m.Role() != RoleExperimental {
 			seen[id]++
 		}
-		if primary == nil || m.Role() == RolePrimary {
-			cp := mo
-			primary = &cp
+
+		switch {
+		case m.Role() == RolePrimary && !primaryLocked:
+			d := mo
+			driver, primaryLocked = &d, true
+		case !primaryLocked && driver == nil && m.Role() != RoleExperimental:
+			d := mo
+			driver = &d
 		}
 	}
 
-	if primary != nil {
-		res.Class, res.ClassID, res.Score = primary.Class, primary.ClassID, primary.Score
+	if driver == nil && len(res.Models) > 0 {
+		d := res.Models[0] // every model is experimental — keep it simple
+		driver = &d
 	}
-	// Disagreement: more than one distinct non-anomaly class predicted.
-	distinct := 0
-	for range seen {
-		distinct++
+	if driver != nil {
+		res.Class, res.ClassID, res.Score = driver.Class, driver.ClassID, driver.Score
 	}
-	res.Disagreement = distinct > 1
+	// Disagreement: more than one distinct top class among the alert-driving
+	// models (experimental and anomaly excluded).
+	res.Disagreement = len(seen) > 1
 
 	sort.SliceStable(res.Models, func(i, j int) bool {
 		return roleRank(res.Models[i].Role) < roleRank(res.Models[j].Role)

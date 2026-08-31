@@ -133,6 +133,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `model.Executor` interface + `Bundle.Bind` are defined (unused) as the seam
     the Phase 2 ONNX runtime (issue #24) will implement.
 
+- **Model roles and multi-model scoring persistence** (issue #27, Phase 2):
+  - `internal/inference` `Runtime.Score` now locks the role contract: an
+    `experimental` model is a shadow — its prediction is still recorded in
+    `result.models[]` but never drives `result.class` / `class_id` / `score` and
+    never contributes to `result.disagreement`. The disagreement set is now
+    "every role except `experimental` and `anomaly`" (was: every role except
+    `anomaly`). Verdict driver = first `primary` model, else the first
+    non-`experimental` model, else (all-experimental ensemble) the first model.
+    The rule is documented in the `Score` doc comment.
+  - `GET /api/v1/classifications` accepts optional, combinable filters —
+    `disagreement=true`, `class=<name>` (validated against `traffic-classes-v1`,
+    unknown → `400`), `model=<id>`, and `min_confidence=<n>` (fraction or
+    `0..100` percentage). No new route; the default (no params) is unchanged.
+  - `storage.Stats` gains a cumulative `disagreements` counter, incremented in
+    `PutClassification` and surfaced under `storage` in `GET /api/v1/status`.
+  - `ModelDisagreementDetected` events already carry the full per-model
+    breakdown (`result.models[]`); a pipeline test now guards it.
+
 ### Changed
 
 - `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
@@ -151,6 +169,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its signature, so `internal/api` is untouched.
 - `make clean` also removes `web/ui/node_modules`, `web/ui/.vite` and
   `*.tsbuildinfo` (it leaves the committed `web/dist/` in place).
+
+- `result.class` / `class_id` / `score` in a classification are the
+  verdict-driving model's top class (first `primary`, else first
+  non-`experimental`) — previously the first model unconditionally, which let an
+  `experimental` model listed first override the verdict.
 
 ### Removed
 
