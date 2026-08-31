@@ -50,7 +50,7 @@ func Scan(dir, primary string, logf Logf) []*Bundle {
 		m := b.Meta()
 		logf("loaded model %q (family %s, %d params) — INACTIVE", name, m.Family, m.ParameterCount)
 		if primary != "" && (name == primary || m.ModelID == primary) {
-			logf("model %q present and valid; activation is a separate explicit step (not yet wired)", primary)
+			logf("model %q matches models.primary; activation is a separate explicit step (POST /api/v1/models/{id}/activate)", primary)
 		}
 		ok = append(ok, b)
 	}

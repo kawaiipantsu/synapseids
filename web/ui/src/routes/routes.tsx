@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { Placeholder } from '../components/Placeholder'
+import { Architecture } from './Architecture'
 import { Dashboard } from './Dashboard'
 import { FlowLog } from './FlowLog'
 import { ReplayPage } from './ReplayPage'
@@ -99,9 +100,9 @@ export const ROUTES: RouteDef[] = [
     group: 'ML',
     path: '/architecture',
     label: 'Architecture',
-    tag: 'P4',
-    live: false,
-    element: P(4, 'Architecture Builder', 'EPIC: Phase 4 — Dataset/Training Workflow', 'Locked input (48) and output (7) layers with editable hidden layers (§19.9), plus live parameter-count and size estimates.'),
+    tag: 'live',
+    live: true,
+    element: <Architecture />,
   },
   {
     group: 'ML',

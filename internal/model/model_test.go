@@ -199,7 +199,7 @@ func TestScan(t *testing.T) {
 	for _, want := range []string{
 		`loaded model "primary-model" (family flow-classifier-v1, 5383 params) — INACTIVE`,
 		`rejected model bundle "broken-model"`,
-		`model "primary-model" present and valid; activation is a separate explicit step (not yet wired)`,
+		`model "primary-model" matches models.primary; activation is a separate explicit step (POST /api/v1/models/{id}/activate)`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("scan log missing %q\ngot:\n%s", want, joined)

@@ -17,10 +17,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/version"
@@ -83,6 +85,8 @@ type Server struct {
 	bus   *events.Bus
 	store storage.Store
 	rt    *inference.Runtime
+	reg   *registry.Registry
+	audit *audit.Logger
 	rc    ReplayController
 	fs    FlowStatsProvider
 	cap   CaptureStatusProvider
@@ -90,12 +94,14 @@ type Server struct {
 	start time.Time
 }
 
-// New builds a Server. rc may be nil (replay endpoints then return 503); fs may
-// be nil (/api/v1/status then reports a zeroed flow table with the configured
-// cap); cp may be nil (/api/v1/captures then returns an empty list).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider) *Server {
+// New builds a Server. reg may be nil (the /api/v1/models* routes then report an
+// empty registry / 503 on the state-changing ones); aud may be nil (audit
+// logging becomes a no-op); rc may be nil (replay endpoints then return 503); fs
+// may be nil (/api/v1/status then reports a zeroed flow table with the
+// configured cap); cp may be nil (/api/v1/captures then returns an empty list).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider) *Server {
 	return &Server{
-		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc, fs: fs, cap: cp,
+		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, rc: rc, fs: fs, cap: cp,
 		hub:   wshub.NewHub(cfg.Live.ClientQueueSize),
 		start: time.Now(),
 	}
@@ -109,10 +115,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/flows/{id}", s.handleFlow)
 	mux.HandleFunc("GET /api/v1/classifications", s.handleClassifications)
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
+	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
+	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
+	mux.HandleFunc("POST /api/v1/models/{id}/activate", s.handleModelActivate)
+	mux.HandleFunc("POST /api/v1/models/{id}/deactivate", s.handleModelDeactivate)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)
 	mux.HandleFunc("GET /api/v1/captures/{name}", s.handleCapture)
+	mux.HandleFunc("POST /api/v1/architecture/estimate", s.handleArchitectureEstimate)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)
 	mux.HandleFunc("POST /api/v1/replay/stop", s.handleReplayStop)
@@ -369,10 +380,9 @@ func validClassName(name string) bool {
 	return false
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.modelList())
-}
-
+// modelList is the lightweight live-classifier list surfaced on /api/v1/status:
+// just what is actually scoring flows right now (the heuristic, or an activated
+// ONNX model). The full registry view is GET /api/v1/models (see models.go).
 func (s *Server) modelList() []map[string]string {
 	out := make([]map[string]string, 0, len(s.rt.Models()))
 	for _, m := range s.rt.Models() {

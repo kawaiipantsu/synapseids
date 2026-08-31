@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Architecture Builder** (issue #22, PROJECT.md §19.9). New `POST
+  /api/v1/architecture/estimate`: given a `schema.Architecture` body it returns
+  `{valid, error?, parameter_count, approx_bytes, rough_flops, layers[]}`. The
+  input/output layers are forced to the locked 48 / 7 regardless of the request
+  (§10). The parameter/size/FLOP math is a new shared `schema.Architecture`
+  method set — `ParameterCount`, `ApproxBytes`, `RoughFLOPs`, `LayerBreakdown` —
+  ported line-for-line from `trainer/synapse_trainer/architecture.py` so a UI
+  estimate agrees with what the trainer reports. `schema.ValidateArchitecture`
+  now also checks the hidden stack (width, activation, dropout range, residual
+  width match), mirroring the trainer.
+- The operator SPA's **ML ▸ Architecture** route is now wired (was a
+  "Planned — Phase 4" placeholder): locked `INPUT 48` / `OUTPUT 7` blocks, an
+  editable hidden-layer stack (add / delete / reorder, per-layer width /
+  activation / dropout / batchnorm / residual with the residual toggle disabled
+  and explained unless the previous width matches), a live estimates panel with
+  a per-layer parameter breakdown, a non-blocking "obviously excessive" warning
+  banner (any width > 2048, or total params > 50× the baseline net), and
+  copy / download / paste of the `schema.Architecture` JSON. The working draft
+  persists to `localStorage`.
+- **Model registry with lineage + explicit activation** (issue #26, EPIC Phase 2;
+  [ADR 0009](docs/adr/0009-model-registry-lineage-and-explicit-activation.md)).
+  - `internal/registry` records one entry per validated bundle — the §11
+    metadata plus `content_hash`, `artifact_bytes`, `derived_from`, `status`
+    (`registered` / `active` / `deactivated`), `registered_at`, `activated_at`
+    and the on-disk `dir` — in `registry.json` under `models.directory` (atomic
+    rewrite, corrupt-file tolerant). Rejects a bundle that fails the gate, a
+    content hash already registered under another id, or an id already registered
+    with another hash. `Lineage` / `Children` / `Tree` walk `derived_from` for
+    the §15 / §19.12 lineage view. At most one entry is `active`; a persisted
+    `active` is reconciled to `deactivated` on restart (activation never
+    auto-restores, PROJECT.md §28.10).
+  - `synapsed` startup now `Register`s every bundle `model.Scan` returns and logs
+    `POST /api/v1/models/{id}/activate to make it live` for `models.primary` —
+    it still activates nothing.
+  - `inference.Runtime` gains `Activate` / `Deactivate` / `SetModels`, swapping
+    the live model set atomically under an `RWMutex` (`Score` never sees a
+    half-swap). `Deactivate` restores the heuristic; while a trained model is
+    active it is the sole classifier.
+  - `internal/modelrun.Build` compiles a registered bundle into a live
+    `inference.Classifier` (`nn.LoadFile` + `normalizer.json` bridge +
+    `inference.NewONNXModel`).
+  - New REST routes: `GET /api/v1/models` (now `{ "models": [...], "runtime":
+    [...] }` — registry entries with per-entry `runtime {loaded, role}`, plus the
+    classifiers actually loaded), `GET /api/v1/models/{id}` (entry + `lineage` +
+    `children`), `GET /api/v1/models/{id}/lineage` (chain + children + forest),
+    `POST /api/v1/models/{id}/activate` (404 unknown / 409 no longer
+    loads·validates·compiles / 200 with the updated entry), `POST
+    /api/v1/models/{id}/deactivate` (restores the heuristic). State-changing and
+    unauthenticated for now — same posture as `POST /api/v1/replay`; RBAC is
+    issue #58.
+  - `internal/audit` appends `ModelRegistered` / `ModelActivated` /
+    `ModelDeactivated` to `models.directory/audit.log` (JSONL:
+    `{ts,event,actor,model_id,detail}`, `actor: "local"`). The same envelopes are
+    also published on the live event bus (already members of the frozen
+    `event-envelope-v1` enum — no new type added).
+  - `model.Metadata` gains an additive optional `derived_from` field (absent =
+    lineage root); the validation contract is unchanged.
 - **Live local-interface capture (Phase 3, GitHub issue #28).** `synapsed
   --capture <iface>` (repeatable), or `capture.sources[]` in the JSON config, or
   `SYNAPSE_CAPTURE_IFACE`, opens an `AF_PACKET` raw socket on a NIC and runs its
@@ -36,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   promiscuous, snaplen, filter }`. `filter` is `""` (everything) or a built-in
   cBPF preset (`ip`, `ip6`, `ip-any`, `not-arp`); tcpdump-style filter
   expressions are a follow-up (#29+).
+
 - `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
   `started`, `closed`, `snapshots` and `evicted` counters plus the configured
   `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
@@ -224,6 +282,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `GET /api/v1/models` returns an object (`{ "models": [...], "runtime": [...] }`)
+  instead of a bare array; the registry entries are the `models` list and the
+  previously-returned `{id, family, role}` triples are now `runtime` (with an
+  added `registered` flag). `/api/v1/status` keeps its lightweight `models` list.
+- `api.New` takes two new parameters — `*registry.Registry` and `*audit.Logger`,
+  both nil-tolerant (a nil registry makes the `/api/v1/models*` reads runtime-only
+  and the state-changing routes `503`).
 - `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
   capture)"; the replay-start `409` and the capture docs describe the wider
   accepted set.

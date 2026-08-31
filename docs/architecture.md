@@ -78,16 +78,20 @@ respected.
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
 | `capture` | `Source` interface + adapters: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW), `Replay` (paces an inner source to wall-clock × speed), and `AFPacket` (Phase 3 — stdlib-only Linux `AF_PACKET` raw socket; built-in cBPF filter presets; `Stats.Drops` from `PACKET_STATISTICS`; non-Linux stub). `Manager` runs N sources and merges them into one stream for a single pipeline goroutine, isolating a failed source; it is itself a `Source`. `Stats` counters (incl. `Drops`). See [ADR 0010](adr/0010-live-capture-af_packet-and-the-source-manager.md). | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api`, `config` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
-| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle` and `Architecture` + `ValidateArchitecture` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
+| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle`, and `Architecture` + `ValidateArchitecture` plus the shared `ParameterCount` / `ApproxBytes` / `RoughFLOPs` / `LayerBreakdown` estimate math (ported from the trainer). `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p` and the fitted `Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`). No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
 | `nn` | Dependency-free, CGO-free ONNX executor for the feed-forward MLPs the trainer emits: a hand-rolled protobuf-wire reader plus a batch-1, all-`float32`, deterministic graph runner over a fixed op subset (`Gemm`, `MatMul`, `Add`, `Relu`/`LeakyRelu`/`Sigmoid`/`Tanh`, `BatchNormalization`, `Dropout`, `Softmax`, `Identity`, `Flatten`, `Reshape`, `Constant`). Unknown op → load error; malformed model → error, never a panic. `Load`/`LoadFile`/`Model.Run`. See [ADR 0005](adr/0005-go-onnx-inference-runtime.md). | stdlib only | everything else internal |
-| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
-| `model` | `Load(dir)` for the five-file bundle; `Bundle` (inactive — `Meta` / `Normalizer` / `Metrics` / `Recipe` / `ONNXPath` / `Hash`); `Validate()`, the pre-activation gate; `Scan(dir, primary, logf)`, the startup sweep. `Executor` seam for the Phase-2 ONNX runtime. Activates nothing. | `features`, `schema` | `inference`, `pipeline`, `api`, `flow`, `packet`, `capture`, `storage`, `events` |
+| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary; `Activate` / `Deactivate` / `SetModels` swap the live model set atomically under an `RWMutex`), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
+| `model` | `Load(dir)` for the five-file bundle; `Bundle` (inactive — `Meta` / `Normalizer` / `Metrics` / `Recipe` / `ONNXPath` / `Hash`); `Validate()`, the pre-activation gate; `Scan(dir, primary, logf)`, the startup sweep. `Metadata.DerivedFrom` (optional `derived_from`) feeds registry lineage. Activates nothing. | `features`, `schema` | `inference`, `pipeline`, `api`, `flow`, `packet`, `capture`, `storage`, `events` |
+| `registry` | The model registry with lineage (§15, §19.12). `Open(dir, logf)` loads `registry.json` (atomic rewrite, corrupt-tolerant); `Register(*model.Bundle)` gates + records an `Entry`; `List` / `Get` / `Lineage` / `Children` / `Tree` / `Active`; `SetStatus` (`registered` → `active` → `deactivated`, one active at a time, reconciled to `deactivated` on restart). Runs no model. | `model`, `schema` | `api`, `pipeline`, `flow`, `features` |
+| `modelrun` | `Build(id, *model.Bundle) → inference.Classifier`: `nn.LoadFile` the graph, bridge the bundle's `normalizer.json` into `inference.Normalizer`, wrap with `inference.NewONNXModel`. The seam from "bundle passed the gate" to "model is scoring". | `features`, `inference`, `model`, `nn` | `api` |
+| `audit` | Append-only JSONL (`audit.log`, next to the bundles): one `{ts,event,actor,model_id,detail}` line per `ModelRegistered` / `ModelActivated` / `ModelDeactivated` (§21, §28.14). `actor` is `"local"` until RBAC (#58). Never blocks a request. | stdlib only | `api` |
+| `modeltest` | Test-only: `Write(dir, Bundle)` produces a valid, gate-passing five-file bundle with a real runnable 48→8→7 `model.onnx`, so registry/api/modelrun tests exercise register→activate→score without a committed binary fixture. | `nn/onnxbuild` | (tests only) |
 | `events` | In-process fan-out `Bus`: `Publish` (non-blocking), `Subscribe(depth)`, per-sub + bus drop counters, monotonic `seq`. Event type constants. | stdlib only | every other internal package (kept a leaf) |
 | `storage` | `Store` interface, `FlowRecord` / `Classification` DTOs, `FlowRecordFrom`, and `Mem` (fixed-capacity ring buffers, oldest evicted + counted). | `features`, `flow`, `inference` | `capture`, `events`, `api`, `pipeline` |
 | `wshub` | Dependency-free RFC 6455 server (`Upgrade`, text frames, ping/pong, disconnect detection) and `Hub` (per-client bounded send queue, drops slow clients). | stdlib only | `api`, `events`, `pipeline` |
 | `pipeline` | The wiring. `Run(ctx, src, rt, bus, store, opt)` consumes a `Source` to completion, driving `flow → features → inference → store + publish` on one goroutine. | `capture`, `events`, `features`, `flow`, `inference`, `storage` | `api`, `wshub` |
-| `api` | Versioned REST surface, the `/api/v1/stream` WebSocket, the event `pump` (bus → batched JSON arrays → `Hub`), `ReplayController` and `CaptureStatusProvider` interfaces (the latter backs `GET /api/v1/captures[/{name}]`), static file serving. | `capture`, `config`, `events`, `inference`, `schema`, `storage`, `version`, `wshub`, `web` | `pipeline`, `flow`, `features`, `packet` |
+| `api` | Versioned REST surface, the `/api/v1/stream` WebSocket, the event `pump` (bus → batched JSON arrays → `Hub`), `ReplayController` and `CaptureStatusProvider` interfaces (the latter backs `GET /api/v1/captures[/{name}]`), the `/api/v1/models*` routes (registry view + explicit `activate` / `deactivate` against the live `Runtime`), static file serving. | `audit`, `capture`, `config`, `events`, `inference`, `model`, `modelrun`, `registry`, `schema`, `storage`, `version`, `wshub`, `web` | `pipeline`, `flow`, `features`, `packet` |
 | `config` | Load one JSON file + `SYNAPSE_*` env overrides onto `Default()`; validate; `LoopbackOnly()`. JSON only (see [ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)). | stdlib only | everything else internal |
 | `version` | Build metadata stamped by `-ldflags`. | stdlib only | everything else internal |
 | `schemas` | `//go:embed` bytes of the three schema JSON documents. | `embed` | — |
@@ -235,8 +239,11 @@ feature.
   WebSocket, polls `/api/v1/status` once a second, fans event batches to
   subscribers, and keeps rolling client-side aggregates for the Dashboard.
 - **Wired views:** Dashboard, the full-screen Flow Log, the Flow Inspector
-  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), and Replay
-  control. Every other §19 route is a "Planned — Phase N" placeholder.
+  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), Replay
+  control, and the ML ▸ Architecture builder (`POST
+  /api/v1/architecture/estimate`; locked 48/7 edges, editable hidden stack, live
+  parameter/size/FLOP estimates, `schema.Architecture` export). Every other §19
+  route is a "Planned — Phase N" placeholder.
 
 ## Model bundles
 
@@ -271,11 +278,48 @@ present and parse, otherwise uninterpreted).
   (skipped if `dir` is absent). It `Load`+`Validate`s every immediate
   subdirectory and logs `loaded model "<dir>" (family …, N params) — INACTIVE`
   or `rejected model bundle "<dir>": <reason>`. Nothing is added to
-  `inference.Runtime`; a valid bundle named by `models.primary` only gets a line
-  saying activation is a separate explicit step, still to be wired.
+  `inference.Runtime`.
 - **`model.Executor`** (`Run([]float32) ([]float32, error)`) and `Bundle.Bind`
-  are the unused seam for the Phase-2 ONNX runtime (issue #24); validation stays
+  are the unused seam for a future in-bundle execution backend; validation stays
   runtime-free.
+
+## Model registry and explicit activation
+
+`internal/registry` (issue #26) turns the validated bundles from `model.Scan`
+into a persistent, inspectable registry with derived-from lineage, and
+`internal/modelrun` + `inference.Runtime.Activate` are the seam that makes one of
+them live. See [ADR 0009](adr/0009-model-registry-lineage-and-explicit-activation.md).
+
+- **Startup.** `cmd/synapsed` `Open`s the registry over `cfg.Models.Directory`
+  (loading `registry.json`), then `Register`s every bundle `Scan` returned. A
+  rejected bundle is logged. A bundle named by `models.primary` only gets a log
+  line pointing at `POST /api/v1/models/{id}/activate` — **nothing is
+  auto-activated** (§28.10). `inference.Runtime` still starts with only the
+  heuristic.
+- **`Entry`** carries the §11 metadata plus `content_hash`, `artifact_bytes`,
+  `derived_from`, `status` (`registered` / `active` / `deactivated`),
+  `registered_at`, `activated_at` and the on-disk `dir`. `registry.json` is
+  rewritten atomically (temp file + rename); a missing or corrupt file is logged
+  and the registry starts empty.
+- **Lineage.** `Lineage(id)` walks `derived_from` to the root; `Children(id)` and
+  `Tree()` give the forest for the §19.12 UI. A cycle or an unregistered parent
+  terminates the walk.
+- **Activation** (`POST /api/v1/models/{id}/activate`) re-loads and re-validates
+  the bundle, `modelrun.Build`s the `Classifier` (`nn.LoadFile` +
+  `normalizer.json` bridge + `inference.NewONNXModel`), then
+  `Runtime.Activate(cls)` swaps the live model set atomically and
+  `registry.SetStatus(id, "active")` demotes any prior active entry. A
+  `ModelActivated` line is appended to `audit.log`. `deactivate` calls
+  `Runtime.Deactivate()`, restoring the heuristic. Activation does not survive a
+  restart: a persisted `active` entry is reconciled to `deactivated` on load.
+- **Audit** (`internal/audit`). Every register / activate / deactivate appends
+  one `{ts,event,actor,model_id,detail}` line to `audit.log` (JSONL, next to the
+  bundles) and mirrors it to the structured log — the durable record (§21,
+  §28.14). `actor` is `"local"` until RBAC (#58). The matching
+  `ModelRegistered` / `ModelActivated` / `ModelDeactivated` envelopes — which are
+  already members of the frozen `event-envelope-v1` enum — are also published on
+  the live bus, so the SPA registry view can update without polling. No new
+  envelope type is introduced.
 
 ## What is not here yet
 
@@ -285,10 +329,10 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Missing | Present instead | Tracked |
 |---|---|---|
 | Live capture — tcpdump stream, SSH `tcpdump`, PCAP-over-IP; a pcap-filter-expression compiler; runtime add/remove of sources; live-capture flow-table stats on `/api/v1/status` | **Local NIC capture is wired** (`capture.AFPacket` + `capture.Manager`, `synapsed --capture <iface>` / `capture.sources[]`, `GET /api/v1/captures`; [ADR 0010](adr/0010-live-capture-af_packet-and-the-source-manager.md)). Filters are built-in cBPF presets (`ip`, `ip6`, `ip-any`, `not-arp`) only. `capture.PCAPFile` + `capture.Replay` still handle classic pcap and minimal pcapng. | see EPIC: Phase 3 (#28 done; #29–#32 open) |
-| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. The offline `synapse-trainer` that produces those bundles now lives in `trainer/` (Python/PyTorch; [ADR 0007](adr/0007-python-trainer-and-bundle-export.md)). A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
+| Anomaly / location / global / experimental model roles wired end to end | `internal/nn` runs ONNX MLPs; `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle; `internal/registry` records it with lineage; `POST /api/v1/models/{id}/activate` compiles it and swaps it into `inference.Runtime` as the single `RolePrimary`, `deactivate` restores `inference.Heuristic` (issues #24–#26; [ADR 0009](adr/0009-model-registry-lineage-and-explicit-activation.md)). Multi-model ensembles (a trained primary *and* a shadow/anomaly peer at once) are not wired yet — `Runtime.SetModels` is the seam. The offline `synapse-trainer` lives in `trainer/` ([ADR 0007](adr/0007-python-trainer-and-bundle-export.md)). | see EPIC: Phase 2 / 7 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
-| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
+| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector, Replay control and the Architecture builder wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
 | Anomaly model, model compare, drift, human review, datasets, training UI | — | see EPIC: Phase 4, Phase 5, Phase 7 |
 | YAML config, retention sweeper, host/investigation/detection API groups | JSON config; rings are size-bounded, not time-bounded | see EPIC: Phase 2 ([ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)), Phase 5 |
 

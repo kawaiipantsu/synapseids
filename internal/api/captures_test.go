@@ -30,7 +30,7 @@ func (s stubCaptures) Get(name string) (capture.SourceStatus, bool) {
 func serverWithCaptures(cp CaptureStatusProvider) http.Handler {
 	return New(config.Default(), events.New(), storage.NewMem(100, 100),
 		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
-		nil, nil, cp).Handler()
+		nil, nil, nil, nil, cp).Handler()
 }
 
 func TestCapturesEmptyWithoutProvider(t *testing.T) {
