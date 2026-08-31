@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-import { getClassSchema, getFeatureSchema, getFlow } from '../api/client'
-import type { Classification, ClassSchema, FeatureSchema, FlowRecord } from '../api/types'
+import { getClassSchema, getFeatureSchema, getFlow, getReview } from '../api/client'
+import type { Classification, ClassSchema, FeatureSchema, FlowRecord, Review } from '../api/types'
 import { classColor } from '../lib/classes'
 import {
   endpoint,
@@ -46,6 +46,28 @@ export function FlowInspector({ cls, onClose }: Props) {
   const [cSchema, setCSchema] = useState<ClassSchema | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Human review status (§19.3, §16). Fetched separately from the flow so a
+  // review-store outage never blanks the rest of the drawer; a flow nobody has
+  // reviewed resolves to null, which is the common case and not an error.
+  const [review, setReview] = useState<Review | null>(null)
+  const [reviewErr, setReviewErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setReview(null)
+    setReviewErr(null)
+    getReview(cls.flow_id)
+      .then((r) => {
+        if (alive) setReview(r)
+      })
+      .catch((e: unknown) => {
+        if (alive) setReviewErr(e instanceof Error ? e.message : String(e))
+      })
+    return () => {
+      alive = false
+    }
+  }, [cls.flow_id])
 
   useEffect(() => {
     let alive = true
@@ -305,11 +327,56 @@ export function FlowInspector({ cls, onClose }: Props) {
               today; snapshot history needs the SQLite store.
             </p>
           </div>
-          <div className="sect stub">
-            <h4>
-              Human review status <span className="tag">Phase 2</span>
-            </h4>
-            <p className="dim">Part of the Phase-5 human-review loop; no review state is persisted yet.</p>
+          {/* ---- human review status (§19.3, §16; issue #42) ---- */}
+          <div className="sect">
+            <h4>Human review status</h4>
+            {reviewErr ? (
+              <p className="dim">review status unavailable — {reviewErr}</p>
+            ) : review == null ? (
+              <p className="dim">
+                not reviewed. Confirm or correct this verdict in{' '}
+                <a href="#/review">LIVE ▸ Review</a>.
+              </p>
+            ) : (
+              <dl className="kv">
+                <dt>state</dt>
+                <dd>
+                  <span className={`rv-state rv-${review.state}`}>
+                    {review.state.replace('_', ' ')}
+                  </span>
+                </dd>
+                <dt>human label</dt>
+                <dd>
+                  {review.effective_label ? (
+                    <span className="pill" style={{ background: classColor(review.effective_label) }}>
+                      {review.effective_label.toUpperCase()}
+                    </span>
+                  ) : (
+                    <span className="dim">— (this state asserts no class)</span>
+                  )}
+                </dd>
+                {/* The §16 invariant, made visible: the prediction as it was at
+                    review time, shown alongside and never replaced. */}
+                <dt>model said (frozen)</dt>
+                <dd>
+                  <span className="pill" style={{ background: classColor(review.predicted_class) }}>
+                    {review.predicted_class.toUpperCase()}
+                  </span>{' '}
+                  <b>{fmtPct(review.predicted_score)}</b>{' '}
+                  <span className="dim">· {review.model_id || '—'}</span>
+                </dd>
+                <dt>note</dt>
+                <dd>{review.note || <span className="dim">—</span>}</dd>
+                <dt>reviewer</dt>
+                <dd>{review.reviewer}</dd>
+                <dt>revisions</dt>
+                <dd title={review.history.map((h) => `${h.ts}: ${h.state}`).join('\n')}>
+                  {fmtInt(review.history.length)}
+                </dd>
+                <dt>updated</dt>
+                <dd className="mono">{fmtDateTime(review.updated_at)}</dd>
+              </dl>
+            )}
           </div>
           <div className="sect stub">
             <h4>

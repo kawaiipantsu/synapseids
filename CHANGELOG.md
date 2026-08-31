@@ -9,6 +9,228 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The daemon-side SYNPOIP collector, and real sensor identity** (issues #43 and
+  #103, EPIC Phase 6;
+  [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)).
+  `synapse-sensor pcap-over-ip --connect <daemon>` — the reverse/outbound posture
+  #98 built for a sensor behind NAT — is **usable end to end** for the first time:
+  `synapsed` now has something to dial.
+  - **`capture.Collector`** (`internal/capture/collector.go`) — a long-lived TLS
+    listener that accepts sensor connections. It is a *listener*, not a dialled
+    target, so it is a distinct `capture.collector` config block rather than a
+    `capture.sources[]` kind; all four existing kinds are untouched. Off by
+    default (`listen: ""` = no new listening socket).
+  - **No wire change.** Per PROTOCOL.md §6 the accepting daemon still sends the
+    ClientHello and the sensor answers with a ServerAccept and streams frames, so
+    the collector runs the SYNPOIP **client** half (`pcapoverip.ClientHandshake`
+    + a frame loop) on each accepted connection. `protocol.go` is byte-for-byte
+    unchanged and there is no version bump.
+  - **One `capture.Manager` source per accepted peer**, via the new internal
+    `sessionSource` adapter: `kind: "pcap-over-ip-listen"`, `origin: "collector"`,
+    named after the sensor id (de-duplicated with a short session suffix if two
+    sensors claim the same id, falling back to the remote address). Packets join
+    the one merged channel the single pipeline goroutine drains. When the stream
+    ends — goodbye, EOF, read-idle or shutdown — the row is **removed**, not left
+    as `stopped`. The sensor-advertised filter and the accept-time handshake
+    latency surface in the existing capture row.
+  - **Bounded accept** (PROJECT.md §21): `max_sensors` (default 32) caps
+    *registered* sensors, and a looser `max_sensors + 16` caps connections still
+    handshaking, so a stream of probes cannot starve real sensors. An over-cap
+    peer is closed before any TLS or SYNPOIP work; rejections are counted
+    (capacity / TLS / auth / protocol) and logged.
+  - **Auth posture.** Because the SYNPOIP roles do not invert with the TCP
+    direction, the bearer token proves the *daemon* to the sensor (which verifies
+    it with `crypto/subtle`), and `client_ca_file` →
+    `RequireAndVerifyClientCert` is what authenticates the *sensor* to the
+    daemon. An inline `token` is refused (§23; use `token_file` or
+    `SYNAPSE_COLLECTOR_TOKEN`), and `authorized: true` is required to enable the
+    collector at all (§28.18). A missing or unreadable certificate is logged once
+    and the daemon keeps serving the API, degraded — like a NIC that cannot open.
+  - **Sensor identity** (#43). `synapse-sensor` resolves `--sensor-id` /
+    `SYNAPSE_SENSOR_ID` / the hostname and `--location` /
+    `SYNAPSE_SENSOR_LOCATION`, and announces id + location + agent version +
+    `os/arch` in the accept's `session_id` as
+    `<sensor_id>|<location>|<agent_version>|<os/arch>` before the random suffix
+    (`pcapoverip.FormatSessionPrefix` / `ParseSensorIdentity`). Not a wire change:
+    `session_id` was already free-form and capped. Fields are sanitised of the
+    separator and of control bytes and individually clipped, and a prefix with no
+    separator still parses as a bare sensor id, so session ids from older sensors
+    keep working.
+  - **`GET /api/v1/sensors` and `GET /api/v1/sensors/{id}`** — the connected
+    sensors: `sensor_id`, `location`, `remote_addr`, `link_type`, `filter`,
+    `connected_at`, `packets`, `bytes`, `drops`, `pps`, `bps`, `last_packet`,
+    `state`, plus `agent_version` / `os_arch` / `session_id` / `source_name`. The
+    collector's own view of its peers, joined with the live counters of the
+    matching Manager row. Read-only (a sensor is added and removed by connecting
+    and disconnecting) and loopback-only like the rest of the state surface
+    (§21, `TODO(#58)`). Wired through a new `api.SensorStatusProvider` — a
+    twelfth `api.New` parameter, appended so existing arguments do not move;
+    `nil` yields `[]` / `404`, never `503`.
+  - **`events.SensorConnected` / `events.SensorDisconnected`** are now actually
+    published, from `Collector.OnConnect` / `OnDisconnect` hooks in
+    `cmd/synapsed` (the hooks keep `internal/capture` off the event bus). Both
+    were already in the frozen `event-envelope-v1` enum — nothing was added.
+  - **`synapse-sensor gen-cert`** writes a self-signed ECDSA P-256 pair (cert
+    `0644`, key `0600`) and prints its SHA-256, so a testing collector can be
+    stood up without an `openssl` incantation; the certificate is its own CA, so
+    the `.crt` doubles as the sensor's `--ca`. No certificate-management
+    subsystem was added — production provisions from its own PKI, and
+    `docs/api.md` documents the equivalent `openssl req`.
+  - `synapse-sensor` with no subcommand now prints its build stamp and exits 0
+    instead of exiting 1 with a "not implemented" notice.
+  - Config: `capture.collector` with `listen` / `cert_file` / `key_file` /
+    `token_file` / `client_ca_file` / `max_sensors` / `authorized`, validated by
+    `config.ValidateCollector`; `SYNAPSE_COLLECTOR_LISTEN` and
+    `SYNAPSE_COLLECTOR_TOKEN` env overrides; `capturewire.BuildCollector` /
+    `ResolveCollectorToken`; sample `contrib/config/synapse.collector.json`.
+  - Tests: collector registration / streaming / goodbye-removal, a rejected
+    token, mTLS required (negative **and** positive), the `max_sensors` cap,
+    five concurrent sensors under `-race`, the identity codec round trip and its
+    legacy form, the config rules, the API routes, a `synapse-sensor` hello-meta
+    assertion and a goroutine-leak check, and a full
+    sensor → collector → pipeline → classification end-to-end test.
+  - Docs: ADR 0018, `docs/api.md`, `docs/architecture.md`, `README.md`,
+    `docs/opnsense-sensor.md`, `contrib/opnsense/README.md`,
+    `contrib/config/synapse.annotated.md`, and PROTOCOL.md §6's "not wired yet"
+    paragraph retired. Still open: sensor `flow` / `feature` modes (#45) and the
+    sensor-topology view (#46).
+- **Model activation workflow + audit log** (issue #36, EPIC Phase 4;
+  [ADR 0022](docs/adr/0022-auditable-model-activation-workflow.md)). The audit
+  log was write-only and `ML ▸ Models` was a placeholder, so the one action
+  PROJECT.md §28.10 singles out as requiring a deliberate human step had no
+  operator surface and left no inspectable trail. Both are now real.
+  - **`internal/audit` gained a read path.** `Tail(n, Filter)` returns records
+    **newest first**, seeking to EOF and scanning backwards in 64 KiB chunks.
+    Bounded twice: `MaxTail` caps the result at 1000 records (`DefaultTail` 100),
+    and `MaxScanBytes` stops the scan 8 MiB back from EOF, so the whole file is
+    never read and request cost does not grow with the log. A torn trailing line
+    from a crash mid-append is skipped, not fatal; a log file that does not exist
+    yet reads as empty, not an error.
+  - `GET /api/v1/audit` — read-only, `limit` (default 100, max 1000),
+    `subject_type=`, `subject=`, `event=`, `from=`/`to=` (RFC3339, inclusive),
+    reusing the existing `limitParam` / `parseTimeRange` helpers. The response
+    echoes `limit`, `max_limit` and `scan_bytes_cap` so a client can say what it
+    is not showing.
+  - **Append-only forever.** `GET` is the only method routed at `/api/v1/audit`;
+    `POST`/`PATCH`/`DELETE` return `404` and always will. An audit trail an
+    operator can curate after the fact records nothing worth reading (§21). The
+    trail is sensitive operational history and inherits the loopback-by-default,
+    unauthenticated posture of the rest of the API until issue #58.
+  - **`Filter` is generic over subject types.** `subject_type` is compared as an
+    opaque string and never validated against an enum, so §21's fourth category
+    — human label changes, arriving as a `review` subject type with issue #42 —
+    becomes readable and filterable the moment it is first written, with no
+    change to the reader, the route or the UI's filter chips (which derive
+    themselves from the records).
+  - **SPA:** `ML ▸ Models` replaces the "Planned — Phase 2" placeholder with the
+    §19.12 field set — registry table (status pill, parameter count, artifact
+    size, short content hash, live-in-runtime), detail pane with schemas and I/O
+    sizes, a read-only architecture breakdown, training dataset ids, metrics, the
+    confusion matrix, lineage as a tree (§15), the per-model audit trail, and a
+    global audit view with a chip per subject type. `architecture` and `metrics`
+    are bundle pass-throughs and are parsed defensively — an unreported metric
+    reads as missing, never as zero.
+  - **Activation is confirmation-gated (§28.10).** **Activate** opens a
+    confirmation that names the model, states plainly that it will become the
+    primary classifier for *all live traffic*, names what it replaces, lists the
+    content hash / parameter count / artifact size / provenance, and warns that
+    the action is audited and does not survive a restart. **Deactivate** confirms
+    the heuristic will be restored. A `409` (bundle no longer loads, no longer
+    validates, or cannot be compiled) is surfaced **verbatim**. There is
+    deliberately no "auto-activate on register", no "activate newest" and no bulk
+    activate — §28.10 forbids the mechanism, so the UI offers no switch that
+    could become one.
+
+- **Human review queue and curated datasets** (issues #42 and #64, EPIC Phase 5;
+  [ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md)). The
+  `capture → classification → human review → curated dataset` half of
+  PROJECT.md §16's lifecycle now exists end to end. #64's "active-learning review
+  queue" is folded in and closed here as the queue's `uncertainty` ranking. No
+  `event-envelope-v1` change — `ReviewUpdated` was already a member of the frozen
+  enum (§28.5-6).
+  - **The §16 invariant is enforced structurally, not by convention.** "Always
+    retain the original model prediction separately from the human-reviewed
+    label" is a safety property, so the prediction lives in an *unexported*
+    `prediction` value inside `review.Review` with no exported constructor and no
+    setter, and the only mutator — `Put(flowID, state, label, note)` — has no
+    prediction parameter for a caller to fill. The store captures the verdict
+    itself, once, on a flow's first review, and copies it forward untouched
+    afterwards. On the wire, `predicted_class` / `predicted_score` / `model_id`
+    are read-only and the write body rejects them as unknown fields (`400`). A
+    correction can add information; it can never destroy the model's claim.
+  - `internal/review` — the review store. One JSON file per reviewed flow under
+    the new `review.directory` (atomic temp-file+rename, corrupt-file tolerant,
+    loaded on start), fronted by an RWMutex-guarded memory index, mirroring
+    `internal/training`. A record carries the five §16 states
+    (`unreviewed` | `correct` | `incorrect` | `unsure` | `ignored_pattern`), the
+    human label, the frozen prediction, `reviewer` (`"local"` until #58), a note,
+    timestamps and a `history` of superseded decisions so a correction is
+    traceable. Deliberately **not capped**: reviews are human-paced, and
+    hand-labelled ground truth is the most expensive data in the system.
+  - **Per-state rules,** because a state either asserts a class or it does not.
+    `correct` derives its label from the prediction (a differing `human_label` is
+    a `400` pointing at `incorrect`); `incorrect` **requires** a
+    `traffic-classes-v1` class and it must differ from the prediction;
+    `unsure`, `ignored_pattern` and `unreviewed` must carry no label —
+    `ignored_pattern` means "stop showing me this", not "this is class X".
+    Writing `unreviewed` un-reviews a flow and returns it to the queue with its
+    history intact.
+  - **Active-learning ranking (#64).** `GET /api/v1/review/queue?sort=uncertainty`
+    orders by **smallest margin** (`p_top1 - p_top2` over the authoritative
+    model's 7-class vector, normalised by its sum first), reported as
+    `uncertainty = 1 - margin` with normalised Shannon entropy and the two
+    contending class names alongside — so the flows the model is least able to
+    settle reach a human first, and the UI can say why. A uniform vector ranks
+    first (margin 0, entropy 1); a verdict with no usable vector is flagged
+    `scores_available: false` and treated as maximally uncertain rather than
+    hidden. `sort=disagreement` leads with ensemble disagreements;
+    `sort=recent` is the default. A flow leaves the queue on a terminal decision
+    (`correct` / `incorrect` / `ignored_pattern`); **`unsure` stays in**, with its
+    note carried forward.
+  - REST `internal/api/review.go`: `GET /api/v1/review/queue`,
+    `GET /api/v1/review` (filter by `state`), `GET /api/v1/review/stats` (counts
+    per state), `GET /api/v1/review/{flow_id}`, and
+    `PUT`/`POST /api/v1/review/{flow_id}` (`201` first review, `200` correction).
+    `400` on an unknown state or a non-class label — the error echoes the valid
+    set; `404` when the flow has no stored classification, because you cannot
+    review a verdict the bounded ring has already evicted. The queue reuses the
+    shared `parseClassFilters`, so `class` / `model` / `min_confidence` /
+    `disagreement` mean exactly what they mean on `/api/v1/classifications`. The
+    write routes are loopback-only and unauthenticated for now (`TODO(#58)`).
+  - **Curated datasets — the `human_review` gate is open.** `dataset.Selection`
+    gains `reviewed`: the rows come from the review store and the CSV `label`
+    column carries the **operator's** label, so `labeling_source` becomes
+    `human_review`. Only terminal, class-asserting reviews are eligible
+    (`correct` → the confirmed prediction, `incorrect` → the correction);
+    `unsure` and `ignored_pattern` are excluded, the latter opt-in-able via
+    `include_ignored`, which labels those rows with the model's *unconfirmed*
+    prediction and honestly records the cut as
+    `human_review+model_prediction:<ids>` with a warning. Both build paths share
+    one tail, so a curated cut keeps every existing guarantee: immutability, the
+    content hash over the CSV bytes, deterministic row order, `parent_datasets`
+    lineage, and the zero-rows / one-class / 20-row refusals. `disagreement`
+    combined with `reviewed` is refused rather than silently ignored.
+  - **Config:** `review.directory` (default `./data/review`), overridable with
+    `SYNAPSE_REVIEW_DIR`; an empty value is rejected at load.
+  - **Audit and events:** every write appends one
+    `{subject_type:"review", subject:"<flow id>", event:"ReviewUpdated"}` line to
+    `audit.log` — the "human label changes" record PROJECT.md §21 asks for —
+    carrying both the human label and the prediction, and publishes a
+    `ReviewUpdated` envelope on the live bus.
+  - **SPA:** a new `LIVE ▸ Review` view (`#/review`) with the sort selector, a
+    per-state stats strip, and one row per queued flow showing the tuple, the
+    model's prediction with its confidence, the margin/entropy read-out when
+    sorting by uncertainty, and controls for all five states plus a class picker
+    and a note field. The model's prediction sits **next to** the human label at
+    all times and never replaces it — the invariant made visible. A
+    "create curated dataset" action prefills the ML ▸ Datasets form with a
+    `reviewed` selection, and that form gained `reviewed` / `include_ignored`
+    checkboxes. The dataset honesty banner and the `labeling_source` badge now
+    tell the truth for all three cases, and the **Flow Inspector**'s
+    human-review section (§19.3) is live instead of a Phase-2 stub.
+    `#/detections` is untouched — it remains a "Planned — Phase 5" placeholder,
+    since nothing emits `AlertCreated` yet.
+
 - **Downloadable investigation reports** (issue #66, EPIC Phase 5;
   [ADR 0023](docs/adr/0023-downloadable-investigation-reports.md)). An operator
   can now hand an investigation to someone else as one self-contained artefact —
@@ -69,6 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `#/hosts`. Rendering stays server-side; both are plain `<a href>`
     navigations, so the browser's own download path is used. The client grows
     ~0.35 KB gzip.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature
@@ -874,6 +1097,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three audit-coverage gaps in the model lifecycle** (issue #36). Each made the
+  log disagree with reality, and each was only visible once the log could be read
+  back as a sequence of state changes:
+  - Activating B while A was active demoted A in the registry but wrote no record
+    under A, so A's most recent audit line still said *activated* while it was
+    not live. `POST /api/v1/models/{id}/activate` now writes A's implicit
+    `ModelDeactivated` under A's own subject, ordered before B's activation.
+  - A model active at shutdown is reconciled to `deactivated` on restart — a real
+    state change that was never audited. `registry.Reconciled()` now reports the
+    demoted IDs and `cmd/synapsed` audits each; the reconciliation is persisted,
+    so this is written once rather than on every boot.
+  - `ModelRegistered` was appended on every boot for bundles the registry already
+    knew (`Register` is idempotent), burying real changes in duplicates. The
+    startup sweep now audits only a genuinely new registration.
+  - Smaller honesty fix: deactivating an entry that was never the live primary is
+    a legal no-op, and its record no longer claims it "restored the heuristic".
+- The stale `getModels()` client helper claimed `Promise<ModelInfo[]>` while
+  `GET /api/v1/models` returns `{models, runtime}`. It had no call sites; it is
+  now correctly typed and used by `ML ▸ Models`.
 - `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
   every 256 packets. The unpaced emit loop previously had no blocking point, so
   on a single-CPU host a long replay could monopolise the Go scheduler and delay

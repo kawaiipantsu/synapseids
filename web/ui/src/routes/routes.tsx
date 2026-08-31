@@ -9,7 +9,9 @@ import { Datasets } from './Datasets'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
+import { Models } from './Models'
 import { ReplayPage } from './ReplayPage'
+import { ReviewQueue } from './Review'
 import { Timeline } from './Timeline'
 import { Training } from './Training'
 
@@ -37,6 +39,11 @@ export const ROUTES: RouteDef[] = [
   { group: 'LIVE', path: '/investigate', label: 'Investigate', tag: 'live', live: true, element: <Investigate /> },
   { group: 'LIVE', path: '/hosts', label: 'Hosts', tag: 'live', live: true, element: <Hosts /> },
   { group: 'LIVE', path: '/timeline', label: 'Timeline', tag: 'live', live: true, element: <Timeline /> },
+  // The human review loop (§16; issues #42 and #64): the ranked queue, the five
+  // review states, and the curated-dataset hand-off. Distinct from Detections
+  // below, which is still a placeholder — a review is about a classification
+  // that exists, an alert is about a detection resource that does not yet.
+  { group: 'LIVE', path: '/review', label: 'Review', tag: 'live', live: true, element: <ReviewQueue /> },
   {
     group: 'LIVE',
     path: '/detections',
@@ -70,9 +77,9 @@ export const ROUTES: RouteDef[] = [
     group: 'ML',
     path: '/models',
     label: 'Models',
-    tag: 'P2',
-    live: false,
-    element: P(2, 'Model Registry', 'EPIC: Phase 2 — Real Inference', 'Loaded models are listed on the Dashboard today. The registry (§19.12) — schema, architecture, datasets, lineage, metrics, confusion matrices — arrives with trained ONNX models.'),
+    tag: 'live',
+    live: true,
+    element: <Models />,
   },
   {
     group: 'ML',

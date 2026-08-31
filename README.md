@@ -28,7 +28,7 @@
 >
 > **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Hosts, Investigate, Timeline, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
 >
-> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
+> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), sensor `flow` / `feature` modes and the sensor-topology view (a `synapse-sensor` agent streaming raw records **does** work, in both directions — see [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)), and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
 <br/>
 
@@ -94,7 +94,7 @@ schema so it carries its own name, calculation and unit:
 
 <p align="center"><img src="assets/screenshots/webui-flow-inspector-features.png" alt="The Flow Inspector scrolled to the raw flow-features-v1 table, listing each feature index, name, calculation, value and unit" width="100%"></p>
 
-<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Normalized inputs, snapshot history and human-review status are labelled Phase-2 stubs.</sub>
+<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Human-review status is live (<code>GET /api/v1/review/{flow_id}</code>, §16). Normalized inputs and snapshot history are still labelled Phase-2 stubs.</sub>
 
 ### Live capture sources
 
@@ -245,12 +245,47 @@ synapse-sensor pcap-over-ip --listen :4789 --iface eth0 --filter ip-any --promis
     --authorized --sensor-id edge-01 --location dmz --token-file ./poip.token
 
 # outbound: the sensor dials the daemon, so a box behind NAT needs no inbound hole.
-# The sensor half is complete; synapsed has no collector endpoint to dial yet (ADR 0014).
 synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --direction in \
-    --authorized --ca ./daemon-ca.pem --cert ./sensor.pem --key ./sensor.key --token-file ./poip.token
+    --authorized --sensor-id edge-1 --location wan \
+    --ca ./collector.crt --cert ./sensor.pem --key ./sensor.key --token-file ./poip.token
 ```
 
 A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 --from testdata/pcap/portscan.pcap --token-file poip.token` then point a `pcap-over-ip` source (with `insecure_tls` + `authorized`) at `127.0.0.1:4789`: `GET /api/v1/captures` counts the packets with a real `connection_latency_ms`, and `GET /api/v1/classifications` returns the port-scan flows as `scan`. See `contrib/config/synapse.pcap-over-ip.json`.
+
+**Reverse connect — the daemon-side collector (Phase 6, issues #43/#103, [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)).** `--connect` above needs something to dial. A `capture.collector` block stands up a TLS listener that accepts sensors and registers **one capture source per connected peer**, so a fleet behind NAT streams inward without any inbound firewall hole on the sensors:
+
+```jsonc
+"capture": {
+  "collector": {
+    "listen": "0.0.0.0:4789",
+    "cert_file": "/etc/synapseids/collector.crt",   // the daemon is the TLS *server* in this direction
+    "key_file":  "/etc/synapseids/collector.key",
+    "token_file": "/etc/synapseids/collector.token", // presented to each sensor; never inline (§23)
+    "client_ca_file": "/etc/synapseids/sensors-ca.pem", // optional mTLS — this is what authenticates the sensor
+    "max_sensors": 32,                               // bounded accept (§21); 0 = 32
+    "authorized": true                               // required to enable the collector (§21/§28.18)
+  }
+}
+```
+
+It is a distinct block, not a `capture.sources[]` kind, because it is a *listener* that spawns N sources rather than a source that dials one target. `SYNAPSE_COLLECTOR_LISTEN` / `SYNAPSE_COLLECTOR_TOKEN` override the address and the secret. The SYNPOIP wire format is **unchanged**: on a reverse connection the accepting daemon still sends the ClientHello and the sensor answers ([PROTOCOL.md §6](internal/capture/pcapoverip/PROTOCOL.md)). Sensor identity — `--sensor-id` / `SYNAPSE_SENSOR_ID` / hostname, `--location` / `SYNAPSE_SENSOR_LOCATION`, plus agent version and `os/arch` — travels in the handshake and surfaces on **`GET /api/v1/sensors`**, alongside the peer's row in `GET /api/v1/captures` (`kind: "pcap-over-ip-listen"`). Connects and drops publish `SensorConnected` / `SensorDisconnected` on the live channel.
+
+Loopback end-to-end demo:
+
+```bash
+synapse-sensor gen-cert --host 127.0.0.1 --cert collector.crt --key collector.key
+printf 'reverse-secret' > collector.token && chmod 600 collector.token
+synapsed --config contrib/config/synapse.collector.json &
+
+synapse-sensor pcap-over-ip --connect 127.0.0.1:4789 --token-file collector.token \
+    --sensor-id edge-1 --location wan --ca collector.crt --from ./capture.pcap --speed 1 &
+
+curl -sS http://127.0.0.1:8080/api/v1/sensors    # edge-1@wan, running, packets climbing
+curl -sS http://127.0.0.1:8080/api/v1/captures   # the same peer, kind pcap-over-ip-listen
+synapse classifications                          # flows from the sensor, classified
+```
+
+A missing or unreadable collector certificate is logged and the daemon keeps serving the API. Sensor `flow` / `feature` modes (#45) and the sensor-topology view (#46) are still open.
 
 #### 🛡️ OPNsense WAN sensor
 
@@ -323,10 +358,24 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 Cutting a dataset materialises the selected flows to
 `datasets.directory/<id>/<version>/{dataset.csv,manifest.json}`; the CSV is the
 48 `flow-features-v1` columns plus `label`, which is exactly what the Python
-trainer's `load_csv` reads. **Phase-4 datasets are labelled by the daemon's own
-model predictions, not by human review** (issue #42) — every manifest says so in
-`labeling_source`. See [`docs/api.md`](docs/api.md) and
-[ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md).
+trainer's `load_csv` reads.
+
+**Two kinds of dataset, and the manifest always says which.** A default cut is
+labelled by the daemon's own model predictions —
+`labeling_source: "model_prediction:<ids>"` — and is never presented as ground
+truth. A cut with `"selection": {"reviewed": true}` is built from the human review
+loop (§16, issue #42) and uses the label an operator confirmed or corrected, so
+its `labeling_source` reads `human_review`. Reviewing is
+`PUT /api/v1/review/{flow_id}` with one of the five §16 states, driven by the
+`LIVE ▸ Review` view; `GET /api/v1/review/queue?sort=uncertainty` ranks the flows
+the model is least sure about (smallest top-1/top-2 margin) first, so a human's
+attention goes where it buys the most (issue #64). **The model's original
+prediction is always retained beside the human label** — `predicted_class`,
+`predicted_score` and `model_id` are captured at review time and there is no code
+path, and no request field, that can change them. See
+[`docs/api.md`](docs/api.md),
+[ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md) and
+[ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md).
 
 <br/>
 

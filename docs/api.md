@@ -748,7 +748,9 @@ dataset version on disk. Body is JSON, unknown fields rejected, 64 KiB cap.
     "min_confidence": 0.8,
     "disagreement": false,
     "limit": 5000,
-    "scan": 200000
+    "scan": 200000,
+    "reviewed": false,
+    "include_ignored": false
   }
 }
 ```
@@ -774,6 +776,39 @@ flows. `scan` is how many recent verdicts to walk (default 200 000, capped at
 A flow contributes exactly **one row**; where it was classified more than once
 (a long flow's periodic snapshots) the newest verdict wins. Rows are sorted by
 flow id, which is what makes `content_hash` reproducible.
+
+**`selection.reviewed` — a curated, human-labelled cut** (PROJECT.md §16, issue
+#42; ADR 0021). With `"reviewed": true` the rows come from the human review store
+instead of the classification ring, and the CSV `label` column carries the
+**operator's** label rather than the model's prediction. This is the only way
+`labeling_source` can become `human_review`; there is no request field that could
+assert it directly.
+
+Eligibility by review state:
+
+| state | included | label |
+|---|---|---|
+| `correct` | yes | the prediction the human confirmed |
+| `incorrect` | yes | the human's correction |
+| `ignored_pattern` | only with `"include_ignored": true` | the model's *unconfirmed* prediction |
+| `unsure` | no | — |
+| `unreviewed` | no | — |
+
+`labeling_source` is therefore `human_review` when every row's label was asserted
+by a person, and `human_review+model_prediction:<ids>` for a mixed cut (which
+also carries a `warnings` entry naming how many rows are unconfirmed). Every
+other guarantee is unchanged: immutability, `content_hash` over the CSV bytes,
+sort by flow id, `parent_datasets` lineage, and the zero-rows / one-class /
+`min_rows` refusals.
+
+In a reviewed cut the remaining predicates read differently, because there is no
+classification to match against: `class` filters on the **human** label, `model`
+and `min_confidence` on the *captured* prediction, `from`/`to` on the flow's
+last-seen time, and `proto`/`initiator_ip`/`responder_ip` on the stored flow
+record. `scan` is ignored (reviews are not a ring). `disagreement` combined with
+`reviewed` is a `400`: a review record keeps the model's class, score and id, not
+the ensemble's disagreement flag, so there is nothing to filter on.
+`include_ignored` without `reviewed` is also a `400`.
 
 Responses:
 
@@ -905,6 +940,205 @@ derive and delete are written to `models.directory/audit.log` with
 live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
 (see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
 
+### GET /api/v1/review/queue
+
+The flows that still need a human, ranked (PROJECT.md §16; issues #42, #64. See
+[ADR 0021](adr/0021-human-review-loop-and-curated-datasets.md)).
+
+Query parameters:
+
+| Param | Meaning |
+|---|---|
+| `sort` | `uncertainty` \| `recent` (default) \| `disagreement`. An unknown value is a `400` echoing the valid set. |
+| `limit` | Page size, default 100, max 2000. Applied **after** ranking. |
+| `class`, `model`, `min_confidence`, `disagreement` | The shared classification filters — identical meaning to `GET /api/v1/classifications`, including `min_confidence > 1` read as a percentage. |
+
+```json
+{
+  "queue": [
+    {
+      "flow_id": 15,
+      "ts": "2026-08-31T08:41:39Z",
+      "sensor": "local",
+      "proto": "TCP",
+      "initiator_ip": "10.10.10.22", "initiator_port": 36862,
+      "responder_ip": "160.79.104.10", "responder_port": 443,
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "disagreement": false,
+      "scores": [0.1580, 0.0, 0.0, 0.0, 0.0, 0.8366, 0.0053],
+      "top1": "web_attack", "top2": "normal",
+      "margin": 0.6786, "uncertainty": 0.3214, "entropy": 0.245,
+      "scores_available": true,
+      "review_state": "unreviewed"
+    }
+  ],
+  "sort": "uncertainty",
+  "scanned": 1176,
+  "vocabulary": { "states": [ … ], "classes": [ … ], "sorts": [ … ] },
+  "ranking": {
+    "uncertainty": "1 - (p_top1 - p_top2) over the authoritative model's 7-class probability vector; larger = review sooner",
+    "entropy": "normalised Shannon entropy over the 7 classes, 0 (certain) .. 1 (uniform)"
+  }
+}
+```
+
+**The ranking.** `sort=uncertainty` is the active-learning order issue #64 asks
+for: **smallest margin first**, where `margin = p_top1 - p_top2` over the
+authoritative model's 7-class vector (normalised by its sum first, so an
+unnormalised vector cannot skew it). `uncertainty` is reported as `1 - margin` so
+bigger always means "review sooner". Normalised entropy is reported alongside.
+A uniform vector gives margin 0 / entropy 1 and ranks first; a one-hot vector
+gives margin 1 / entropy 0 and ranks last; a verdict with no usable vector
+reports `scores_available: false` and is treated as maximally uncertain rather
+than hidden. `top1`/`top2` name the two classes the margin is between, so the UI
+can show *why* a row is near the top. Ties break by newest first, then flow id.
+
+`sort=disagreement` puts `disagreement` flows first and falls back to the margin
+order inside each group. `sort=recent` is newest verdict first.
+
+**Membership.** A flow leaves the queue once its review state is terminal —
+`correct`, `incorrect` or `ignored_pattern`. **`unsure` stays in the queue** by
+design: "I don't know" is a request to come back to it, not an answer, and the
+note is carried forward on the queue item so the next reviewer sees it. One entry
+per flow; the newest verdict wins.
+
+- `400` — unknown `sort`, unknown `class`, bad `min_confidence`.
+- `503` — the daemon is running without a review store.
+
+### GET /api/v1/review
+
+Every stored review decision, most recently updated first.
+
+| Param | Meaning |
+|---|---|
+| `state` | Keep only this §16 state. An unknown value is a `400`. |
+| `limit` | Default 100, max 5000. |
+
+```json
+{
+  "reviews": [
+    {
+      "flow_id": 15,
+      "state": "incorrect",
+      "human_label": "scan",
+      "effective_label": "scan",
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "reviewer": "local",
+      "note": "nmap probe, not a web attack",
+      "created_at": "2026-08-31T13:32:52Z",
+      "updated_at": "2026-08-31T13:33:53Z",
+      "history": [
+        { "ts": "2026-08-31T13:32:52Z", "state": "correct", "reviewer": "local" }
+      ]
+    }
+  ],
+  "stats": { … },
+  "vocabulary": { … }
+}
+```
+
+`predicted_class`, `predicted_score` and `model_id` are the model's **original**
+claim, captured when the flow was first reviewed and never overwritten
+(PROJECT.md §16). `effective_label` is derived on every read: the confirmed
+prediction for `correct`, the correction for `incorrect`, `""` otherwise.
+`history` holds the superseded decisions, oldest first.
+
+### GET /api/v1/review/stats
+
+Counts per §16 state. Every one of the five keys is always present, zero
+included, so a UI strip does not change shape.
+
+```json
+{
+  "stats": {
+    "total": 40,
+    "by_state": { "unreviewed": 0, "correct": 36, "incorrect": 2, "unsure": 1, "ignored_pattern": 1 },
+    "terminal": 39,
+    "open": 1,
+    "labelled": 38,
+    "directory": "/var/lib/synapseids/review"
+  },
+  "vocabulary": { … }
+}
+```
+
+`terminal` is `correct + incorrect + ignored_pattern` (out of the queue), `open`
+is `unreviewed + unsure` (still in it), and `labelled` is
+`correct + incorrect` — the rows a curated dataset can use.
+
+### GET /api/v1/review/{flow_id}
+
+One review record, `{"review": {…}, "vocabulary": {…}}`.
+
+- `400` — the path segment is not a positive integer.
+- `404` — the flow has never been reviewed.
+- `503` — no review store wired.
+
+### PUT /api/v1/review/{flow_id}
+
+Record a decision, or correct an earlier one. `POST` is accepted identically.
+Body is JSON, unknown fields rejected, 16 KiB cap.
+
+```json
+{ "state": "incorrect", "human_label": "scan", "note": "nmap probe, not a web attack" }
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | Required. One of `unreviewed`, `correct`, `incorrect`, `unsure`, `ignored_pattern`. |
+| `human_label` | A `traffic-classes-v1` class. **Required** for `incorrect`; optional for `correct` (and then must equal the prediction); must be empty for every other state. |
+| `note` | Optional free text, 4096 bytes max. |
+
+There is deliberately **no** `predicted_class`, `predicted_score` or `model_id`
+field, and there never will be. The daemon captures the model's prediction itself
+on the first review of a flow and copies it forward untouched on every later one;
+sending one of those keys is a `400 unknown field`. This is PROJECT.md §16's
+"always retain the original model prediction separately from the human-reviewed
+label", enforced structurally — see ADR 0021.
+
+Rules, and why:
+
+- `correct` means *the prediction is the label*, so the label is derived from the
+  prediction. Supplying one that differs is a `400` pointing at `incorrect`.
+- `incorrect` requires a label, and it must **differ** from the prediction —
+  saying the model was both wrong and right is a `400` pointing at `correct`.
+- `unsure`, `ignored_pattern` and `unreviewed` assert no class, so a label is a
+  `400`. `ignored_pattern` means "stop showing me this", not "this is class X".
+- Writing `unreviewed` is how an operator un-reviews a flow: the decision is
+  cleared and the flow returns to the queue, with the previous state preserved in
+  `history`.
+
+Responses:
+
+- `201` — first review of this flow; `{"review": {…}, "vocabulary": {…}}`.
+- `200` — a correction to an existing review. The previous decision is appended
+  to `history` and `updated_at` moves; `created_at` and the three `predicted_*`
+  values do not.
+- `400` — bad body, unknown field, unknown `state`, a `human_label` that is not a
+  `traffic-classes-v1` class (the error echoes the valid set), or a state/label
+  combination that contradicts itself.
+- `404` — the flow has no stored classification: it was never classified, or its
+  verdict has already been evicted from the bounded ring, so there is no
+  prediction to review against. You cannot review a flow the store has forgotten.
+- `503` — no review store wired.
+
+### Review write routes are state-changing and unauthenticated
+
+`PUT`/`POST /api/v1/review/{flow_id}` inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same as
+the dataset, replay, capture and model-activation routes. Every write appends a
+line to `models.directory/audit.log` with `subject_type: "review"` and the flow
+id as the subject, carrying both the human label and the prediction — this is the
+"human label changes" audit §21 asks for. Each write also publishes a
+`ReviewUpdated` envelope on the live bus with
+`{flow_id, state, human_label, predicted_class}`; `ReviewUpdated` was already a
+member of the frozen `event-envelope-v1` enum, so nothing about the event schema
+changed.
+
 ### GET /api/v1/training
 
 Every training run the daemon is mirroring, newest first. `?limit` caps the list
@@ -971,6 +1205,69 @@ live bus: `event-envelope-v1`'s type enum is frozen and has no such member (see
 [ADR 0019](adr/0019-external-training-runs-reported-over-http.md)); the dashboard
 updates by polling `GET /api/v1/training/{id}` instead.
 
+### GET /api/v1/audit
+
+The tail of the append-only audit log (`models.directory/audit.log`), **newest
+record first** (PROJECT.md §21; issue #36,
+[ADR 0022](adr/0022-auditable-model-activation-workflow.md)). This is where an
+operator sees who activated which model and when, plus dataset edits and training
+history.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Records to return. Default `100`, clamped to `1000` (`max_limit`). Missing, non-numeric or `< 1` → the default. |
+| `subject_type` | Exact match on the subject kind: `model`, `dataset`, `training`, or any type added later. Not validated against a fixed set, so a new subject type is filterable as soon as it is first written. |
+| `subject` | Exact match on the subject id — a `model_id`, a `<id>@<version>` dataset ref, or a training-run id. |
+| `event` | Exact match on the event name, e.g. `ModelActivated`. |
+| `from`, `to` | Inclusive RFC3339 bounds on the record timestamp. A malformed value → `400 bad from` / `400 bad to`; `to` before `from` → `400 bad range`. |
+
+```json
+{
+  "records": [
+    { "ts": "2026-08-31T13:26:25Z", "event": "ModelDeactivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "restored heuristic as primary" },
+    { "ts": "2026-08-31T13:25:56Z", "event": "ModelActivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137…" },
+    { "ts": "2026-08-31T13:25:35Z", "event": "ModelRegistered", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137… status=registered" }
+  ],
+  "count": 3,
+  "limit": 100,
+  "max_limit": 1000,
+  "scan_bytes_cap": 8388608
+}
+```
+
+`model_id` is populated on `subject_type: "model"` lines and empty on every other
+subject type; `actor` is `"local"` until RBAC (issue #58). Events written today:
+`ModelRegistered` / `ModelActivated` / `ModelDeactivated`, `DatasetCreated` /
+`DatasetDerived` / `DatasetDeleted`, `TrainingStarted` / `TrainingCompleted` /
+`TrainingFailed`. Human label changes (§21's fourth category) arrive with the
+review loop, issue #42, as a new subject type — no change to this route.
+
+**The read is bounded twice.** `limit` caps the records returned, and the reader
+seeks backwards from the end of the file and never scans further back than
+`scan_bytes_cap` (8 MiB), so the cost of a request does not grow with the log. A
+record older than that window stays on disk but is not served here. A torn
+trailing line — a crash mid-append — is skipped, not fatal, and a log file that
+does not exist yet returns `{"records": []}`.
+
+- `200` — always, including an empty log.
+- `400` — a malformed `from` / `to`, or `to` before `from`.
+- `503` — no audit logger is wired (distinct from "nothing has happened yet").
+
+### The audit log is append-only, forever
+
+`GET` is the only method routed at `/api/v1/audit`; `POST`, `PATCH` and `DELETE`
+return `404` and always will. There is deliberately no way to edit or delete a
+record through the API, because an audit trail an operator can curate after the
+fact records nothing worth reading (PROJECT.md §21). The only writers are
+`internal/audit`'s appenders, driven by a state change that actually happened.
+Rotation, if it becomes necessary, is an operator-and-filesystem concern outside
+this API and should archive rather than truncate.
+
+Note that the trail is **more** sensitive than most of this API — it is a
+timeline of every model that went live and every dataset built or deleted — and
+it inherits the same loopback-by-default, unauthenticated posture as the rest of
+`/api/v1` until issue #58. Do not expose it beyond localhost before then.
+
 ### GET /api/v1/schemas/features
 
 The frozen `flow-features-v1` document, served verbatim from the embedded
@@ -1011,9 +1308,11 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 
 - `kind` — `nic` (a local `AF_PACKET` interface), `tcpdump` (a local
   `tcpdump -U -w -` subprocess), `ssh` (an authorized remote
-  `ssh <host> tcpdump -U -w -`), or `pcap-over-ip` (a framed, authenticated TLS
-  stream from a remote sensor; see the config `capture.sources` entry and
-  `internal/capture/pcapoverip/PROTOCOL.md`).
+  `ssh <host> tcpdump -U -w -`), `pcap-over-ip` (a framed, authenticated TLS
+  stream from a remote sensor **the daemon dialled**; see the config
+  `capture.sources` entry and `internal/capture/pcapoverip/PROTOCOL.md`), or
+  `pcap-over-ip-listen` (a sensor that **dialled the daemon** and was accepted by
+  the collector — one row per connected peer, see `GET /api/v1/sensors`).
 - `state` — `running`, `error` (see `error` for the message; other sources keep
   running), or `stopped` (the source was exhausted, the remote sensor sent a
   goodbye / end-of-capture, or the source was removed). A `tcpdump` / `ssh`
@@ -1036,8 +1335,11 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 - `connection_latency_ms` — 0 for a local NIC or a local tcpdump; for
   `pcap-over-ip` the measured TLS dial + handshake time; the SSH dial time for
   an `ssh` source is a follow-up (currently 0).
-- `origin` — `config` (opened at startup from `capture.sources[]`) or `api`
-  (added at runtime through `POST /api/v1/captures`). Both are removable.
+- `origin` — `config` (opened at startup from `capture.sources[]`), `api` (added
+  at runtime through `POST /api/v1/captures`) or `collector` (a sensor that
+  dialled in — registered and removed by the collector, not by an operator).
+  `config` and `api` sources are removable through `DELETE`; a `collector` row
+  goes away when its sensor disconnects.
 
 ### POST /api/v1/captures
 
@@ -1138,6 +1440,143 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 The removal is written to the daemon log and published as a
 `CaptureSourceDisconnected` event with `"origin": "api"`. Other sources and the
 pipeline are unaffected.
+
+### GET /api/v1/sensors
+
+Reverse-connecting sensors currently attached to the daemon-side SYNPOIP
+**collector** (PROJECT.md §5.3, §19.15; issues #43/#103,
+[ADR 0018](adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)). No
+params, newest connection first. Always `200` — an empty array `[]` when no
+collector is configured or no sensor is connected, never `503`.
+
+This is the collector's view of its peers: the identity each sensor announced in
+the handshake, joined with the live counters of its `capture.Manager` row. It is
+**read-only** — a sensor appears by connecting and disappears by disconnecting,
+so there is nothing here to `POST` or `DELETE`. It inherits the same
+loopback-only posture as the rest of the state surface (PROJECT.md §21) and the
+same `TODO(#58)` auth gate.
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/sensors
+```
+
+```json
+[
+  {
+    "sensor_id": "edge-1",
+    "location": "wan",
+    "remote_addr": "127.0.0.1:56982",
+    "link_type": 1,
+    "filter": "",
+    "connected_at": "2026-08-31T14:52:51.539923103+02:00",
+    "packets": 5054,
+    "bytes": 1787170,
+    "drops": 0,
+    "pps": 340.0005015007397,
+    "bps": 106962.15776918271,
+    "last_packet": "2026-08-31T08:41:23.533764Z",
+    "state": "running",
+    "agent_version": "0.1.0-dev",
+    "os_arch": "linux/amd64",
+    "session_id": "edge-1|wan|0.1.0-dev|linux/amd64-b0dd699a577d5ccd",
+    "source_name": "edge-1"
+  }
+]
+```
+
+- `sensor_id` / `location` — what the sensor announced (`--sensor-id` /
+  `SYNAPSE_SENSOR_ID` / its hostname, and `--location` /
+  `SYNAPSE_SENSOR_LOCATION`). Empty for a sensor that announced nothing.
+- `remote_addr` — the peer address the collector accepted.
+- `link_type` — the authoritative libpcap DLT the sensor negotiated: `1`
+  `EN10MB`, `101` `RAW`.
+- `filter` — the capture filter the sensor advertised in the handshake; `""` =
+  everything.
+- `connected_at` — when the collector accepted and registered this session. A
+  reconnect is a new session with a new `connected_at`.
+- `packets` / `bytes` / `drops` / `pps` / `bps` / `last_packet` / `state` — the
+  same values, from the same place, as the sensor's `GET /api/v1/captures` row
+  (`drops` is the sensor-reported kernel drop counter carried in keepalives).
+- `agent_version` / `os_arch` — the sensor build and platform, for diagnostics.
+- `session_id` — the SYNPOIP session id, which is also how the identity travelled
+  (`<sensor_id>|<location>|<agent_version>|<os/arch>-<random>`; see
+  `internal/capture/pcapoverip/PROTOCOL.md` §6). Useful for correlating the
+  daemon and sensor logs.
+- `source_name` — the name this peer is registered under in
+  `GET /api/v1/captures`. Normally the `sensor_id`; a second sensor claiming the
+  same id gets `edge-1#<short session>` so both still stream.
+
+A sensor's capture row appears in `GET /api/v1/captures` with
+`"kind": "pcap-over-ip-listen"` and `"origin": "collector"`, and is removed when
+the connection drops.
+
+### GET /api/v1/sensors/{id}
+
+One sensor by `sensor_id` (or by `source_name`, for a sensor that announced no
+id). Same object as above. `404` `sensor not found` if the id is unknown or no
+collector is configured.
+
+### Enabling the collector
+
+The collector is **off by default** — a fresh install grows no extra listening
+socket. It is its own config block rather than a `capture.sources[]` entry
+because it is a listener that registers a source *per accepted peer*, not a
+source that dials one target (ADR 0018):
+
+```json
+"capture": {
+  "collector": {
+    "listen": "0.0.0.0:4789",
+    "cert_file": "/etc/synapseids/collector.crt",
+    "key_file": "/etc/synapseids/collector.key",
+    "token_file": "/etc/synapseids/collector.token",
+    "client_ca_file": "/etc/synapseids/sensors-ca.pem",
+    "max_sensors": 32,
+    "authorized": true
+  }
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `listen` | TLS listen address (`host:port`). **`""` (default) disables the collector.** |
+| `cert_file` / `key_file` | the daemon's **server** certificate and key. Both required — in this direction the daemon is the TLS server. |
+| `token_file` | file holding the bearer token the collector presents in its ClientHello; the sensor verifies it with `crypto/subtle`. An **inline `token` is refused** (PROJECT.md §23) — use this or `SYNAPSE_COLLECTOR_TOKEN`. |
+| `client_ca_file` | optional PEM bundle. When set, mutual TLS is **required** and this is what authenticates the sensor. Strongly recommended for any non-loopback listener. |
+| `max_sensors` | cap on concurrent **registered** sensors; `0` = 32. Past the cap a connection is refused before any handshake work (PROJECT.md §21). |
+| `authorized` | must be `true` to enable the collector: you are asserting you are authorised to ingest traffic from the sensors that will connect (PROJECT.md §21, §28.18). |
+
+`SYNAPSE_COLLECTOR_LISTEN` overrides `listen` and `SYNAPSE_COLLECTOR_TOKEN`
+supplies the token, so neither has to live in the file.
+
+**Who authenticates whom.** The SYNPOIP roles do not invert with the TCP
+direction, so the bearer token still travels daemon → sensor: the daemon proves
+itself with its server certificate *and* the token, and the sensor proves itself
+with a client certificate (`client_ca_file`). Without `client_ca_file` the
+collector accepts any peer that completes TLS — which is why `authorized: true`
+is mandatory.
+
+**Getting a certificate for testing.** Either use the bundled helper:
+
+```bash
+synapse-sensor gen-cert --host ids.example --cert collector.crt --key collector.key
+```
+
+which writes a self-signed ECDSA P-256 pair (cert `0644`, key `0600`) and prints
+its SHA-256. The certificate is its own CA, so `collector.crt` doubles as the
+`--ca` the sensor pins. Or do it by hand:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout collector.key -out collector.crt -days 365 \
+  -subj '/CN=ids.example' -addext 'subjectAltName=DNS:ids.example,IP:127.0.0.1'
+```
+
+Production deployments provision from their own PKI; there is deliberately no
+certificate-management subsystem in the daemon. A missing or unreadable
+certificate logs one clear line and the daemon keeps serving the API without the
+collector.
+
 ### POST /api/v1/architecture/estimate
 
 Parameter, size and FLOP math for a candidate `flow-classifier-v1` hidden stack
@@ -1254,6 +1693,20 @@ event envelopes** (`event-envelope-v1`):
 
 `data` is the same struct the matching REST endpoint returns. Event types are
 listed in [architecture.md](architecture.md#event-bus-contract).
+
+A sensor coming and going on the collector shows up here as
+`SensorConnected` / `SensorDisconnected` (both already in the frozen
+`event-envelope-v1` enum):
+
+```json
+[
+  { "type": "SensorConnected", "ts": "2026-08-31T12:55:11.965556298Z", "seq": 2466,
+    "data": { "sensor_id": "edge-2", "location": "dmz", "remote_addr": "127.0.0.1:55204",
+              "link_type": 1, "filter": "", "agent_version": "0.1.0-dev",
+              "os_arch": "linux/amd64", "session_id": "edge-2|dmz|0.1.0-dev|linux/amd64-4313bfe…",
+              "source_name": "edge-2" } }
+]
+```
 
 ### Batching
 

@@ -176,17 +176,26 @@ Without it the sensor refuses to start and prints exactly those commands.
 
 ## `listen` vs `connect`
 
-**Use `listen`** (the default). The daemon dials the firewall, as
-[ADR 0012](../../docs/adr/0012-pcap-over-ip-transport.md) describes, and it
-works today.
+**Both modes work.** `listen` is still the plugin's shipped default — the daemon
+dials the firewall, as
+[ADR 0012](../../docs/adr/0012-pcap-over-ip-transport.md) describes.
 
-`connect` makes the firewall dial out, which is what you want behind NAT. The
-sensor half is complete — reverse dial, reconnect with backoff, and the SYNPOIP
-roles and wire format entirely unchanged
-([PROTOCOL.md §6](../../internal/capture/pcapoverip/PROTOCOL.md)) — but
-**`synapsed` has no collector endpoint to dial**. Every capture kind the daemon
-supports opens outward or locally. The daemon-side listener is a tracked
-follow-up; see [ADR 0014](../../docs/adr/0014-freebsd-bpf-capture-and-the-opnsense-sensor-plugin.md).
+**`connect` is now the better choice for a firewall.** It makes the box dial out,
+which is what you want behind NAT, and the daemon side finally exists: enable a
+`capture.collector` block on `synapsed` and it will accept the connection,
+register the firewall as its own capture source and list it on
+`GET /api/v1/sensors`
+([ADR 0018](../../docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md),
+[docs/opnsense-sensor.md](../../docs/opnsense-sensor.md)). The SYNPOIP roles and
+wire format are entirely unchanged
+([PROTOCOL.md §6](../../internal/capture/pcapoverip/PROTOCOL.md)) — the accepting
+daemon still sends the ClientHello. Point **Verify peer / CA** at the daemon's
+collector certificate; `synapse-sensor gen-cert` produces one that doubles as its
+own CA for testing.
+
+The plugin's *default* mode is deliberately left at `listen` in this change:
+flipping a shipped default is a plugin-side release decision, and neither mode has
+been exercised on real hardware yet (see below).
 
 ## What a maintainer must validate on real hardware
 

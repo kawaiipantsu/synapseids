@@ -16,11 +16,27 @@ import type {
   FeatureSchema,
   FlowRecord,
   HostProfile,
-  ModelInfo,
-  ReportFormat,
   TimelineSeries,
   TrainingList,
   TrainingRun,
+  ReportFormat,
+} from './types'
+import type {
+  AuditList,
+  AuditQuery,
+  ModelDetail,
+  ModelEntry,
+  ModelLineage,
+  ModelList,
+} from './types'
+import type {
+  Review,
+  ReviewListResponse,
+  ReviewQueueResponse,
+  ReviewSort,
+  ReviewState,
+  ReviewStatsResponse,
+  ReviewWriteInput,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -37,10 +53,6 @@ async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function getStatus(): Promise<DaemonStatus> {
   return getJSON<DaemonStatus>('/api/v1/status')
-}
-
-export function getModels(): Promise<ModelInfo[]> {
-  return getJSON<ModelInfo[]>('/api/v1/models')
 }
 
 export function getFlows(limit = 100): Promise<FlowRecord[]> {
@@ -294,6 +306,164 @@ export function getTrainingRuns(limit = 50): Promise<TrainingList> {
 export function getTrainingRun(id: string): Promise<TrainingRun> {
   return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
 }
+
+// ---- model registry, activation and the audit trail ---------------------
+// (§19.12, §15, §21, §28.10; issue #36, ADR 0022)
+//
+// Activation is an explicit operator action and nothing here is called
+// implicitly: there is no "register and activate" call, because §28.10 forbids
+// a newly trained model going live without a human asking for it. The audit
+// read is the only audit call there will ever be — the log is append-only, so
+// this client has no way to edit or delete a record.
+
+export function getModels(): Promise<ModelList> {
+  return getJSON<ModelList>('/api/v1/models')
+}
+
+export function getModel(id: string): Promise<ModelDetail> {
+  return getJSON<ModelDetail>('/api/v1/models/' + encodeURIComponent(id))
+}
+
+export function getModelLineage(id: string): Promise<ModelLineage> {
+  return getJSON<ModelLineage>('/api/v1/models/' + encodeURIComponent(id) + '/lineage')
+}
+
+/** The outcome of an activate/deactivate POST. `message` carries the daemon's
+ *  error text verbatim so the UI can show a 409 ("bundle no longer validates:
+ *  …") exactly as the daemon phrased it, rather than a guess. */
+export interface ModelMutationResult {
+  ok: boolean
+  message: string
+  status: number
+  entry?: ModelEntry
+}
+
+async function modelAction(id: string, action: 'activate' | 'deactivate'): Promise<ModelMutationResult> {
+  const res = await fetch(`/api/v1/models/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (!res.ok) {
+    return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
+  }
+  let entry: ModelEntry | undefined
+  try {
+    entry = (JSON.parse(text) as { entry: ModelEntry }).entry
+  } catch {
+    entry = undefined
+  }
+  return { ok: true, message: action === 'activate' ? 'activated' : 'deactivated', status: res.status, entry }
+}
+
+/** Make one registered model the live primary classifier. Call only from an
+ *  operator-confirmed action (§28.10). */
+export function activateModel(id: string): Promise<ModelMutationResult> {
+  return modelAction(id, 'activate')
+}
+
+/** Turn a model off and restore the heuristic as primary. */
+export function deactivateModel(id: string): Promise<ModelMutationResult> {
+  return modelAction(id, 'deactivate')
+}
+
+/** GET /api/v1/audit. Read-only and bounded: the daemon clamps `limit` to
+ *  max_limit and never scans further back than scan_bytes_cap from the end of
+ *  the log. */
+export function getAudit(q: AuditQuery = {}): Promise<AuditList> {
+  const p = new URLSearchParams()
+  if (q.limit) p.set('limit', String(q.limit))
+  if (q.subject_type) p.set('subject_type', q.subject_type)
+  if (q.subject) p.set('subject', q.subject)
+  if (q.event) p.set('event', q.event)
+  if (q.from) p.set('from', q.from)
+  if (q.to) p.set('to', q.to)
+  const s = p.toString()
+  return getJSON<AuditList>('/api/v1/audit' + (s ? '?' + s : ''))
+}
+
+// ---- human review loop (§16, issues #42 + #64) --------------------------
+// The ranked review queue, the review records and the write route. Every
+// response carries the model's original prediction next to the human label, and
+// no request here can set that prediction — the daemon captures it itself
+// (PROJECT.md §16). Sending predicted_class/predicted_score/model_id is a 400.
+
+export interface ReviewQueueParams extends ClassFilterParams {
+  sort?: ReviewSort
+}
+
+export function getReviewQueue(p: ReviewQueueParams = {}): Promise<ReviewQueueResponse> {
+  const q = new URLSearchParams()
+  if (p.sort) q.set('sort', p.sort)
+  if (p.limit != null) q.set('limit', String(p.limit))
+  if (p.class) q.set('class', p.class)
+  if (p.model) q.set('model', p.model)
+  if (p.min_confidence != null && p.min_confidence > 0) {
+    q.set('min_confidence', String(p.min_confidence))
+  }
+  if (p.disagreement) q.set('disagreement', 'true')
+  const s = q.toString()
+  return getJSON<ReviewQueueResponse>('/api/v1/review/queue' + (s ? '?' + s : ''))
+}
+
+export function getReviews(state?: ReviewState, limit = 500): Promise<ReviewListResponse> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (state) q.set('state', state)
+  return getJSON<ReviewListResponse>('/api/v1/review?' + q.toString())
+}
+
+export function getReviewStats(): Promise<ReviewStatsResponse> {
+  return getJSON<ReviewStatsResponse>('/api/v1/review/stats')
+}
+
+/** GET /api/v1/review/{flow_id}. Resolves to null on a 404 — a flow nobody has
+ *  reviewed is the normal case, not an error. */
+export async function getReview(flowID: number): Promise<Review | null> {
+  const res = await fetch(`/api/v1/review/${flowID}`, { headers: { accept: 'application/json' } })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`/api/v1/review/${flowID} failed: ${res.status}${body ? ` ${body.trim()}` : ''}`)
+  }
+  const body = (await res.json()) as { review: Review }
+  return body.review
+}
+
+export interface ReviewMutationResult {
+  ok: boolean
+  /** the server's error text verbatim on failure, a short note on success */
+  message: string
+  status: number
+  review?: Review
+}
+
+export async function putReview(
+  flowID: number,
+  body: ReviewWriteInput,
+): Promise<ReviewMutationResult> {
+  const res = await fetch(`/api/v1/review/${flowID}`, {
+    method: 'PUT',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (res.ok) {
+    let review: Review | undefined
+    try {
+      review = (JSON.parse(text) as { review: Review }).review
+    } catch {
+      review = undefined
+    }
+    return {
+      ok: true,
+      message: res.status === 201 ? 'reviewed' : 'updated',
+      status: res.status,
+      review,
+    }
+  }
+  return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
+}
+
 
 // ---- downloadable investigation reports (§19.4, issue #66, ADR 0023) -------
 // Self-contained block at the end of the file; sibling branches also edit

@@ -75,7 +75,7 @@ func newReportServer(t *testing.T) http.Handler {
 	}
 	ix.Sync()
 
-	return New(cfg, bus, store, rt, nil, nil, nil, nil, nil, nil, ix, nil).Handler()
+	return New(cfg, bus, store, rt, nil, nil, nil, nil, nil, nil, ix, nil, nil, nil).Handler()
 }
 
 // `get` and `decode` come from hosts_test.go — one helper set per package.
@@ -378,7 +378,7 @@ func TestReportsWithoutInsight(t *testing.T) {
 	cfg := config.Default()
 	store := storage.NewMem(10, 10)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	h := New(cfg, events.New(), store, rt, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), store, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	if rr := get(t, h, "/api/v1/reports/host/10.0.0.1"); rr.Code != http.StatusNotFound {
 		t.Fatalf("host report without insight = %d, want 404", rr.Code)

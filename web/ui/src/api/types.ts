@@ -307,6 +307,13 @@ export interface DatasetSelection {
   disagreement?: boolean
   limit?: number
   scan?: number
+  /** Cut from the human review store, using the operator's label instead of the
+   *  model's prediction (§16, issue #42). The only way labeling_source can say
+   *  "human_review". */
+  reviewed?: boolean
+  /** With `reviewed`, also include ignored_pattern reviews — labelled with the
+   *  model's *unconfirmed* prediction, so the cut becomes honestly mixed. */
+  include_ignored?: boolean
 }
 
 /** dataset.Dataset — the §14 manifest plus where it lives on disk. */
@@ -584,6 +591,288 @@ export interface TrainingList {
   history_cap: number
   stale_after_seconds: number
 }
+
+// ============================================================================
+// ML ▸ Model Registry, explicit activation and the audit trail
+// (PROJECT.md §19.12, §15, §21, §28.10; issue #36, ADR 0022)
+// ----------------------------------------------------------------------------
+// Mirrors internal/registry.Entry (plus the api modelView `runtime` block) and
+// internal/audit.Record. Two sibling branches also edit this file, so this
+// block is deliberately self-contained and appended at the end — add your own
+// block below rather than editing this one.
+//
+// `architecture` and `metrics` are typed `unknown` on purpose: both are
+// pass-throughs from a model bundle's own JSON (metrics is a json.RawMessage on
+// the Go side), so the view parses them defensively rather than trusting a
+// shape the daemon never validated field-by-field.
+// ============================================================================
+
+/** registry.Status. Activation never survives a restart, so `active` always
+ *  means "live in inference.Runtime right now". */
+export type ModelStatus = 'registered' | 'active' | 'deactivated'
+
+/** api.runtimeInfo — is this entry the classifier loaded in the live Runtime? */
+export interface ModelRuntimeInfo {
+  loaded: boolean
+  role?: string
+}
+
+/** registry.Entry plus its live-runtime block — the §19.12 field set. */
+export interface ModelEntry {
+  model_id: string
+  name: string
+  version: string
+  family: string
+  feature_schema: string
+  input_size: number
+  output_schema: string
+  output_size: number
+  /** schema.Architecture; parse with hiddenFromUnknown() from lib/arch. */
+  architecture?: unknown
+  training_dataset_ids?: string[] | null
+  /** the bundle's metrics.json, verbatim — shape is not guaranteed. */
+  metrics?: unknown
+  parameter_count: number
+  artifact_bytes: number
+  content_hash: string
+  created_at: string
+  trainer_version: string
+  derived_from?: string
+  status: ModelStatus
+  registered_at: string
+  activated_at?: string
+  dir: string
+  runtime?: ModelRuntimeInfo
+}
+
+/** api.runtimeModel — one classifier live in the Runtime, registered or not
+ *  (the heuristic never is). */
+export interface RuntimeModel {
+  id: string
+  family: string
+  role: string
+  registered: boolean
+}
+
+/** GET /api/v1/models */
+export interface ModelList {
+  models: ModelEntry[]
+  runtime: RuntimeModel[]
+}
+
+/** GET /api/v1/models/{id} — entry plus its lineage chain and direct children. */
+export interface ModelDetail {
+  entry: ModelEntry
+  /** derived-from chain, root first, this model last. */
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+}
+
+/** registry.TreeNode — the lineage forest (§15). */
+export interface ModelTreeNode {
+  entry: ModelEntry
+  children: ModelTreeNode[]
+}
+
+/** GET /api/v1/models/{id}/lineage */
+export interface ModelLineage {
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+  tree: ModelTreeNode[]
+}
+
+/** audit.Record — one append-only line of operator history. `subject_type` is
+ *  an open string, not an enum: "model" | "dataset" | "training" today, and
+ *  whatever the review loop (issue #42) adds next, with no change here. */
+export interface AuditRecord {
+  ts: string
+  event: string
+  actor: string
+  subject_type: string
+  subject: string
+  /** equals `subject` on model lines, "" on every other subject type. */
+  model_id: string
+  detail: string
+}
+
+/** GET /api/v1/audit — read-only; the log is append-only forever, so there is
+ *  no create/update/delete counterpart. */
+export interface AuditList {
+  records: AuditRecord[]
+  count: number
+  /** the limit actually applied after clamping. */
+  limit: number
+  max_limit: number
+  /** how far back from EOF the reader will scan, in bytes. */
+  scan_bytes_cap: number
+}
+
+/** Query filters for GET /api/v1/audit. */
+export interface AuditQuery {
+  limit?: number
+  subject_type?: string
+  subject?: string
+  event?: string
+  /** RFC3339, inclusive. */
+  from?: string
+  to?: string
+}
+
+
+// ============================================================================
+// Human review loop (PROJECT.md §16; issues #42, #64) — feature/review-queue
+// ---------------------------------------------------------------------------
+// Mirrors internal/review, served by /api/v1/review*. A sibling branch also
+// edits this file; keep additions inside this block so the merges stay clean.
+//
+// The one rule this whole block exists to make visible: `predicted_class`,
+// `predicted_score` and `model_id` are the model's ORIGINAL claim, captured when
+// the flow was first reviewed. They sit *alongside* `human_label` and are never
+// replaced by it. There is deliberately no request type here that can set them.
+// ============================================================================
+
+/** review.State — the five §16 states. */
+export type ReviewState = 'unreviewed' | 'correct' | 'incorrect' | 'unsure' | 'ignored_pattern'
+
+export const REVIEW_STATES: ReviewState[] = [
+  'unreviewed',
+  'correct',
+  'incorrect',
+  'unsure',
+  'ignored_pattern',
+]
+
+/** The states that settle a flow and remove it from the queue. `unsure` is not
+ *  one of them: "I don't know" is a request to come back, not an answer. */
+export const TERMINAL_REVIEW_STATES: ReviewState[] = ['correct', 'incorrect', 'ignored_pattern']
+
+/** review.Sort — the queue orderings. */
+export type ReviewSort = 'uncertainty' | 'recent' | 'disagreement'
+
+/** review.Change — one superseded decision. */
+export interface ReviewChange {
+  /** when this decision was replaced */
+  ts: string
+  state: ReviewState
+  human_label?: string
+  note?: string
+  reviewer: string
+}
+
+/** review.Review — one flow's decision plus the frozen model prediction. */
+export interface Review {
+  flow_id: number
+  state: ReviewState
+  /** what the operator typed; empty for `correct` (it is derived) */
+  human_label: string
+  /** the class a curated dataset would use: the confirmed prediction for
+   *  `correct`, the correction for `incorrect`, "" otherwise. Derived server-side
+   *  on every read, so it can never drift from state/human_label. */
+  effective_label: string
+  /** the model's original claim — frozen at first review, never overwritten */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  /** "local" until auth lands (issue #58) */
+  reviewer: string
+  note: string
+  created_at: string
+  updated_at: string
+  history: ReviewChange[]
+}
+
+/** review.QueueItem — one flow awaiting review, with its ranking numbers. */
+export interface ReviewQueueItem {
+  flow_id: number
+  ts: string
+  sensor: string
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  /** the *live* verdict being asked about (nothing is captured until review) */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  disagreement: boolean
+  scores: number[] // length 7, traffic-classes-v1 order
+  /** the two classes the margin is between */
+  top1: string
+  top2: string
+  /** p_top1 - p_top2, 0..1. Smaller = the model is less sure. */
+  margin: number
+  /** 1 - margin, so larger = review sooner. The `uncertainty` sort key. */
+  uncertainty: number
+  /** normalised Shannon entropy over the 7 classes, 0..1 */
+  entropy: number
+  /** false when the verdict carried no usable probability vector */
+  scores_available: boolean
+  /** 'unreviewed' or 'unsure' — the only states that reach the queue */
+  review_state: ReviewState
+  /** an earlier `unsure` note, carried forward to the next reviewer */
+  note?: string
+}
+
+/** review.Stats — the counts strip. */
+export interface ReviewStats {
+  total: number
+  /** every one of the five states is present, zero included */
+  by_state: Record<string, number>
+  /** correct + incorrect + ignored_pattern */
+  terminal: number
+  /** unreviewed + unsure — still in the queue */
+  open: number
+  /** correct + incorrect — rows a curated dataset can use */
+  labelled: number
+  directory: string
+}
+
+/** The enum block every review response carries, so nothing is hardcoded. */
+export interface ReviewVocabulary {
+  states: ReviewState[]
+  classes: string[]
+  sorts: ReviewSort[]
+}
+
+/** GET /api/v1/review/queue */
+export interface ReviewQueueResponse {
+  queue: ReviewQueueItem[]
+  sort: ReviewSort
+  /** how many stored verdicts were walked to build this page */
+  scanned: number
+  vocabulary: ReviewVocabulary
+  /** the ranking formulas, in words, served next to the ranking */
+  ranking: { uncertainty: string; entropy: string }
+}
+
+/** GET /api/v1/review */
+export interface ReviewListResponse {
+  reviews: Review[]
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/** GET /api/v1/review/stats */
+export interface ReviewStatsResponse {
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/**
+ * PUT|POST /api/v1/review/{flow_id} body.
+ *
+ * Note what is absent and always will be: predicted_class, predicted_score and
+ * model_id. The daemon captures the prediction itself and rejects a body that
+ * mentions them (400, unknown field) — PROJECT.md §16.
+ */
+export interface ReviewWriteInput {
+  state: ReviewState
+  /** required for `incorrect`; must be empty for every other state */
+  human_label?: string
+  note?: string
+}
+
 
 // ---------------------------------------------------------------------------
 // Downloadable investigation reports (issue #66, ADR 0023).

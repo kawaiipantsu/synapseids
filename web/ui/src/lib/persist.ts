@@ -21,6 +21,16 @@ function write<T>(key: string, value: T): void {
 }
 
 /**
+ * Write a persisted value from outside a component that owns it, so one view can
+ * hand a draft to another: LIVE ▸ Review prefills the ML ▸ Datasets create form
+ * this way, and Datasets picks it up when usePersistedState reads on mount.
+ * Best-effort, like every write here.
+ */
+export function writePersisted<T>(key: string, value: T): void {
+  write(key, value)
+}
+
+/**
  * useState backed by localStorage. Reads are best-effort and always tolerate a
  * missing or unreadable store (returns the fallback).
  */

@@ -73,21 +73,31 @@ type datasetSelectionRequest struct {
 	Disagreement  bool    `json:"disagreement"`
 	Limit         int     `json:"limit"`
 	Scan          int     `json:"scan"`
+
+	// Reviewed cuts a curated dataset from the human review store instead of the
+	// classification ring, using the operator's label (PROJECT.md §16, issue
+	// #42). It is the only way a manifest's labeling_source can say
+	// "human_review". IncludeIgnored opts ignored_pattern reviews in, which makes
+	// the cut mixed and says so in labeling_source.
+	Reviewed       bool `json:"reviewed"`
+	IncludeIgnored bool `json:"include_ignored"`
 }
 
 // toSelection converts the wire form, parsing the timestamps and normalising a
 // percentage min_confidence to 0..1 exactly as parseClassFilters does.
 func (r datasetSelectionRequest) toSelection() (dataset.Selection, error) {
 	sel := dataset.Selection{
-		Class:         r.Class,
-		Model:         r.Model,
-		Proto:         r.Proto,
-		InitiatorIP:   r.InitiatorIP,
-		ResponderIP:   r.ResponderIP,
-		MinConfidence: r.MinConfidence,
-		Disagreement:  r.Disagreement,
-		Limit:         r.Limit,
-		Scan:          r.Scan,
+		Class:          r.Class,
+		Model:          r.Model,
+		Proto:          r.Proto,
+		InitiatorIP:    r.InitiatorIP,
+		ResponderIP:    r.ResponderIP,
+		MinConfidence:  r.MinConfidence,
+		Disagreement:   r.Disagreement,
+		Limit:          r.Limit,
+		Scan:           r.Scan,
+		Reviewed:       r.Reviewed,
+		IncludeIgnored: r.IncludeIgnored,
 	}
 	if r.MinConfidence > 1 { // accept a 0..100 percentage, like the web UI's slider
 		sel.MinConfidence = r.MinConfidence / 100
