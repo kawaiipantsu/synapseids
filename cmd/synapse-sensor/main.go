@@ -25,6 +25,8 @@ func main() {
 			os.Exit(runPCAPOverIP(args[1:]))
 		case "gen-cert":
 			os.Exit(runGenCert(args[1:]))
+		case "doctor", "selftest":
+			os.Exit(runDoctor(args[1:]))
 		case "version", "--version", "-V":
 			fmt.Println(version.String("synapse-sensor"))
 			return
@@ -37,5 +39,6 @@ func main() {
 	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --token-file tok --sensor-id edge-1 --location wan --iface em0 --authorized")
 	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --listen :4789 --from capture.pcap")
 	fmt.Fprintln(os.Stderr, "  synapse-sensor gen-cert --host ids.example --cert collector.crt --key collector.key")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor doctor          # selftest a deployed sensor (OPNsense: service synapseids_sensor selftest)")
 	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --help")
 }

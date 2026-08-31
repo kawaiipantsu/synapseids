@@ -31,10 +31,20 @@
 #     --token-file, never as an argument value - it must not be visible in
 #     ps(1) output to any local user;
 #   * sensor.conf itself contains no secrets, so any PEM file the flags refer
-#     to must already be on disk with a sane mode before the sensor starts;
+#     to must already be on disk, non-empty and PEM-shaped, with a sane mode,
+#     before the sensor starts;
+#   * the configured OPNsense interface identifier must have resolved to a
+#     kernel device that actually EXISTS. A sensor bound to a device that is not
+#     there reports "running" and captures nothing, which is the worst failure
+#     mode this plugin has - so it is a hard refusal, naming the attempted
+#     lookup (issue #102);
 #   * /dev/bpf* must actually be readable by the unprivileged service user,
 #     otherwise the operator gets the exact devfs.rules incantation instead of
 #     an opaque "permission denied".
+#
+# `service synapseids_sensor selftest` runs all of the above as read-only checks
+# plus the ones only the binary can do (PEM parsing, collector reachability) and
+# prints one pass/fail line each. That is the command to reach for first.
 #
 # PROVIDE: synapseids_sensor
 # REQUIRE: LOGIN FILESYSTEMS
@@ -58,29 +68,51 @@ fi
 : ${synapseids_sensor_enable:="NO"}
 : ${synapseids_sensor_args:=""}
 : ${synapseids_sensor_iface:=""}
+: ${synapseids_sensor_iface_id:=""}
+: ${synapseids_sensor_iface_src:=""}
+: ${synapseids_sensor_iface_error:=""}
 : ${synapseids_sensor_user:="_synapseids"}
 : ${synapseids_sensor_bin:="/usr/local/bin/synapse-sensor"}
 : ${synapseids_sensor_etcdir:="/usr/local/etc/synapseids"}
 : ${synapseids_sensor_logdir:="/var/log/synapseids"}
 
 synapseids_sensor_token="${synapseids_sensor_etcdir}/sensor.token"
-synapseids_sensor_ca="${synapseids_sensor_etcdir}/peer-ca.pem"
+synapseids_sensor_ca="${synapseids_sensor_etcdir}/sensor-ca.pem"
 synapseids_sensor_cert="${synapseids_sensor_etcdir}/sensor-cert.pem"
 synapseids_sensor_key="${synapseids_sensor_etcdir}/sensor-key.pem"
+synapseids_sensor_log="${synapseids_sensor_logdir}/sensor.log"
 
 pidfile="/var/run/synapseids_sensor.pid"
 procname="${synapseids_sensor_bin}"
 command="/usr/sbin/daemon"
 
+extra_commands="selftest"
+selftest_cmd="synapseids_sensor_selftest"
+
 # daemon(8) supervises synapse-sensor, drops privileges to the service user and
-# relays the child's stdout/stderr to syslog tagged "synapseids_sensor".
+# captures the child's stdout/stderr.
 #
-# TODO(verify): `-f` redirects stdin/stdout/stderr to /dev/null while `-S -T`
-# asks for syslog capture.  Confirm on FreeBSD 14 that the combination still
-# reaches syslog; if it does not, drop `-f` (daemon(8) already detaches) or add
-# `-o ${synapseids_sensor_logdir}/sensor.log`.  The web UI's log viewer reads
-# ${synapseids_sensor_logdir}/sensor.log, which syslog.d must be pointed at.
-command_args="-f -S -T ${name} -p ${pidfile} -u ${synapseids_sensor_user} \
+# TWO independent output sinks, deliberately:
+#
+#   -o ${synapseids_sensor_log}   the file the web UI's log viewer and the
+#                                 `synapseidssensor log` configd action read
+#   -S -T ${name}                 syslog, tagged, for an operator who forwards
+#                                 syslog off the box
+#
+# KEPT TODO(verify): daemon(8)'s `-f` redirects the SUPERVISOR's stdin/stdout/
+# stderr to /dev/null.  It is kept because configd runs this script and reads its
+# output to EOF: a supervisor holding configd's pipe open for the lifetime of the
+# sensor would make the GUI's Start button hang until configd timed out.  What
+# could NOT be confirmed without a FreeBSD 14 box is whether `-f` also suppresses
+# the `-o` / `-S -T` capture of the CHILD's output.  Hence both sinks: if one is
+# defeated the other should still produce something.
+#
+# FAILURE MODE IF THAT ASSUMPTION IS WRONG: the sensor still runs and still
+# streams packets; only its log is empty.  `service synapseids_sensor selftest`
+# reports that explicitly on its `log-sink` line, together with the one-line
+# remedy (drop `-f` here).  It is a diagnosability bug, not a capture bug.
+command_args="-f -S -T ${name} -o ${synapseids_sensor_log} \
+    -p ${pidfile} -u ${synapseids_sensor_user} \
     ${synapseids_sensor_bin} pcap-over-ip ${synapseids_sensor_args} \
     --token-file ${synapseids_sensor_token}"
 
@@ -93,10 +125,15 @@ start_precmd="synapseids_sensor_precmd"
 # synapseids_sensor_check_pem <path> <owner:group> <mode>
 #
 # If $synapseids_sensor_args references <path> (as the value of a cert, key, ca
-# or client-ca flag), make sure the file exists and tighten its ownership and
-# mode.  A referenced but missing PEM is a hard failure: starting anyway would
-# either abort inside synapse-sensor with a less obvious message or, worse,
-# silently weaken the transport.
+# or client-ca flag), make sure the file exists, is non-empty and actually looks
+# like PEM, then tighten its ownership and mode.
+#
+# Since issue #104 these three files are rendered by configd templates from the
+# OPNsense config store rather than placed by hand, so a failure here means the
+# stored value is empty or is not PEM.  It stays a HARD failure either way:
+# starting anyway would either abort inside synapse-sensor with a less obvious
+# message or, worse, silently weaken the transport.  The sensor never downgrades
+# to --insecure-tls on its own.
 synapseids_sensor_check_pem()
 {
     _path=$1
@@ -113,13 +150,77 @@ synapseids_sensor_check_pem()
 
     if [ ! -f "${_path}" ]; then
         echo "synapseids_sensor: the configuration references ${_path}, but that file does not exist."
-        echo "synapseids_sensor: install the PEM you entered in the web UI, for example:"
-        echo "    install -m ${_mode} -o ${_owner%%:*} -g ${_owner##*:} /path/to/file.pem ${_path}"
+        echo "synapseids_sensor: re-render it from the OPNsense configuration:"
+        echo "    configctl template reload OPNsense/SynapseIDSSensor"
+        echo "    configctl synapseidssensor fixperms"
+        return 1
+    fi
+
+    if [ ! -s "${_path}" ]; then
+        echo "synapseids_sensor: ${_path} is empty, so the TLS material it should hold is missing."
+        echo "synapseids_sensor: refusing to start rather than continuing without it."
+        echo "synapseids_sensor: enter the PEM on Services > SynapseIDS Sensor, save, then:"
+        echo "    configctl template reload OPNsense/SynapseIDSSensor"
+        return 1
+    fi
+
+    # Cheap shape check.  The model validates the PEM properly at save time and
+    # `synapse-sensor doctor` parses it; this only catches a file that is present
+    # but obviously not PEM, before the sensor fails at handshake time.
+    if ! head -n 20 "${_path}" 2>/dev/null | grep -q -- '-----BEGIN'; then
+        echo "synapseids_sensor: ${_path} does not contain a PEM '-----BEGIN' block."
+        echo "synapseids_sensor: refusing to start.  Run 'service synapseids_sensor selftest' for detail."
         return 1
     fi
 
     chown "${_owner}" "${_path}" 2>/dev/null
     chmod "${_mode}" "${_path}" 2>/dev/null
+    return 0
+}
+
+# Confirm the capture interface resolved to a device that exists.
+#
+# THE MOST IMPORTANT CHECK IN THIS SCRIPT (issue #102).  The model stores an
+# OPNsense interface identifier ("wan"); the configd template turns that into a
+# kernel device name ("em0") and records both, plus how it resolved it, plus an
+# error string if it could not.  A sensor bound to a device that is not present
+# would report "running" while capturing zero packets, so all three failure
+# shapes below refuse to start and say exactly what was attempted.
+synapseids_sensor_check_iface()
+{
+    if [ -n "${synapseids_sensor_iface_error}" ]; then
+        echo "synapseids_sensor: ${synapseids_sensor_iface_error}"
+        echo "synapseids_sensor: refusing to start: a sensor bound to nothing captures nothing."
+        return 1
+    fi
+
+    # No interface configured at all: --iface is absent, so the sensor would have
+    # no capture source. Only reachable if the model was saved without one.
+    if [ -z "${synapseids_sensor_iface}" ]; then
+        case " ${synapseids_sensor_args} " in
+        *" --iface "*)
+            echo "synapseids_sensor: --iface is in the rendered flags but no device name was resolved."
+            return 1
+            ;;
+        esac
+        echo "synapseids_sensor: no capture interface is configured."
+        echo "synapseids_sensor: pick one on Services > SynapseIDS Sensor."
+        return 1
+    fi
+
+    if ! ifconfig "${synapseids_sensor_iface}" >/dev/null 2>&1; then
+        echo "synapseids_sensor: the capture device '${synapseids_sensor_iface}' does not exist on this host."
+        if [ -n "${synapseids_sensor_iface_id}" ]; then
+            echo "synapseids_sensor: it was resolved from the OPNsense interface '${synapseids_sensor_iface_id}'" \
+                "via ${synapseids_sensor_iface_src:-an unknown lookup}."
+        fi
+        echo "synapseids_sensor: devices present: $(ifconfig -l 2>/dev/null)"
+        echo "synapseids_sensor: refusing to start: a sensor bound to a missing device reports"
+        echo "synapseids_sensor: 'running' while capturing zero packets.  Re-check"
+        echo "synapseids_sensor: Interfaces > Assignments, then re-save the sensor settings."
+        return 1
+    fi
+
     return 0
 }
 
@@ -219,12 +320,17 @@ synapseids_sensor_precmd()
     chmod 0400 "${synapseids_sensor_token}" || return 1
 
     # -- TLS material ------------------------------------------------------
-    # sensor.conf only names the PEM files; refuse to start when one that the
-    # flags reference is absent, and tighten the mode of the ones that are.
+    # sensor.conf only names the PEM files; configd renders their contents from
+    # the config store (issue #104) as root under its own umask, so re-clamp the
+    # modes here as well as in the fixperms action, and refuse to start when one
+    # that the flags reference is absent, empty or not PEM.
     synapseids_sensor_check_pem "${synapseids_sensor_ca}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_cert}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_key}" \
         "${synapseids_sensor_user}:${synapseids_sensor_user}" 0400 || return 1
+
+    # -- capture interface -------------------------------------------------
+    synapseids_sensor_check_iface || return 1
 
     # -- packet capture permissions ---------------------------------------
     if ! synapseids_sensor_bpf_ok; then
@@ -234,5 +340,49 @@ synapseids_sensor_precmd()
 
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# selftest
+# ---------------------------------------------------------------------------
+
+# `service synapseids_sensor selftest` — the one command to run on the box when
+# something is wrong.  The checks themselves live in the Go binary (`synapse-
+# sensor doctor`), because they are unit-testable there and because several of
+# them — parsing the PEM material, proving the certificate and key match, a TCP
+# connect to the collector — are not things to write in sh.
+#
+# Exit status is the binary's: 0 when nothing failed, 1 otherwise.
+synapseids_sensor_selftest()
+{
+    if [ ! -x "${synapseids_sensor_bin}" ]; then
+        echo "[FAIL] binary        ${synapseids_sensor_bin} is missing or not executable."
+        echo "       reinstall the package:  pkg install -f os-synapseids-sensor"
+        return 1
+    fi
+
+    "${synapseids_sensor_bin}" doctor \
+        --config "${synapseids_sensor_conf}" \
+        --etc-dir "${synapseids_sensor_etcdir}" \
+        --log-dir "${synapseids_sensor_logdir}" \
+        --user "${synapseids_sensor_user}"
+}
+
+# selftest is dispatched HERE, before run_rc_command, and deliberately so.
+#
+# rc.subr gates most verbs behind ${rcvar} -- and a sensor that is disabled, or
+# that was never successfully configured, is precisely when an operator needs the
+# selftest.  Letting rc.subr decide would mean the most useful command on the box
+# silently printed nothing in the case it exists for.  ("oneselftest" is accepted
+# too, since that is the rc.subr idiom for "run it regardless" and an operator who
+# knows FreeBSD will try it.)
+#
+# `extra_commands` above still declares it, so `service synapseids_sensor` lists
+# it in its usage line and `... extracommands` reports it.
+case "${1:-}" in
+selftest | oneselftest)
+    synapseids_sensor_selftest
+    exit $?
+    ;;
+esac
 
 run_rc_command "$1"

@@ -50,7 +50,10 @@ Usage:
 Flags:
   --version <tag>   release tag to install, e.g. v0.2.0 (default: latest release)
   --url <base>      base URL to download from instead of the GitHub release,
-                    for an air-gapped mirror. Must serve the .pkg and SHA256SUMS.
+                    for a LAN host or air-gapped mirror. Must serve the .pkg and
+                    SHA256SUMS. With --url and no --version, the version is read
+                    from the mirror's own SHA256SUMS rather than from
+                    api.github.com, so no internet access is needed.
   --grant-bpf       also install the devfs rule that lets the unprivileged
                     sensor user read /dev/bpf*. Opt-in: it changes device
                     permissions on your firewall. Without it the sensor cannot
@@ -105,13 +108,21 @@ if [ "$UNINSTALL" = 1 ]; then
 	else
 		say "  $PKGNAME is not installed"
 	fi
-	for f in /usr/local/etc/synapseids/sensor.conf /usr/local/etc/synapseids/sensor.token; do
-		[ -e "$f" ] && run rm -f "$f"
+	# Everything configd renders, including the TLS private key -- leaving a key
+	# behind after an uninstall is bad hygiene even though it is mode 0400.
+	for f in /usr/local/etc/synapseids/sensor.conf \
+		/usr/local/etc/synapseids/sensor.token \
+		/usr/local/etc/synapseids/sensor-ca.pem \
+		/usr/local/etc/synapseids/sensor-cert.pem \
+		/usr/local/etc/synapseids/sensor-key.pem; do
+		if [ -e "$f" ]; then
+			run rm -f "$f"
+		fi
 	done
 	say ""
-	say "Removed the package and the rendered configuration."
-	say "The bearer token stored in the OPNsense configuration was NOT deleted."
-	say "Clear it under Services > SynapseIDS Sensor if you no longer want it."
+	say "Removed the package, the rendered configuration and the rendered TLS material."
+	say "The bearer token and the PEM text stored in the OPNsense configuration were NOT"
+	say "deleted. Clear them under Services > SynapseIDS Sensor if you no longer want them."
 	exit 0
 fi
 
@@ -142,6 +153,29 @@ else
 	err "need fetch or curl"
 fi
 
+# Resolving the version.
+#
+# With --url pointing at a private mirror or a LAN host we must NOT reach out to
+# api.github.com: that host may have no route to the internet at all, and an
+# air-gapped install would fail on a call it never needed to make. So when a base
+# URL is given without a version, the version is discovered from the mirror's own
+# SHA256SUMS instead -- which we are about to download anyway.
+MIRROR_SUMS=""
+if [ -z "$VERSION" ] && [ -n "$BASE_URL" ]; then
+	say "resolving the version from $BASE_URL/SHA256SUMS"
+	MIRROR_SUMS="$(dl "$BASE_URL/SHA256SUMS" 2>/dev/null || true)"
+	if [ -n "$MIRROR_SUMS" ]; then
+		# Match os-synapseids-sensor-<ver>-freebsd<major>-<goarch>.pkg and keep
+		# <ver>. The name is anchored on both sides so a stray file cannot match.
+		VERSION="$(printf '%s\n' "$MIRROR_SUMS" \
+			| sed -n "s,.*[/ ]${PKGNAME}-\(.*\)-freebsd${FBSD_MAJOR}-${GOARCH}\.pkg\$,\1,p" \
+			| head -1)"
+	fi
+	[ -n "$VERSION" ] || err "could not work out which version $BASE_URL serves.
+Pass it explicitly, e.g. --url $BASE_URL --version v0.2.0"
+	say "  found $VERSION"
+fi
+
 if [ -z "$VERSION" ]; then
 	VERSION="$(dl "https://api.github.com/repos/$REPO/releases/latest" \
 		| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
@@ -150,6 +184,12 @@ fi
 VER="${VERSION#v}"
 
 [ -n "$BASE_URL" ] || BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
+
+# This must match, character for character, the name scripts/package-opnsense.sh
+# writes:  out="$DIST/${PKGNAME}-${VER}-freebsd${major}-${goarch}.pkg"
+# A mismatch here is the difference between a working install and a confusing
+# 404, so TestOPNsensePackageFilenameDerivation in cmd/synapse-sensor pins the
+# two format strings and the ABI-to-GOARCH mapping against each other.
 PKGFILE="${PKGNAME}-${VER}-freebsd${FBSD_MAJOR}-${GOARCH}.pkg"
 
 TMP="$(mktemp -d)"
@@ -170,13 +210,39 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
 	say "  would verify $PKGFILE against SHA256SUMS"
 else
-	dlo "$BASE_URL/SHA256SUMS" "$TMP/SHA256SUMS" \
-		|| err "could not download SHA256SUMS -- refusing to install an unverified package"
+	if [ -n "$MIRROR_SUMS" ]; then
+		# Already fetched while resolving the version from a mirror.
+		printf '%s\n' "$MIRROR_SUMS" > "$TMP/SHA256SUMS"
+	else
+		dlo "$BASE_URL/SHA256SUMS" "$TMP/SHA256SUMS" \
+			|| err "could not download SHA256SUMS -- refusing to install an unverified package"
+	fi
 
-	# The release SHA256SUMS is produced by sha256sum(1) on Linux, so entries
-	# look like "<hash>  ./<name>". FreeBSD has sha256(1), not sha256sum(1).
-	want="$(sed -n "s,^\([0-9a-f]\{64\}\)  \./\{0,1\}${PKGFILE}\$,\1,p" "$TMP/SHA256SUMS" | head -1)"
-	[ -n "$want" ] || err "$PKGFILE has no entry in SHA256SUMS -- refusing to install"
+	# The release SHA256SUMS is produced by sha256sum(1) on Linux, where the
+	# entry for a file named on the command line as ./x is "<hash>  ./x" and one
+	# named as x is "<hash>  x". Both forms must be accepted -- and the previous
+	# pattern here required the leading dot, so a bare-name entry silently found
+	# no match and the install aborted as "no entry in SHA256SUMS".
+	#
+	# The name is escaped first, because a package version contains dots and a
+	# dot is a regex metacharacter -- unescaped, "0.2.0" would also match a
+	# hypothetical "0X2Y0" build.
+	#
+	# Three separate -e expressions rather than one clever pattern with optional
+	# groups: every BRE interval (\{0,1\}, \{1,\}) contains a comma, and comma is
+	# this s///'s delimiter, so a single combined pattern silently truncates.
+	# Three plain alternatives are also easier to read and to check by eye.
+	pkgfile_re="$(printf '%s\n' "$PKGFILE" | sed 's,[][*.^$\\],\\&,g')"
+	want="$(sed -n \
+		-e "s,^\([0-9a-f]*\)  *${pkgfile_re}\$,\1,p" \
+		-e "s,^\([0-9a-f]*\)  *\./${pkgfile_re}\$,\1,p" \
+		-e "s,^\([0-9a-f]*\)  *[*]${pkgfile_re}\$,\1,p" \
+		"$TMP/SHA256SUMS" | head -1)"
+	[ -n "$want" ] || err "$PKGFILE has no entry in $BASE_URL/SHA256SUMS -- refusing to install.
+The mirror may be serving a different version; check what it lists:
+    fetch -qo - $BASE_URL/SHA256SUMS | grep $PKGNAME"
+	[ "${#want}" = 64 ] || err "the SHA256SUMS entry for $PKGFILE is not a 64-character hex digest
+(got ${#want} characters) -- refusing to install against a malformed checksum file"
 	got="$(sha256 -q "$TMP/$PKGFILE")"
 	[ "$got" = "$want" ] || err "checksum verification failed for $PKGFILE
   expected $want
@@ -240,5 +306,11 @@ if [ "$GRANT_BPF" != 1 ]; then
 	say "    printf '[synapseids_bpf=10]\\nadd path '\\''bpf*'\\'' mode 0640 group net\\n' >> /etc/devfs.rules"
 	say "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
 fi
+say ""
+say "If anything does not work, run the selftest FIRST -- it checks the binary, the"
+say "service account, /dev/bpf* access, that the chosen interface resolved to a device"
+say "that exists, the rendered config, the token mode, the TLS material and whether"
+say "the daemon answers. One line per check:"
+say "    service synapseids_sensor selftest"
 say ""
 say "Verify from the daemon side:  curl -s http://<synapsed>:8080/api/v1/captures | jq"

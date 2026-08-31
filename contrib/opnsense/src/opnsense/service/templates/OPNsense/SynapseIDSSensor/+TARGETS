@@ -5,10 +5,21 @@
 #
 # <template file>:<absolute destination>
 #
-# configd writes both files as root:wheel with the default umask, so the
+# configd writes every one of these as root:wheel with the default umask, so the
 # `synapseidssensor fixperms` action (and the rc.d start_precmd) tighten them
 # immediately afterwards:
-#   sensor.conf  -> root:wheel 0640              (flags only, no secrets)
-#   sensor.token -> _synapseids:_synapseids 0400 (the bearer token, nothing else)
+#   sensor.conf      -> root:wheel 0640                 (flags only, no secrets)
+#   sensor.token     -> _synapseids:_synapseids 0400    (the bearer token, nothing else)
+#   sensor-ca.pem    -> root:wheel 0444                 (public trust material)
+#   sensor-cert.pem  -> root:wheel 0444                 (public certificate)
+#   sensor-key.pem   -> _synapseids:_synapseids 0400    (THE TLS PRIVATE KEY)
+#
+# The two 0400 entries are the reason fixperms exists: configd's umask would
+# otherwise leave a freshly rendered secret world readable until somebody
+# noticed.  Every caller of `template reload OPNsense/SynapseIDSSensor` runs
+# fixperms straight afterwards.
 sensor.conf:/usr/local/etc/synapseids/sensor.conf
 sensor.token:/usr/local/etc/synapseids/sensor.token
+sensor-ca.pem:/usr/local/etc/synapseids/sensor-ca.pem
+sensor-cert.pem:/usr/local/etc/synapseids/sensor-cert.pem
+sensor-key.pem:/usr/local/etc/synapseids/sensor-key.pem

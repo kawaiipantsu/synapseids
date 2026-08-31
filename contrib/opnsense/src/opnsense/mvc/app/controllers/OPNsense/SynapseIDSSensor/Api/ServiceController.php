@@ -44,8 +44,16 @@ use OPNsense\Core\Backend;
  *   GET  /api/synapseidssensor/service/status
  *
  * all of which go through configd; this controller never shells out itself.
- * The only addition is logAction(), which returns the tail of the sensor log so
- * an operator can see why a start failed without leaving the web UI.
+ *
+ * Three additions:
+ *
+ *   - logAction()      the tail of the sensor log, so an operator can see why a
+ *                      start failed without leaving the web UI;
+ *   - selftestAction()  `synapse-sensor doctor` through configd -- the on-box
+ *                      diagnostic for a sensor that will not start or that
+ *                      starts but captures nothing (issue #102);
+ *   - reconfigureAction() overridden only to re-clamp file permissions after the
+ *                      parent re-renders the templates (issue #104).
  *
  * @package OPNsense\SynapseIDSSensor\Api
  */
@@ -93,16 +101,72 @@ class ServiceController extends ApiMutableServiceControllerBase
         $backend = new Backend();
         $log = (string)$backend->configdRun('synapseidssensor log');
 
-        // TODO(verify): ApiMutableServiceControllerBase exposes a protected
-        // getModel() that instantiates $internalServiceClass (it is what
-        // isEnabled() uses).  Confirm the helper name on the target core; if it
-        // is absent, replace this with
-        // `(new \OPNsense\SynapseIDSSensor\Sensor())->general->token`.
-        $token = trim((string)$this->getModel()->general->token);
+        // The model is instantiated directly rather than through a base-class
+        // helper.  ApiMutableServiceControllerBase does expose a getModel(), but
+        // depending on it here bought nothing and could not be confirmed from a
+        // Linux build host -- so the dependency is simply removed.  One `new` on
+        // a rarely-hit endpoint is cheaper than an unverifiable assumption.
+        $token = trim((string)(new \OPNsense\SynapseIDSSensor\Sensor())->general->token);
         if ($token !== '') {
             $log = str_replace($token, '***redacted***', $log);
         }
 
         return ['status' => 'ok', 'log' => trim($log)];
+    }
+
+    /**
+     * Run the on-box selftest and return its output verbatim.
+     *
+     * This is `synapse-sensor doctor` by way of the rc.d script's `selftest`
+     * verb: it checks the binary, the service account, /dev/bpf* access, that
+     * the configured interface resolved to a device that EXISTS, that the
+     * rendered configuration parses, that the token is 0400, that the TLS
+     * material parses and the key pair matches, and that the collector answers a
+     * TCP connect.  One `[ OK ]` / `[WARN]` / `[FAIL]` / `[SKIP]` line each.
+     *
+     * The command is read-only and prints no secrets -- only paths, modes and
+     * certificate subjects.  The configured token is nevertheless redacted from
+     * the response, exactly as in logAction(), so that a future change to the
+     * selftest output can never turn this endpoint into a token oracle.
+     *
+     * @return array {"status": "ok", "output": "..."}
+     */
+    public function selftestAction()
+    {
+        if (!$this->request->isGet() && !$this->request->isPost()) {
+            return ['status' => 'failed', 'output' => ''];
+        }
+
+        $this->sessionClose();
+
+        $backend = new Backend();
+        $output = (string)$backend->configdRun('synapseidssensor selftest');
+
+        $token = trim((string)(new \OPNsense\SynapseIDSSensor\Sensor())->general->token);
+        if ($token !== '') {
+            $output = str_replace($token, '***redacted***', $output);
+        }
+
+        return ['status' => 'ok', 'output' => trim($output)];
+    }
+
+    /**
+     * Re-render the templates, then re-clamp the permissions on what was
+     * rendered.
+     *
+     * The parent issues `template reload` itself, and configd renders as root
+     * under its own umask -- which since issue #104 means a freshly written TLS
+     * private key, not just the bearer token.  The rc.d start_precmd tightens
+     * both before every start, so a reconfigure that also starts the service is
+     * already covered; this closes the case where the service stays stopped and
+     * a secret would otherwise sit mode 0644 indefinitely.
+     *
+     * @return array the parent's result, unchanged
+     */
+    public function reconfigureAction()
+    {
+        $result = parent::reconfigureAction();
+        (new Backend())->configdRun('synapseidssensor fixperms');
+        return $result;
     }
 }
