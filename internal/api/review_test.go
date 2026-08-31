@@ -78,7 +78,7 @@ func reviewServer(t *testing.T) (http.Handler, *events.Bus, string) {
 	bus := events.New()
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	rv := review.Open(t.TempDir(), st, bus, audit.New(auditDir, quiet), quiet)
-	h := New(cfg, bus, st, rt, nil, nil, nil, nil, nil, nil, nil, nil, rv).Handler()
+	h := New(cfg, bus, st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, rv).Handler()
 	return h, bus, auditDir
 }
 

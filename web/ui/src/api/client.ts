@@ -16,7 +16,19 @@ import type {
   FeatureSchema,
   FlowRecord,
   HostProfile,
-  ModelInfo,
+  TimelineSeries,
+  TrainingList,
+  TrainingRun,
+} from './types'
+import type {
+  AuditList,
+  AuditQuery,
+  ModelDetail,
+  ModelEntry,
+  ModelLineage,
+  ModelList,
+} from './types'
+import type {
   Review,
   ReviewListResponse,
   ReviewQueueResponse,
@@ -24,9 +36,6 @@ import type {
   ReviewState,
   ReviewStatsResponse,
   ReviewWriteInput,
-  TimelineSeries,
-  TrainingList,
-  TrainingRun,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -43,10 +52,6 @@ async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function getStatus(): Promise<DaemonStatus> {
   return getJSON<DaemonStatus>('/api/v1/status')
-}
-
-export function getModels(): Promise<ModelInfo[]> {
-  return getJSON<ModelInfo[]>('/api/v1/models')
 }
 
 export function getFlows(limit = 100): Promise<FlowRecord[]> {
@@ -299,6 +304,81 @@ export function getTrainingRuns(limit = 50): Promise<TrainingList> {
 
 export function getTrainingRun(id: string): Promise<TrainingRun> {
   return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
+}
+
+// ---- model registry, activation and the audit trail ---------------------
+// (§19.12, §15, §21, §28.10; issue #36, ADR 0022)
+//
+// Activation is an explicit operator action and nothing here is called
+// implicitly: there is no "register and activate" call, because §28.10 forbids
+// a newly trained model going live without a human asking for it. The audit
+// read is the only audit call there will ever be — the log is append-only, so
+// this client has no way to edit or delete a record.
+
+export function getModels(): Promise<ModelList> {
+  return getJSON<ModelList>('/api/v1/models')
+}
+
+export function getModel(id: string): Promise<ModelDetail> {
+  return getJSON<ModelDetail>('/api/v1/models/' + encodeURIComponent(id))
+}
+
+export function getModelLineage(id: string): Promise<ModelLineage> {
+  return getJSON<ModelLineage>('/api/v1/models/' + encodeURIComponent(id) + '/lineage')
+}
+
+/** The outcome of an activate/deactivate POST. `message` carries the daemon's
+ *  error text verbatim so the UI can show a 409 ("bundle no longer validates:
+ *  …") exactly as the daemon phrased it, rather than a guess. */
+export interface ModelMutationResult {
+  ok: boolean
+  message: string
+  status: number
+  entry?: ModelEntry
+}
+
+async function modelAction(id: string, action: 'activate' | 'deactivate'): Promise<ModelMutationResult> {
+  const res = await fetch(`/api/v1/models/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (!res.ok) {
+    return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
+  }
+  let entry: ModelEntry | undefined
+  try {
+    entry = (JSON.parse(text) as { entry: ModelEntry }).entry
+  } catch {
+    entry = undefined
+  }
+  return { ok: true, message: action === 'activate' ? 'activated' : 'deactivated', status: res.status, entry }
+}
+
+/** Make one registered model the live primary classifier. Call only from an
+ *  operator-confirmed action (§28.10). */
+export function activateModel(id: string): Promise<ModelMutationResult> {
+  return modelAction(id, 'activate')
+}
+
+/** Turn a model off and restore the heuristic as primary. */
+export function deactivateModel(id: string): Promise<ModelMutationResult> {
+  return modelAction(id, 'deactivate')
+}
+
+/** GET /api/v1/audit. Read-only and bounded: the daemon clamps `limit` to
+ *  max_limit and never scans further back than scan_bytes_cap from the end of
+ *  the log. */
+export function getAudit(q: AuditQuery = {}): Promise<AuditList> {
+  const p = new URLSearchParams()
+  if (q.limit) p.set('limit', String(q.limit))
+  if (q.subject_type) p.set('subject_type', q.subject_type)
+  if (q.subject) p.set('subject', q.subject)
+  if (q.event) p.set('event', q.event)
+  if (q.from) p.set('from', q.from)
+  if (q.to) p.set('to', q.to)
+  const s = p.toString()
+  return getJSON<AuditList>('/api/v1/audit' + (s ? '?' + s : ''))
 }
 
 // ---- human review loop (§16, issues #42 + #64) --------------------------

@@ -102,10 +102,41 @@ Without it the sensor refuses to start and prints exactly these commands.
 
 ### Which mode to pick
 
-**Use `listen` mode.** It is the default and it works today: the daemon dials
-the firewall, exactly as [ADR 0012](adr/0012-pcap-over-ip-transport.md)
-describes. Add a firewall rule permitting the daemon's address to reach the
-sensor port, and add a matching `capture.sources[]` entry on the daemon:
+**Both modes work now.** `connect` mode is the better fit for a firewall and is
+what most deployments should use; `listen` mode remains the plugin's shipped
+default and is unchanged.
+
+**`connect` mode — the firewall dials out (recommended).** Nothing has to reach
+*into* the firewall: no inbound rule, no NAT port-forward, no hole in the box you
+are trying to monitor. The sensor reconnects with capped exponential backoff and
+jitter, so a daemon restart heals itself. Enable the daemon-side collector
+([ADR 0018](adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)):
+
+```jsonc
+"capture": {
+  "collector": {
+    "listen": "0.0.0.0:4789",
+    "cert_file": "/etc/synapseids/collector.crt",     // the daemon is the TLS server here
+    "key_file":  "/etc/synapseids/collector.key",
+    "token_file": "/etc/synapseids/collector.token",  // the same token the firewall holds
+    "client_ca_file": "/etc/synapseids/sensors-ca.pem", // optional mTLS; authenticates the firewall
+    "max_sensors": 32,
+    "authorized": true
+  }
+}
+```
+
+In the plugin form set **Mode** to *This firewall connects out*, point **Server**
+at the daemon's collector `host:port`, and set **Verify peer / CA** to the
+daemon's certificate (`collector.crt` doubles as its own CA if you generated it
+with `synapse-sensor gen-cert`). The firewall then appears on the daemon's
+`GET /api/v1/sensors` under its **Sensor ID** and **Location**, and as a
+`kind: "pcap-over-ip-listen"` row in `GET /api/v1/captures`.
+
+**`listen` mode — the daemon dials the firewall.** Still fully supported, exactly
+as [ADR 0012](adr/0012-pcap-over-ip-transport.md) describes. Add a firewall rule
+permitting the daemon's address to reach the sensor port, and a matching
+`capture.sources[]` entry on the daemon:
 
 ```jsonc
 { "name": "opnsense-wan", "kind": "pcap-over-ip",
@@ -115,13 +146,10 @@ sensor port, and add a matching `capture.sources[]` entry on the daemon:
   "authorized": true }
 ```
 
-**`connect` mode is not usable yet.** The sensor half is implemented — it dials
-out, reconnects with backoff, and speaks the unchanged SYNPOIP wire format —
-but `synapsed` has no collector endpoint to dial *to*. Every capture kind the
-daemon supports opens outward or locally. Adding an inbound collector is a
-tracked follow-up; see [PROTOCOL.md
-§6](../internal/capture/pcapoverip/PROTOCOL.md) and ADR 0014. The sensor logs
-this plainly at start-up if you select the mode anyway.
+Note the asymmetry that survives: a `listen`-mode source has **no auto-reconnect**
+on the daemon side, so a dropped stream sits in `state: "error"` until `synapsed`
+restarts. `connect` mode does reconnect, because the reconnecting end is the one
+that dials.
 
 ### Where the secrets live
 

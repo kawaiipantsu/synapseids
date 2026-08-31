@@ -103,6 +103,12 @@ type Registry struct {
 	logf  Logf
 	order []string          // model IDs in registration order
 	byID  map[string]*Entry // stored value is never mutated in place after insert
+
+	// reconciled names the models Open demoted from active to deactivated
+	// because activation must not survive a restart. It is set once during
+	// load and never changes, so the daemon can audit the demotion it did not
+	// ask for (PROJECT.md §21, §28.10).
+	reconciled []string
 }
 
 // Open returns a Registry backed by dir/registry.json, loading any existing
@@ -137,7 +143,6 @@ func (r *Registry) load() {
 		r.logf("registry: %q is corrupt (%v) — starting empty", r.path, err)
 		return
 	}
-	demoted := 0
 	for i := range f.Entries {
 		e := f.Entries[i]
 		if e.ModelID == "" {
@@ -153,15 +158,15 @@ func (r *Registry) load() {
 		// still offer "re-activate the last active model".
 		if e.Status == StatusActive {
 			e.Status = StatusDeactivated
-			demoted++
+			r.reconciled = append(r.reconciled, e.ModelID)
 		}
 		cp := e
 		r.byID[e.ModelID] = &cp
 		r.order = append(r.order, e.ModelID)
 	}
 	r.logf("registry: loaded %d model(s) from %q", len(r.order), r.path)
-	if demoted > 0 {
-		r.logf("registry: %d model(s) were active before shutdown — marked deactivated; re-activate explicitly to make one live", demoted)
+	if len(r.reconciled) > 0 {
+		r.logf("registry: %d model(s) were active before shutdown — marked deactivated; re-activate explicitly to make one live", len(r.reconciled))
 		if err := r.persistLocked(); err != nil {
 			r.logf("registry: could not persist startup reconciliation: %v", err)
 		}
@@ -337,6 +342,17 @@ func (r *Registry) Active() (Entry, bool) {
 		}
 	}
 	return Entry{}, false
+}
+
+// Reconciled returns the model IDs that Open demoted from active to deactivated
+// while loading, because activation never survives a restart (PROJECT.md
+// §28.10). The daemon audits these so the log records the state change: without
+// it, the last line about such a model claims it is active when it is not.
+// The result is empty for a registry that had no active entry on disk.
+func (r *Registry) Reconciled() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]string(nil), r.reconciled...)
 }
 
 // Lineage returns the derived-from chain for id, root first, id last. A

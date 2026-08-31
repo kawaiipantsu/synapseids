@@ -306,6 +306,42 @@ func TestActiveIsReconciledToDeactivatedOnReopen(t *testing.T) {
 	}
 }
 
+// Reconciled names the models the reopen demoted, so the daemon can write the
+// matching ModelDeactivated audit line — without it the model's last audit
+// record would still claim it is active (PROJECT.md §21, §28.10).
+func TestReconciledNamesDemotedModels(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.Open(root, silent)
+	mustRegister(t, reg, bundle(t, root, "m", modeltest.Bundle{ModelID: "m", Seed: 1}))
+	mustRegister(t, reg, bundle(t, root, "n", modeltest.Bundle{ModelID: "n", Seed: 2}))
+
+	// Nothing was active on disk, so nothing was reconciled.
+	if got := reg.Reconciled(); len(got) != 0 {
+		t.Fatalf("fresh registry reconciled %v, want none", got)
+	}
+	if _, err := reg.SetStatus("m", registry.StatusActive); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	reopened := registry.Open(root, silent)
+	if got := reopened.Reconciled(); len(got) != 1 || got[0] != "m" {
+		t.Fatalf("Reconciled() = %v, want [m]", got)
+	}
+	// A further reopen has nothing left to demote: the reconciliation was
+	// persisted, so the audit line is written once, not on every boot.
+	if got := registry.Open(root, silent).Reconciled(); len(got) != 0 {
+		t.Fatalf("second reopen reconciled %v, want none", got)
+	}
+	// The returned slice is a copy — a caller cannot corrupt registry state.
+	again := reopened.Reconciled()
+	if len(again) > 0 {
+		again[0] = "tampered"
+		if reopened.Reconciled()[0] != "m" {
+			t.Fatal("Reconciled() aliases internal state")
+		}
+	}
+}
+
 func TestCorruptFileToleratedStartsEmpty(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, registry.FileName), []byte("{ this is not json"), 0o644); err != nil {

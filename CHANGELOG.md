@@ -9,6 +9,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The daemon-side SYNPOIP collector, and real sensor identity** (issues #43 and
+  #103, EPIC Phase 6;
+  [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)).
+  `synapse-sensor pcap-over-ip --connect <daemon>` — the reverse/outbound posture
+  #98 built for a sensor behind NAT — is **usable end to end** for the first time:
+  `synapsed` now has something to dial.
+  - **`capture.Collector`** (`internal/capture/collector.go`) — a long-lived TLS
+    listener that accepts sensor connections. It is a *listener*, not a dialled
+    target, so it is a distinct `capture.collector` config block rather than a
+    `capture.sources[]` kind; all four existing kinds are untouched. Off by
+    default (`listen: ""` = no new listening socket).
+  - **No wire change.** Per PROTOCOL.md §6 the accepting daemon still sends the
+    ClientHello and the sensor answers with a ServerAccept and streams frames, so
+    the collector runs the SYNPOIP **client** half (`pcapoverip.ClientHandshake`
+    + a frame loop) on each accepted connection. `protocol.go` is byte-for-byte
+    unchanged and there is no version bump.
+  - **One `capture.Manager` source per accepted peer**, via the new internal
+    `sessionSource` adapter: `kind: "pcap-over-ip-listen"`, `origin: "collector"`,
+    named after the sensor id (de-duplicated with a short session suffix if two
+    sensors claim the same id, falling back to the remote address). Packets join
+    the one merged channel the single pipeline goroutine drains. When the stream
+    ends — goodbye, EOF, read-idle or shutdown — the row is **removed**, not left
+    as `stopped`. The sensor-advertised filter and the accept-time handshake
+    latency surface in the existing capture row.
+  - **Bounded accept** (PROJECT.md §21): `max_sensors` (default 32) caps
+    *registered* sensors, and a looser `max_sensors + 16` caps connections still
+    handshaking, so a stream of probes cannot starve real sensors. An over-cap
+    peer is closed before any TLS or SYNPOIP work; rejections are counted
+    (capacity / TLS / auth / protocol) and logged.
+  - **Auth posture.** Because the SYNPOIP roles do not invert with the TCP
+    direction, the bearer token proves the *daemon* to the sensor (which verifies
+    it with `crypto/subtle`), and `client_ca_file` →
+    `RequireAndVerifyClientCert` is what authenticates the *sensor* to the
+    daemon. An inline `token` is refused (§23; use `token_file` or
+    `SYNAPSE_COLLECTOR_TOKEN`), and `authorized: true` is required to enable the
+    collector at all (§28.18). A missing or unreadable certificate is logged once
+    and the daemon keeps serving the API, degraded — like a NIC that cannot open.
+  - **Sensor identity** (#43). `synapse-sensor` resolves `--sensor-id` /
+    `SYNAPSE_SENSOR_ID` / the hostname and `--location` /
+    `SYNAPSE_SENSOR_LOCATION`, and announces id + location + agent version +
+    `os/arch` in the accept's `session_id` as
+    `<sensor_id>|<location>|<agent_version>|<os/arch>` before the random suffix
+    (`pcapoverip.FormatSessionPrefix` / `ParseSensorIdentity`). Not a wire change:
+    `session_id` was already free-form and capped. Fields are sanitised of the
+    separator and of control bytes and individually clipped, and a prefix with no
+    separator still parses as a bare sensor id, so session ids from older sensors
+    keep working.
+  - **`GET /api/v1/sensors` and `GET /api/v1/sensors/{id}`** — the connected
+    sensors: `sensor_id`, `location`, `remote_addr`, `link_type`, `filter`,
+    `connected_at`, `packets`, `bytes`, `drops`, `pps`, `bps`, `last_packet`,
+    `state`, plus `agent_version` / `os_arch` / `session_id` / `source_name`. The
+    collector's own view of its peers, joined with the live counters of the
+    matching Manager row. Read-only (a sensor is added and removed by connecting
+    and disconnecting) and loopback-only like the rest of the state surface
+    (§21, `TODO(#58)`). Wired through a new `api.SensorStatusProvider` — a
+    twelfth `api.New` parameter, appended so existing arguments do not move;
+    `nil` yields `[]` / `404`, never `503`.
+  - **`events.SensorConnected` / `events.SensorDisconnected`** are now actually
+    published, from `Collector.OnConnect` / `OnDisconnect` hooks in
+    `cmd/synapsed` (the hooks keep `internal/capture` off the event bus). Both
+    were already in the frozen `event-envelope-v1` enum — nothing was added.
+  - **`synapse-sensor gen-cert`** writes a self-signed ECDSA P-256 pair (cert
+    `0644`, key `0600`) and prints its SHA-256, so a testing collector can be
+    stood up without an `openssl` incantation; the certificate is its own CA, so
+    the `.crt` doubles as the sensor's `--ca`. No certificate-management
+    subsystem was added — production provisions from its own PKI, and
+    `docs/api.md` documents the equivalent `openssl req`.
+  - `synapse-sensor` with no subcommand now prints its build stamp and exits 0
+    instead of exiting 1 with a "not implemented" notice.
+  - Config: `capture.collector` with `listen` / `cert_file` / `key_file` /
+    `token_file` / `client_ca_file` / `max_sensors` / `authorized`, validated by
+    `config.ValidateCollector`; `SYNAPSE_COLLECTOR_LISTEN` and
+    `SYNAPSE_COLLECTOR_TOKEN` env overrides; `capturewire.BuildCollector` /
+    `ResolveCollectorToken`; sample `contrib/config/synapse.collector.json`.
+  - Tests: collector registration / streaming / goodbye-removal, a rejected
+    token, mTLS required (negative **and** positive), the `max_sensors` cap,
+    five concurrent sensors under `-race`, the identity codec round trip and its
+    legacy form, the config rules, the API routes, a `synapse-sensor` hello-meta
+    assertion and a goroutine-leak check, and a full
+    sensor → collector → pipeline → classification end-to-end test.
+  - Docs: ADR 0018, `docs/api.md`, `docs/architecture.md`, `README.md`,
+    `docs/opnsense-sensor.md`, `contrib/opnsense/README.md`,
+    `contrib/config/synapse.annotated.md`, and PROTOCOL.md §6's "not wired yet"
+    paragraph retired. Still open: sensor `flow` / `feature` modes (#45) and the
+    sensor-topology view (#46).
+- **Model activation workflow + audit log** (issue #36, EPIC Phase 4;
+  [ADR 0022](docs/adr/0022-auditable-model-activation-workflow.md)). The audit
+  log was write-only and `ML ▸ Models` was a placeholder, so the one action
+  PROJECT.md §28.10 singles out as requiring a deliberate human step had no
+  operator surface and left no inspectable trail. Both are now real.
+  - **`internal/audit` gained a read path.** `Tail(n, Filter)` returns records
+    **newest first**, seeking to EOF and scanning backwards in 64 KiB chunks.
+    Bounded twice: `MaxTail` caps the result at 1000 records (`DefaultTail` 100),
+    and `MaxScanBytes` stops the scan 8 MiB back from EOF, so the whole file is
+    never read and request cost does not grow with the log. A torn trailing line
+    from a crash mid-append is skipped, not fatal; a log file that does not exist
+    yet reads as empty, not an error.
+  - `GET /api/v1/audit` — read-only, `limit` (default 100, max 1000),
+    `subject_type=`, `subject=`, `event=`, `from=`/`to=` (RFC3339, inclusive),
+    reusing the existing `limitParam` / `parseTimeRange` helpers. The response
+    echoes `limit`, `max_limit` and `scan_bytes_cap` so a client can say what it
+    is not showing.
+  - **Append-only forever.** `GET` is the only method routed at `/api/v1/audit`;
+    `POST`/`PATCH`/`DELETE` return `404` and always will. An audit trail an
+    operator can curate after the fact records nothing worth reading (§21). The
+    trail is sensitive operational history and inherits the loopback-by-default,
+    unauthenticated posture of the rest of the API until issue #58.
+  - **`Filter` is generic over subject types.** `subject_type` is compared as an
+    opaque string and never validated against an enum, so §21's fourth category
+    — human label changes, arriving as a `review` subject type with issue #42 —
+    becomes readable and filterable the moment it is first written, with no
+    change to the reader, the route or the UI's filter chips (which derive
+    themselves from the records).
+  - **SPA:** `ML ▸ Models` replaces the "Planned — Phase 2" placeholder with the
+    §19.12 field set — registry table (status pill, parameter count, artifact
+    size, short content hash, live-in-runtime), detail pane with schemas and I/O
+    sizes, a read-only architecture breakdown, training dataset ids, metrics, the
+    confusion matrix, lineage as a tree (§15), the per-model audit trail, and a
+    global audit view with a chip per subject type. `architecture` and `metrics`
+    are bundle pass-throughs and are parsed defensively — an unreported metric
+    reads as missing, never as zero.
+  - **Activation is confirmation-gated (§28.10).** **Activate** opens a
+    confirmation that names the model, states plainly that it will become the
+    primary classifier for *all live traffic*, names what it replaces, lists the
+    content hash / parameter count / artifact size / provenance, and warns that
+    the action is audited and does not survive a restart. **Deactivate** confirms
+    the heuristic will be restored. A `409` (bundle no longer loads, no longer
+    validates, or cannot be compiled) is surfaced **verbatim**. There is
+    deliberately no "auto-activate on register", no "activate newest" and no bulk
+    activate — §28.10 forbids the mechanism, so the UI offers no switch that
+    could become one.
+
 - **Human review queue and curated datasets** (issues #42 and #64, EPIC Phase 5;
   [ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md)). The
   `capture → classification → human review → curated dataset` half of
@@ -98,6 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     human-review section (§19.3) is live instead of a Phase-2 stub.
     `#/detections` is untouched — it remains a "Planned — Phase 5" placeholder,
     since nothing emits `AlertCreated` yet.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature
@@ -903,6 +1036,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three audit-coverage gaps in the model lifecycle** (issue #36). Each made the
+  log disagree with reality, and each was only visible once the log could be read
+  back as a sequence of state changes:
+  - Activating B while A was active demoted A in the registry but wrote no record
+    under A, so A's most recent audit line still said *activated* while it was
+    not live. `POST /api/v1/models/{id}/activate` now writes A's implicit
+    `ModelDeactivated` under A's own subject, ordered before B's activation.
+  - A model active at shutdown is reconciled to `deactivated` on restart — a real
+    state change that was never audited. `registry.Reconciled()` now reports the
+    demoted IDs and `cmd/synapsed` audits each; the reconciliation is persisted,
+    so this is written once rather than on every boot.
+  - `ModelRegistered` was appended on every boot for bundles the registry already
+    knew (`Register` is idempotent), burying real changes in duplicates. The
+    startup sweep now audits only a genuinely new registration.
+  - Smaller honesty fix: deactivating an entry that was never the live primary is
+    a legal no-op, and its record no longer claims it "restored the heuristic".
+- The stale `getModels()` client helper claimed `Promise<ModelInfo[]>` while
+  `GET /api/v1/models` returns `{models, runtime}`. It had no call sites; it is
+  now correctly typed and used by `ML ▸ Models`.
 - `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
   every 256 packets. The unpaced emit loop previously had no blocking point, so
   on a single-CPU host a long replay could monopolise the Go scheduler and delay

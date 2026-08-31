@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -35,8 +34,8 @@ import (
 // own for mutual TLS (--cert / --key). Combined with the bearer token the
 // daemon presents in its ClientHello, both ends authenticate each other.
 //
-// NOTE: synapsed does not yet ship the collector endpoint this dials. See the
-// ADR and docs/opnsense-sensor.md for what is and is not wired.
+// The daemon-side collector this dials is `capture.Collector`, enabled by a
+// `capture.collector` block in synapsed's config (ADR 0018, docs/api.md).
 
 const connectDialTimeout = 15 * time.Second
 
@@ -61,7 +60,6 @@ func runConnect(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 
 	log.Printf("pcap-over-ip: connecting out to collector %s (link %d, sensor %q, location %q)",
 		o.connect, cfg.LinkType, o.sensorID, o.location)
-	log.Printf("pcap-over-ip: NOTE %v", errConnectNotWired)
 
 	delay := retryMin
 	for ctx.Err() == nil {
@@ -193,12 +191,3 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return false
 	}
 }
-
-// errConnectNotWired documents the one thing --connect cannot do yet. It is
-// referenced from the docs rather than returned, because the sensor side is
-// complete: what is missing is the daemon-side collector that accepts the
-// connection and sends the ClientHello.
-var errConnectNotWired = errors.New(
-	"synapsed has no inbound collector endpoint yet: every capture kind dials outward. " +
-		"--connect implements the sensor half against the unchanged SYNPOIP wire format; " +
-		"the daemon-side listener is a tracked follow-up")
