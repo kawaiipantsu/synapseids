@@ -100,6 +100,7 @@ type Server struct {
 	rc      ReplayController
 	fs      FlowStatsProvider
 	cap     CaptureStatusProvider
+	sensors SensorStatusProvider
 	insight *insight.Index
 	tr      *training.Store
 	hub     *wshub.Hub
@@ -115,10 +116,12 @@ type Server struct {
 // an empty list); ix may be nil (/api/v1/hosts then returns an empty list and
 // /api/v1/timeline an empty series — *insight.Index is nil-safe on every read);
 // tr may be nil (GET /api/v1/training then returns an empty list and the
-// trainer-facing POST routes return 503).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store) *Server {
+// trainer-facing POST routes return 503); sp may be nil (/api/v1/sensors then
+// returns an empty list and /{id} a 404).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, sp SensorStatusProvider) *Server {
 	return &Server{
 		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, ds: ds, rc: rc, fs: fs, cap: cp,
+		sensors: sp,
 		insight: ix,
 		tr:      tr,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
@@ -160,6 +163,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/captures", s.handleCaptureCreate)
 	mux.HandleFunc("GET /api/v1/captures/{name}", s.handleCapture)
 	mux.HandleFunc("DELETE /api/v1/captures/{name}", s.handleCaptureDelete)
+	mux.HandleFunc("GET /api/v1/sensors", s.handleSensors)
+	mux.HandleFunc("GET /api/v1/sensors/{id}", s.handleSensor)
 	mux.HandleFunc("POST /api/v1/architecture/estimate", s.handleArchitectureEstimate)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)

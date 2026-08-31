@@ -1,0 +1,39 @@
+{
+  "server": {
+    "listen": "127.0.0.1:8080",
+    "web_root": ""
+  },
+  "storage": {
+    "driver": "memory",
+    "path": "/var/lib/synapseids/synapse.db",
+    "max_flows": 50000
+  },
+  "capture": {
+    "flow_idle_timeout": "30s",
+    "flow_max_lifetime": "5m",
+    "snapshot_interval": "60s",
+    "max_flows": 200000,
+    "sources": [],
+    "collector": {
+      "listen": "0.0.0.0:4789",
+      "cert_file": "/etc/synapseids/collector.crt",
+      "key_file": "/etc/synapseids/collector.key",
+      "token_file": "/etc/synapseids/collector.token",
+      "client_ca_file": "/etc/synapseids/sensors-ca.pem",
+      "max_sensors": 32,
+      "authorized": true
+    }
+  },
+  "models": {
+    "directory": "/var/lib/synapseids/models",
+    "primary": ""
+  },
+  "live": {
+    "websocket_batch": "100ms",
+    "client_queue_size": 5000
+  },
+  "retention": {
+    "flows": "720h",
+    "classifications": "2160h"
+  }
+}

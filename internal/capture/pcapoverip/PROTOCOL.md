@@ -219,13 +219,29 @@ bearer token (and its server certificate), the sensor with its client
 certificate. `sensor_id` moves from the hello metadata to the `session_id`
 field of the accept, because in this direction the sensor is the one answering.
 
-**Not wired yet:** `synapsed` has no collector endpoint. Every capture kind it
-supports (`nic`, `tcpdump`, `ssh`, `pcap-over-ip`) opens outward or locally, so
-there is nothing listening for a sensor to dial. `--connect` implements the
-complete sensor half against the unchanged wire format and is exercised
-end to end against a test collector, but a daemon-side listener — a new capture
-kind that accepts connections and registers a source per peer — is a tracked
-follow-up. See ADR 0014.
+**The daemon side is wired.** A `capture.collector` block in `synapsed`'s config
+stands up `capture.Collector`: a TLS listener that accepts sensor connections and,
+per accepted connection, runs the **client** half of §2–§4 (it sends the
+ClientHello, reads the ServerAccept, then consumes frames) and registers that
+peer as its own `capture.Manager` source, removing it when the stream ends. The
+peer shows up on `GET /api/v1/captures` with `kind: "pcap-over-ip-listen"` and on
+`GET /api/v1/sensors`.
+
+Sensor identity travels in the accept's `session_id`, which `synapse-sensor`
+formats as `<sensor_id>|<location>|<agent_version>|<os/arch>` before the
+server-appended random suffix — see `pcapoverip.FormatSessionPrefix` /
+`ParseSensorIdentity`. That is **not** a wire change: `session_id` is already a
+free-form string capped at `MaxSessionIDLen`, every field is sanitised of the
+separator and of control bytes, and a prefix with no separator still parses as a
+bare sensor id, so the plain `<sensor-id>-<hex>` form older sensors sent keeps
+working.
+
+The accept path is bounded (`max_sensors`, default 32, plus a looser cap on
+connections still handshaking) and refuses an over-cap peer **before** any TLS or
+SYNPOIP work. Note that a typed `ServerReject` is not available to the collector
+in this direction — reject codes are a server→client message and here the daemon
+is the client — so capacity is signalled by closing the connection; the sensor's
+reconnect loop backs off. See ADR 0014 and ADR 0018.
 
 ## 7. Not in v1 (tracked follow-ups)
 

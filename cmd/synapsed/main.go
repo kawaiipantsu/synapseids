@@ -198,6 +198,39 @@ func run(args []string) int {
 		log.Printf("capture: no live source could start — continuing API-only (degraded)")
 	}
 
+	// The daemon-side SYNPOIP collector: a TLS listener that accepts
+	// reverse-connecting sensors (`synapse-sensor pcap-over-ip --connect`) and
+	// registers one capture.Manager source per accepted peer (issues #43, #103;
+	// ADR 0018). Nil when no collector block is configured. Bad TLS material is
+	// logged and the daemon keeps serving the API (degraded), exactly like a NIC
+	// source that cannot open.
+	var collector *capture.Collector
+	if cfg.Capture.Collector.Listen != "" {
+		col, cerr := capturewire.BuildCollector(cfg.Capture.Collector, log.Printf)
+		if cerr != nil {
+			log.Printf("capture: collector disabled: %v", cerr)
+		} else {
+			col.OnConnect = func(si capture.SensorInfo) {
+				bus.Publish(events.SensorConnected, map[string]any{
+					"sensor_id": si.SensorID, "location": si.Location,
+					"remote_addr": si.RemoteAddr, "link_type": si.LinkType,
+					"filter": si.Filter, "session_id": si.SessionID,
+					"agent_version": si.AgentVersion, "os_arch": si.OSArch,
+					"source_name": si.SourceName,
+				})
+			}
+			col.OnDisconnect = func(si capture.SensorInfo) {
+				bus.Publish(events.SensorDisconnected, map[string]any{
+					"sensor_id": si.SensorID, "location": si.Location,
+					"remote_addr": si.RemoteAddr, "link_type": si.LinkType,
+					"filter": si.Filter, "session_id": si.SessionID,
+					"source_name": si.SourceName,
+				})
+			}
+			collector = col
+		}
+	}
+
 	// The Manager is always wired into the API, even with zero startup sources,
 	// so POST /api/v1/captures can add one at runtime and DELETE can remove it
 	// (issue #32). The capture pipeline goroutine below always runs for the same
@@ -205,7 +238,7 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, collector)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -228,8 +261,19 @@ func run(args []string) int {
 			st.Packets, st.Flows, st.Classifications)
 	}()
 
-	log.Printf("synapsed %s listening on http://%s  (feature schema %s, %d models, %d live capture source(s))",
-		version.Version, cfg.Server.Listen, features.SchemaID, len(rt.Models()), live)
+	// The collector runs on its own goroutine after the pipeline goroutine, so
+	// the Manager is already draining m.out when the first sensor registers. A
+	// listen failure logs and the daemon keeps serving the API (degraded).
+	if collector != nil {
+		go func() {
+			if err := collector.Run(ctx, capMgr); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("collector: %v", err)
+			}
+		}()
+	}
+
+	log.Printf("synapsed %s listening on http://%s  (feature schema %s, %d models, %d live capture source(s), collector=%t)",
+		version.Version, cfg.Server.Listen, features.SchemaID, len(rt.Models()), live, collector != nil)
 	if err := srv.Run(ctx); err != nil {
 		log.Printf("server: %v", err)
 		return 1

@@ -70,9 +70,10 @@ func TestConnectModeStreamsToACollector(t *testing.T) {
 		t.Errorf("negotiated version %d, want %d", sess.NegotiatedVersion(), pcapoverip.Version1)
 	}
 	// The sensor identifies itself through the session id, since in this
-	// direction it is the one answering rather than sending metadata.
-	if sid := sess.SessionID(); len(sid) < len("opnsense-wan-") || sid[:len("opnsense-wan-")] != "opnsense-wan-" {
-		t.Errorf("session id %q does not carry the sensor id prefix", sid)
+	// direction it is the one answering rather than sending metadata. The daemon
+	// collector recovers id + location + agent version + os/arch from it.
+	if got := pcapoverip.ParseSensorIdentity(sess.SessionID()); got.SensorID != "opnsense-wan" || got.Location != "edge" {
+		t.Errorf("session id %q does not carry the sensor identity, parsed %+v", sess.SessionID(), got)
 	}
 
 	packets := 0

@@ -11,6 +11,8 @@
 package capturewire
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
@@ -119,4 +121,62 @@ func ResolvePOIPToken(cs config.CaptureSource) (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 	return strings.TrimSpace(os.Getenv("SYNAPSE_POIP_TOKEN")), nil
+}
+
+// ResolveCollectorToken loads the collector's bearer token from its token_file,
+// else from SYNAPSE_COLLECTOR_TOKEN. The daemon presents this token in the
+// ClientHello it sends to every accepted sensor; the sensor verifies it. An
+// empty result is allowed (the collector already required authorized:true) but
+// means any sensor that completes TLS is accepted, so mTLS should be configured.
+func ResolveCollectorToken(c config.Collector) (string, error) {
+	if c.TokenFile != "" {
+		b, err := os.ReadFile(c.TokenFile)
+		if err != nil {
+			return "", fmt.Errorf("token_file: %w", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return strings.TrimSpace(os.Getenv("SYNAPSE_COLLECTOR_TOKEN")), nil
+}
+
+// BuildCollector turns a validated config.Collector into a live
+// capture.Collector: it loads the daemon's server certificate, an optional
+// client-CA pool for mutual TLS, and the bearer token. config.ValidateCollector
+// must have passed first; a missing or malformed PEM is returned so the daemon
+// can log it and keep serving the API without the collector (PROJECT.md §21).
+func BuildCollector(c config.Collector, logf func(string, ...any)) (*capture.Collector, error) {
+	pair, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("collector certificate: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+	}
+	if c.ClientCAFile != "" {
+		pem, rerr := os.ReadFile(c.ClientCAFile)
+		if rerr != nil {
+			return nil, fmt.Errorf("collector client_ca_file: %w", rerr)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("collector client_ca_file %q holds no PEM certificate", c.ClientCAFile)
+		}
+		tlsCfg.ClientCAs = pool
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	tok, err := ResolveCollectorToken(c)
+	if err != nil {
+		return nil, err
+	}
+
+	return capture.NewCollector(capture.CollectorConfig{
+		Listen:            c.Listen,
+		TLSConfig:         tlsCfg,
+		Token:             tok,
+		RequireClientCert: c.ClientCAFile != "",
+		MaxSensors:        c.MaxSensors,
+		Logf:              logf,
+	})
 }

@@ -81,6 +81,32 @@ type Capture struct {
 	SnapshotInterval Duration        `json:"snapshot_interval"`
 	MaxFlows         int             `json:"max_flows"` // upper bound on the live flow table
 	Sources          []CaptureSource `json:"sources"`   // live inputs opened at startup
+	Collector        Collector       `json:"collector"` // daemon-side listener for reverse-connecting sensors (§5.3)
+}
+
+// Collector configures the daemon-side SYNPOIP listener that accepts
+// reverse-connecting sensors (`synapse-sensor pcap-over-ip --connect`), one
+// capture source per accepted peer (PROJECT.md §5.3, §6; ADR 0018). It is a
+// listener, not a dialled target, so it is its own block rather than a
+// capture.sources[] kind. An empty listen address disables it.
+//
+// The bearer token is never inline (§23): use token_file or the
+// SYNAPSE_COLLECTOR_TOKEN environment variable. The daemon presents that token
+// in its ClientHello and the sensor verifies it; the collector authenticates the
+// sensor with mutual TLS (client_ca_file), so mTLS is strongly recommended for
+// any non-loopback listener.
+type Collector struct {
+	Listen       string `json:"listen"`                   // TLS listen host:port; "" disables the collector
+	CertFile     string `json:"cert_file"`                // daemon server certificate PEM (required)
+	KeyFile      string `json:"key_file"`                 // daemon server private key PEM (required)
+	Token        string `json:"token,omitempty"`          // rejected by validate() — kept only to give a clear error
+	TokenFile    string `json:"token_file,omitempty"`     // path to a file holding the bearer token
+	ClientCAFile string `json:"client_ca_file,omitempty"` // PEM bundle; when set, mutual TLS is required
+	MaxSensors   int    `json:"max_sensors,omitempty"`    // cap on concurrent accepted sensors; 0 = 32
+	// Authorized must be true to enable the collector: the operator asserts they
+	// are authorised to ingest traffic from the sensors that will connect
+	// (PROJECT.md §21, §28.18).
+	Authorized bool `json:"authorized"`
 }
 
 // CaptureSource declares one live capture input. Phase 3 supports kind "nic"
@@ -236,6 +262,12 @@ func applyEnv(c *Config) {
 			c.Capture.MaxFlows = n
 		}
 	}
+	// SYNAPSE_COLLECTOR_LISTEN overrides the daemon-side sensor collector's listen
+	// address (the accepted bearer token is SYNAPSE_COLLECTOR_TOKEN, resolved in
+	// internal/capturewire so config stays a leaf).
+	if v := os.Getenv("SYNAPSE_COLLECTOR_LISTEN"); v != "" {
+		c.Capture.Collector.Listen = v
+	}
 	// SYNAPSE_CAPTURE_IFACE adds one promiscuous NIC source unless the interface
 	// is already configured, so a deployment can enable live capture without
 	// editing the file (PROJECT.md §23).
@@ -301,6 +333,31 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: capture.sources[%d]: %w", i, err)
 		}
 		seen[s.Name] = true
+	}
+	if err := ValidateCollector(c.Capture.Collector); err != nil {
+		return fmt.Errorf("config: capture.collector: %w", err)
+	}
+	return nil
+}
+
+// ValidateCollector enforces the collector block's security posture (PROJECT.md
+// §21, §23, §28.18). An empty listen address means "disabled" and everything
+// else is skipped.
+func ValidateCollector(c Collector) error {
+	if c.Listen == "" {
+		return nil
+	}
+	switch {
+	case !strings.Contains(c.Listen, ":"):
+		return fmt.Errorf("listen %q must be host:port", c.Listen)
+	case c.CertFile == "" || c.KeyFile == "":
+		return fmt.Errorf("cert_file and key_file are required to run the collector")
+	case c.Token != "":
+		return fmt.Errorf("an inline token is not allowed — use token_file or the SYNAPSE_COLLECTOR_TOKEN env var (PROJECT.md §23)")
+	case c.MaxSensors < 0:
+		return fmt.Errorf("max_sensors must be >= 0 (0 = default)")
+	case !c.Authorized:
+		return fmt.Errorf("the collector ingests traffic from remote sensors and requires \"authorized\": true — you are asserting you are authorised to monitor them (PROJECT.md §21, §28.18)")
 	}
 	return nil
 }
