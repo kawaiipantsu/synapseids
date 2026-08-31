@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse-trainer"
+version = "0.1.0"
+description = "Offline PyTorch trainer for SynapseIDS flow-classifier-v1 models; exports a validated ONNX + metadata bundle."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "THUGS(red) / SynapseIDS contributors" }]
+keywords = ["synapseids", "ids", "onnx", "pytorch", "network-security", "training"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+]
+
+# Pinned hard in requirements.txt; kept as compatible ranges here so an editable
+# install resolves. CI installs these; this dev box may not have torch/onnx.
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "torch>=2.2,<2.3",
+    "onnx>=1.16,<1.17",
+    "onnxruntime>=1.17,<1.18",
+    "scikit-learn>=1.4,<1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+synapse-trainer = "synapse_trainer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kawaiipantsu/synapseids"
+Repository = "https://github.com/kawaiipantsu/synapseids"
+
+[tool.setuptools]
+packages = ["synapse_trainer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]

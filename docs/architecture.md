@@ -43,8 +43,10 @@ end). See [PROJECT.md](../PROJECT.md) §2, §3, §5, §26 for the intended shape
                                    browser (web/index.html)  ·  synapse CLI
 ```
 
-Adapted from PROJECT.md §3. The trainer, SQLite store, sensors and React SPA in
-that diagram are not in the tree yet (see [What is not here yet](#what-is-not-here-yet)).
+Adapted from PROJECT.md §3. The SQLite store, sensors and React SPA in that
+diagram are not in the tree yet; the offline Python trainer now exists under
+`trainer/` but is not yet wired to a running daemon (see
+[What is not here yet](#what-is-not-here-yet)).
 
 ## The hard rule
 
@@ -201,7 +203,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Missing | Present instead | Tracked |
 |---|---|---|
 | Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap only (pcapng rejected with an `editcap` hint) | see EPIC: Phase 3 |
-| ONNX / trained neural-network models | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` and `schema.ValidateBundle` already accept more models | see EPIC: Phase 2 |
+| Go ONNX runtime + trained models wired into the pipeline | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` and `schema.ValidateBundle` already accept more models. The offline trainer that produces the bundles now lives in `trainer/` (`synapse-trainer`; [ADR 0007](adr/0007-python-trainer-and-bundle-export.md)) — Python/PyTorch, exports `model.onnx` + `metadata.json` + `normalizer.json` + `metrics.json` + `training-recipe.json` | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
 | React / TypeScript SPA | `web/index.html` — one embedded, dependency-free rolling-log page | see EPIC: Phase 1 UI (PROJECT.md §19, §27) |

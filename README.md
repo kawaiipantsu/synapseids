@@ -28,7 +28,7 @@
 >
 > **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a live WebSocket rolling log at `/`. Replay runs the *exact* pipeline live capture will.
 >
-> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models and the Python trainer, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the React operator SPA. See [the roadmap](#roadmap).
+> **Not here yet:** live NIC / tcpdump / SSH capture, a Go ONNX runtime and trained models wired into the pipeline, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the React operator SPA. The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
 <br/>
 
@@ -158,6 +158,8 @@ A capture source — a PCAP file today, a NIC / tcpdump stream / remote sensor l
 Each closed or snapshotted flow becomes one **`flow-features-v1`** vector: 48 numeric features derived only from that flow — packet and byte counts, rates, size statistics, inter-arrival timing, TCP-flag tallies, direction ratios, and internal/external context — and never from raw IP addresses. The **inference runtime** scores the vector through every loaded model, keeps each model's full class distribution and top class, and sets a disagreement flag when non-anomaly models pick different classes.
 
 The verdict plus the flow record go into the in-memory store (the most recent ~50,000 of each) and onto an in-process **event bus**; a full subscriber drops events and counts them rather than stalling ingestion. The API pump batches those events to WebSocket clients every 100 ms, and the page at `/` renders the stream as the rolling log. `synapse replay` runs this identical path, which is why replayed and live traffic look the same on screen.
+
+The Phase-2 **`synapse-trainer`** (Python/PyTorch, in [`trainer/`](trainer/)) is the offline other half: it reads a labelled `flow-features-v1` dataset and exports a self-describing bundle — `model.onnx` (opset 17, softmax baked in) plus `metadata.json`, `normalizer.json`, `metrics.json` and `training-recipe.json` — that a Go ONNX runtime will validate and load. See [ADR 0007](docs/adr/0007-python-trainer-and-bundle-export.md) for the bundle contract.
 
 The output contract, **`traffic-classes-v1`** (frozen, 7 classes):
 
