@@ -1,24 +1,44 @@
-# +TARGETS - configd template map for the SynapseIDS sensor.
+# +TARGETS - configd template map for the SynapseIDS sensors.
 #
 # Copyright (C) 2026 SynapseIDS contributors
 # BSD 2-Clause; see Sensor.php for the full text.
 #
-# <template file>:<absolute destination>
+# <template file>:<absolute destination>[:<cleanup glob>]
 #
 # configd writes every one of these as root:wheel with the default umask, so the
 # `synapseidssensor fixperms` action (and the rc.d start_precmd) tighten them
 # immediately afterwards:
-#   sensor.conf      -> root:wheel 0640                 (flags only, no secrets)
-#   sensor.token     -> _synapseids:_synapseids 0400    (the bearer token, nothing else)
-#   sensor-ca.pem    -> root:wheel 0444                 (public trust material)
-#   sensor-cert.pem  -> root:wheel 0444                 (public certificate)
-#   sensor-key.pem   -> _synapseids:_synapseids 0400    (THE TLS PRIVATE KEY)
+#   sensor.conf          -> root:wheel 0640                 (the instance index, no secrets)
+#   instances/NAME.conf  -> root:wheel 0640                 (per-sensor flags, no secrets)
+#   sensor.token         -> _synapseids:_synapseids 0400    (the bearer token, nothing else)
+#   sensor-ca.pem        -> root:wheel 0444                 (public trust material)
+#   sensor-cert.pem      -> root:wheel 0444                 (public certificate)
+#   sensor-key.pem       -> _synapseids:_synapseids 0400    (THE TLS PRIVATE KEY)
 #
 # The two 0400 entries are the reason fixperms exists: configd's umask would
 # otherwise leave a freshly rendered secret world readable until somebody
 # noticed.  Every caller of `template reload OPNsense/SynapseIDSSensor` runs
 # fixperms straight afterwards.
+#
+# THE SECOND LINE IS THE ONE TO READ CAREFULLY (issue #124).
+#
+# The bracketed tag is configd's repeating-target syntax: `%` enumerates the
+# repeating <instance> nodes and the trailing `.name` supplies the value that
+# goes into the file name, so ONE template produces ONE FILE PER SENSOR
+# INSTANCE, and each render receives TARGET_FILTERS telling it which instance it
+# is.  This is core behaviour (Template.__find_filters in
+# /usr/local/opnsense/service/modules/template.py), not a plugin invention; the
+# same mechanism is what lets a template emit one file per interface.
+#
+# The third field is the cleanup glob for `configctl template cleanup`, which
+# would otherwise only remove the literal target - a name containing an
+# unresolved `[...]` that exists on no disk. It is NOT what keeps stale instance
+# files from accumulating: the `fixperms` action removes any instances/*.conf
+# that no longer matches a configured instance, and the rc.d script only ever
+# acts on the names listed in synapseids_sensor_profiles, so a leftover file is
+# inert even before it is deleted.
 sensor.conf:/usr/local/etc/synapseids/sensor.conf
+sensor-instance.conf:/usr/local/etc/synapseids/instances/[OPNsense.SynapseIDSSensor.instances.instance.%.name].conf:/usr/local/etc/synapseids/instances/*.conf
 sensor.token:/usr/local/etc/synapseids/sensor.token
 sensor-ca.pem:/usr/local/etc/synapseids/sensor-ca.pem
 sensor-cert.pem:/usr/local/etc/synapseids/sensor-cert.pem

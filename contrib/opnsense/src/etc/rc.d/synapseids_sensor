@@ -20,19 +20,38 @@
 # CONSEQUENTIAL DAMAGES HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY.
 #
 # ---------------------------------------------------------------------------
-# rc.d wrapper for the SynapseIDS distributed capture sensor.
+# rc.d wrapper for the SynapseIDS distributed capture sensors.
 #
-# Everything that varies is rendered by configd into
-# /usr/local/etc/synapseids/sensor.conf; this script only turns those variables
-# into a supervised daemon(8) invocation and enforces the invariants that must
-# hold before a packet is captured:
+# ONE PROCESS PER CAPTURED INTERFACE (issue #124).  synapse-sensor captures a
+# single device per process, so this script is a multi-PROFILE service in the
+# established FreeBSD shape - the one openvpn(8) and nginx use:
+#
+#     service synapseids_sensor start            # every configured instance
+#     service synapseids_sensor start wan        # just that one
+#     service synapseids_sensor selftest         # every instance, named per line
+#     service synapseids_sensor selftest dmz     # just that one
+#
+# With no profile argument the script re-executes ITSELF once per name in
+# $synapseids_sensor_profiles and aggregates the exit statuses; with a profile
+# argument it sources that instance's rendered configuration and runs the
+# ordinary rc.subr machinery against it.  Everything that varies - the flags,
+# the resolved capture device, the rcvar - is rendered by configd into
+#
+#     /usr/local/etc/synapseids/sensor.conf              the profile list
+#     /usr/local/etc/synapseids/instances/<name>.conf    one per sensor
+#
+# and each instance gets its OWN pidfile, log directory and syslog tag, because
+# four processes sharing one of those would leave three of them unsupervised.
+#
+# This script only turns those variables into supervised daemon(8) invocations
+# and enforces the invariants that must hold before a packet is captured:
 #
 #   * the bearer token lives in a 0400 _synapseids file and is passed as
 #     --token-file, never as an argument value - it must not be visible in
 #     ps(1) output to any local user;
-#   * sensor.conf itself contains no secrets, so any PEM file the flags refer
-#     to must already be on disk, non-empty and PEM-shaped, with a sane mode,
-#     before the sensor starts;
+#   * no rendered configuration contains a secret, so any PEM file the flags
+#     refer to must already be on disk, non-empty and PEM-shaped, with a sane
+#     mode, before the sensor starts;
 #   * the configured OPNsense interface identifier must have resolved to a
 #     kernel device that actually EXISTS. A sensor bound to a device that is not
 #     there reports "running" and captures nothing, which is the worst failure
@@ -43,8 +62,9 @@
 #     an opaque "permission denied".
 #
 # `service synapseids_sensor selftest` runs all of the above as read-only checks
-# plus the ones only the binary can do (PEM parsing, collector reachability) and
-# prints one pass/fail line each. That is the command to reach for first.
+# per instance, plus the ones only the binary can do (PEM parsing, collector
+# reachability), and prints one pass/fail line each with the instance name in
+# its own column. That is the command to reach for first.
 #
 # PROVIDE: synapseids_sensor
 # REQUIRE: LOGIN FILESYSTEMS
@@ -59,6 +79,10 @@ load_rc_config $name
 
 # The configd-rendered configuration wins over anything in rc.conf: it is the
 # authoritative projection of the OPNsense config store.
+#
+# sensor.conf is the INDEX since issue #124 - it carries the profile list and
+# nothing else that matters. It deliberately sets synapseids_sensor_enable=NO;
+# the per-instance file sourced below sets the real value for this profile.
 synapseids_sensor_conf="/usr/local/etc/synapseids/sensor.conf"
 if [ -r "${synapseids_sensor_conf}" ]; then
     # shellcheck source=/dev/null
@@ -66,7 +90,10 @@ if [ -r "${synapseids_sensor_conf}" ]; then
 fi
 
 : ${synapseids_sensor_enable:="NO"}
+: ${synapseids_sensor_profiles:=""}
+: ${synapseids_sensor_instdir:="/usr/local/etc/synapseids/instances"}
 : ${synapseids_sensor_args:=""}
+: ${synapseids_sensor_instance:=""}
 : ${synapseids_sensor_iface:=""}
 : ${synapseids_sensor_iface_id:=""}
 : ${synapseids_sensor_iface_src:=""}
@@ -84,27 +111,65 @@ fi
 : ${synapseids_sensor_runas:="_synapseids"}
 : ${synapseids_sensor_bin:="/usr/local/bin/synapse-sensor"}
 : ${synapseids_sensor_etcdir:="/usr/local/etc/synapseids"}
-: ${synapseids_sensor_logdir:="/var/log/synapseids"}
+: ${synapseids_sensor_logbase:="/var/log/synapseids"}
 
+# Shared by every instance: one firewall, one collector, one identity.
 synapseids_sensor_token="${synapseids_sensor_etcdir}/sensor.token"
 synapseids_sensor_ca="${synapseids_sensor_etcdir}/sensor-ca.pem"
 synapseids_sensor_cert="${synapseids_sensor_etcdir}/sensor-cert.pem"
 synapseids_sensor_key="${synapseids_sensor_etcdir}/sensor-key.pem"
-synapseids_sensor_log="${synapseids_sensor_logdir}/sensor.log"
 
-# daemon(8) creates this file AFTER dropping privileges to -u, so it must live
+# daemon(8) creates the pidfile AFTER dropping privileges to -u, so it must live
 # somewhere ${synapseids_sensor_runas} can write. /var/run itself is root:wheel,
 # which produced:
 #     daemon: pidfile ``/var/run/synapseids_sensor.pid'': Permission denied
 # The directory is created by start_precmd on every start because /var/run is
 # cleared at boot.
 synapseids_sensor_rundir="/var/run/synapseids"
-pidfile="${synapseids_sensor_rundir}/sensor.pid"
+
+# ---------------------------------------------------------------------------
+# profile selection
+#
+# $2 is the instance name. Empty means "every instance", handled at the bottom.
+# configd passes it through its own single-quoting, and an action invoked with
+# no parameter passes an empty string, so both shapes arrive here safely; the
+# name is nevertheless re-validated against the model's own Mask before it is
+# used to build a path, because it becomes a filename.
+# ---------------------------------------------------------------------------
+synapseids_sensor_profile="${2:-}"
+
+case "${synapseids_sensor_profile}" in
+"") ;;
+*[!A-Za-z0-9_]*)
+    echo "synapseids_sensor: '${synapseids_sensor_profile}' is not a valid instance name."
+    echo "synapseids_sensor: names are letters, digits and underscores. Configured: ${synapseids_sensor_profiles:-(none)}"
+    exit 1
+    ;;
+esac
+
+# Per-instance paths. With no profile these are only placeholders: the
+# aggregate path below never starts anything itself, it re-executes this script
+# once per profile.
+pidfile="${synapseids_sensor_rundir}/${synapseids_sensor_profile:-all}.pid"
+synapseids_sensor_logdir="${synapseids_sensor_logbase}/${synapseids_sensor_profile:-all}"
+synapseids_sensor_log="${synapseids_sensor_logdir}/sensor.log"
+synapseids_sensor_instconf="${synapseids_sensor_instdir}/${synapseids_sensor_profile:-all}.conf"
+
 procname="${synapseids_sensor_bin}"
 command="/usr/sbin/daemon"
 
 extra_commands="selftest"
 selftest_cmd="synapseids_sensor_selftest"
+
+start_precmd="synapseids_sensor_precmd"
+
+if [ -n "${synapseids_sensor_profile}" ] && [ -r "${synapseids_sensor_instconf}" ]; then
+    # The instance file redefines synapseids_sensor_enable / _args / _iface* for
+    # THIS profile. It is rendered by configd from the same config store as the
+    # index, so it wins over everything read above.
+    # shellcheck source=/dev/null
+    . "${synapseids_sensor_instconf}"
+fi
 
 # daemon(8) supervises synapse-sensor, drops privileges to the service user and
 # captures the child's stdout/stderr.
@@ -112,9 +177,11 @@ selftest_cmd="synapseids_sensor_selftest"
 # TWO independent output sinks, deliberately:
 #
 #   -o ${synapseids_sensor_log}   the file the web UI's log viewer and the
-#                                 `synapseidssensor log` configd action read
-#   -S -T ${name}                 syslog, tagged, for an operator who forwards
-#                                 syslog off the box
+#                                 `synapseidssensor log` configd action read.
+#                                 PER INSTANCE, so four sensors do not interleave
+#                                 into one file where nothing can be attributed
+#   -S -T <name>_<instance>       syslog, tagged per instance, for an operator who
+#                                 forwards syslog off the box
 #
 # KEPT TODO(verify): daemon(8)'s `-f` redirects the SUPERVISOR's stdin/stdout/
 # stderr to /dev/null.  It is kept because configd runs this script and reads its
@@ -128,12 +195,10 @@ selftest_cmd="synapseids_sensor_selftest"
 # streams packets; only its log is empty.  `service synapseids_sensor selftest`
 # reports that explicitly on its `log-sink` line, together with the one-line
 # remedy (drop `-f` here).  It is a diagnosability bug, not a capture bug.
-command_args="-f -S -T ${name} -o ${synapseids_sensor_log} \
+command_args="-f -S -T ${name}_${synapseids_sensor_profile:-all} -o ${synapseids_sensor_log} \
     -p ${pidfile} -u ${synapseids_sensor_runas} \
     ${synapseids_sensor_bin} pcap-over-ip ${synapseids_sensor_args} \
     --token-file ${synapseids_sensor_token}"
-
-start_precmd="synapseids_sensor_precmd"
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -206,13 +271,13 @@ synapseids_sensor_check_pem()
 synapseids_sensor_check_iface()
 {
     if [ -n "${synapseids_sensor_iface_error}" ]; then
-        echo "synapseids_sensor: ${synapseids_sensor_iface_error}"
+        echo "synapseids_sensor[${synapseids_sensor_profile}]: ${synapseids_sensor_iface_error}"
         echo "synapseids_sensor: refusing to start: a sensor bound to nothing captures nothing."
         return 1
     fi
 
     # No interface configured at all: --iface is absent, so the sensor would have
-    # no capture source. Only reachable if the model was saved without one.
+    # no capture source. Only reachable if the instance was saved without one.
     if [ -z "${synapseids_sensor_iface}" ]; then
         case " ${synapseids_sensor_args} " in
         *" --iface "*)
@@ -220,8 +285,8 @@ synapseids_sensor_check_iface()
             return 1
             ;;
         esac
-        echo "synapseids_sensor: no capture interface is configured."
-        echo "synapseids_sensor: pick one on Services > SynapseIDS Sensor."
+        echo "synapseids_sensor: sensor instance '${synapseids_sensor_profile}' has no capture interface."
+        echo "synapseids_sensor: pick one for it on Services > SynapseIDS Sensor."
         return 1
     fi
 
@@ -274,6 +339,9 @@ EOF
 # usable login shell, so this inspects the device's owner, group and mode the
 # same way the kernel would.  /dev/bpf is the cloning device present on
 # FreeBSD 14; /dev/bpf0 is checked as a fallback.
+#
+# Note for the multi-instance case: /dev/bpf is a CLONING device, so N sensors
+# each get their own descriptor and there is nothing to share out here.
 synapseids_sensor_bpf_ok()
 {
     _dev=""
@@ -311,10 +379,23 @@ synapseids_sensor_bpf_ok()
 }
 
 # ---------------------------------------------------------------------------
-# start_precmd
+# start_precmd  (per instance)
 # ---------------------------------------------------------------------------
 synapseids_sensor_precmd()
 {
+    if [ -z "${synapseids_sensor_profile}" ]; then
+        echo "synapseids_sensor: no sensor instance selected."
+        return 1
+    fi
+
+    if [ ! -r "${synapseids_sensor_instconf}" ]; then
+        echo "synapseids_sensor: ${synapseids_sensor_instconf} has not been rendered."
+        echo "synapseids_sensor: press Save on Services > SynapseIDS Sensor, or run:"
+        echo "    configctl template reload OPNsense/SynapseIDSSensor"
+        echo "    configctl synapseidssensor fixperms"
+        return 1
+    fi
+
     if [ ! -x "${synapseids_sensor_bin}" ]; then
         echo "synapseids_sensor: ${synapseids_sensor_bin} is missing or not executable."
         return 1
@@ -322,7 +403,8 @@ synapseids_sensor_precmd()
 
     # -- pid directory -----------------------------------------------------
     # Must exist and be writable by the unprivileged user before daemon(8) drops
-    # privileges, or the start fails with "pidfile: Permission denied".
+    # privileges, or the start fails with "pidfile: Permission denied". One
+    # directory, one pidfile per instance.
     if [ ! -d "${synapseids_sensor_rundir}" ]; then
         mkdir -p "${synapseids_sensor_rundir}" || return 1
     fi
@@ -331,25 +413,34 @@ synapseids_sensor_precmd()
     chmod 0755 "${synapseids_sensor_rundir}" 2>/dev/null
 
     # -- log directory -----------------------------------------------------
-    if [ ! -d "${synapseids_sensor_logdir}" ]; then
-        mkdir -p "${synapseids_sensor_logdir}" || return 1
-    fi
-    chown "${synapseids_sensor_runas}:wheel" "${synapseids_sensor_logdir}" 2>/dev/null
-    chmod 0750 "${synapseids_sensor_logdir}" 2>/dev/null
+    # Per instance: /var/log/synapseids/<name>/sensor.log. Four sensors sharing
+    # one log file would make every line unattributable, and `synapse-sensor
+    # doctor --log-dir <dir>` checks exactly this directory's sensor.log.
+    for _dir in "${synapseids_sensor_logbase}" "${synapseids_sensor_logdir}"; do
+        if [ ! -d "${_dir}" ]; then
+            mkdir -p "${_dir}" || return 1
+        fi
+        chown "${synapseids_sensor_runas}:wheel" "${_dir}" 2>/dev/null
+        chmod 0750 "${_dir}" 2>/dev/null
+    done
 
     # -- configuration directory ------------------------------------------
-    if [ ! -d "${synapseids_sensor_etcdir}" ]; then
-        mkdir -p "${synapseids_sensor_etcdir}" || return 1
-    fi
-    chown "root:${synapseids_sensor_runas}" "${synapseids_sensor_etcdir}" 2>/dev/null
-    chmod 0750 "${synapseids_sensor_etcdir}" 2>/dev/null
+    for _dir in "${synapseids_sensor_etcdir}" "${synapseids_sensor_instdir}"; do
+        if [ ! -d "${_dir}" ]; then
+            mkdir -p "${_dir}" || return 1
+        fi
+        chown "root:${synapseids_sensor_runas}" "${_dir}" 2>/dev/null
+        chmod 0750 "${_dir}" 2>/dev/null
+    done
 
-    # sensor.conf carries no secrets, but there is no reason for it to be world
-    # readable either.
-    if [ -f "${synapseids_sensor_conf}" ]; then
-        chown root:wheel "${synapseids_sensor_conf}" 2>/dev/null
-        chmod 0640 "${synapseids_sensor_conf}" 2>/dev/null
-    fi
+    # Neither rendered configuration carries a secret, but there is no reason
+    # for either to be world readable.
+    for _file in "${synapseids_sensor_conf}" "${synapseids_sensor_instconf}"; do
+        if [ -f "${_file}" ]; then
+            chown root:wheel "${_file}" 2>/dev/null
+            chmod 0640 "${_file}" 2>/dev/null
+        fi
+    done
 
     # -- bearer token ------------------------------------------------------
     # configd renders it root:wheel 0644; make it unreadable to everyone but
@@ -362,10 +453,10 @@ synapseids_sensor_precmd()
     chmod 0400 "${synapseids_sensor_token}" || return 1
 
     # -- TLS material ------------------------------------------------------
-    # sensor.conf only names the PEM files; configd renders their contents from
-    # the config store (issue #104) as root under its own umask, so re-clamp the
-    # modes here as well as in the fixperms action, and refuse to start when one
-    # that the flags reference is absent, empty or not PEM.
+    # The instance configuration only names the PEM files; configd renders their
+    # contents from the config store (issue #104) as root under its own umask, so
+    # re-clamp the modes here as well as in the fixperms action, and refuse to
+    # start when one that the flags reference is absent, empty or not PEM.
     synapseids_sensor_check_pem "${synapseids_sensor_ca}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_cert}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_key}" \
@@ -387,13 +478,54 @@ synapseids_sensor_precmd()
 # selftest
 # ---------------------------------------------------------------------------
 
-# `service synapseids_sensor selftest` — the one command to run on the box when
-# something is wrong.  The checks themselves live in the Go binary (`synapse-
-# sensor doctor`), because they are unit-testable there and because several of
-# them — parsing the PEM material, proving the certificate and key match, a TCP
-# connect to the collector — are not things to write in sh.
+# The checks themselves live in the Go binary (`synapse-sensor doctor`), because
+# they are unit-testable there and because several of them - parsing the PEM
+# material, proving the certificate and key match, a TCP connect to the collector
+# - are not things to write in sh.
+#
+# `doctor` checks ONE rendered configuration, which is exactly right here: it is
+# pointed at this instance's file and this instance's log directory, so every
+# line it prints is about this instance. The instance name is inserted as a
+# column immediately after the status label, so the output stays one line per
+# check and `selftest | grep FAIL` still tells an operator with four sensors
+# WHICH sensor is broken. sed only rewrites lines it recognises; anything else
+# is passed through untouched.
 #
 # Exit status is the binary's: 0 when nothing failed, 1 otherwise.
+synapseids_sensor_selftest_one()
+{
+    _profile=$1
+    _instconf="${synapseids_sensor_instdir}/${_profile}.conf"
+    _logdir="${synapseids_sensor_logbase}/${_profile}"
+    _label=$(printf '%-10.10s' "${_profile}")
+
+    if [ ! -r "${_instconf}" ]; then
+        echo "[FAIL] ${_label} config        ${_instconf} has not been rendered."
+        echo "       press Save on Services > SynapseIDS Sensor, or run:"
+        echo "           configctl template reload OPNsense/SynapseIDSSensor"
+        echo "           configctl synapseidssensor fixperms"
+        return 1
+    fi
+
+    # Collected first, then filtered: in a pipeline the exit status would be
+    # sed's, and running the doctor twice would double every TCP connect it
+    # makes and could report two different answers.
+    _out=$("${synapseids_sensor_bin}" doctor \
+        --config "${_instconf}" \
+        --etc-dir "${synapseids_sensor_etcdir}" \
+        --log-dir "${_logdir}" \
+        --user "${synapseids_sensor_runas}" 2>&1)
+    _rc=$?
+
+    printf '%s\n' "${_out}" \
+        | sed -e "s/^\(\[[A-Z ]*\]\) /\1 ${_label} /" \
+              -e "s/^       /                  /" \
+              -e "s/^\(summary:\)/${_profile}: \1/" \
+              -e "s/^\(selftest:\)/${_profile}: \1/"
+
+    return ${_rc}
+}
+
 synapseids_sensor_selftest()
 {
     if [ ! -x "${synapseids_sensor_bin}" ]; then
@@ -403,11 +535,38 @@ synapseids_sensor_selftest()
         return 1
     fi
 
-    "${synapseids_sensor_bin}" doctor \
-        --config "${synapseids_sensor_conf}" \
-        --etc-dir "${synapseids_sensor_etcdir}" \
-        --log-dir "${synapseids_sensor_logdir}" \
-        --user "${synapseids_sensor_runas}"
+    if [ -n "${synapseids_sensor_profile}" ]; then
+        synapseids_sensor_selftest_one "${synapseids_sensor_profile}"
+        return $?
+    fi
+
+    if [ -z "${synapseids_sensor_profiles}" ]; then
+        echo "[FAIL] instances     no sensor instance is configured."
+        echo "       add one per interface on Services > SynapseIDS Sensor, then Save."
+        echo "       an upgrade from a single-sensor release migrates the old settings;"
+        echo "       if the list is empty after an upgrade, run:"
+        echo "           /usr/local/opnsense/mvc/script/run_migrations.php OPNsense/SynapseIDSSensor"
+        return 1
+    fi
+
+    # NOT named _rc: POSIX sh has no local variables, and
+    # synapseids_sensor_selftest_one() assigns _rc itself -- so a later passing
+    # instance would silently clear the failure of an earlier one, and the whole
+    # run would report success with a [FAIL] line on screen.
+    _agg_rc=0
+    _agg_n=0
+    _agg_bad=0
+    for _agg_p in ${synapseids_sensor_profiles}; do
+        _agg_n=$((_agg_n + 1))
+        echo "===> sensor instance: ${_agg_p}"
+        if ! synapseids_sensor_selftest_one "${_agg_p}"; then
+            _agg_bad=$((_agg_bad + 1))
+            _agg_rc=1
+        fi
+        echo ""
+    done
+    echo "selftest: ${_agg_n} instance(s) checked, ${_agg_bad} with failures"
+    return ${_agg_rc}
 }
 
 # selftest is dispatched HERE, before run_rc_command, and deliberately so.
@@ -428,4 +587,83 @@ selftest | oneselftest)
     ;;
 esac
 
-run_rc_command "$1"
+# ---------------------------------------------------------------------------
+# one instance: the ordinary rc.subr path
+# ---------------------------------------------------------------------------
+if [ -n "${synapseids_sensor_profile}" ]; then
+    # `onestart` bypasses the rcvar entirely, and configd uses `onestart`, so a
+    # disabled instance would otherwise be started by a plugin-wide Start. Say
+    # so and succeed: not starting something that is switched off is not an
+    # error, and reporting it as one made every "Save while disabled" fail once
+    # already.
+    case "$1" in
+    start | onestart | faststart | forcestart)
+        if [ ! -r "${synapseids_sensor_instconf}" ]; then
+            echo "synapseids_sensor: no configuration for instance '${synapseids_sensor_profile}'"
+            echo "synapseids_sensor: (${synapseids_sensor_instconf} has never been rendered)."
+            echo "synapseids_sensor: press Save on Services > SynapseIDS Sensor, or run:"
+            echo "    configctl template reload OPNsense/SynapseIDSSensor"
+            echo "    configctl synapseidssensor fixperms"
+            exit 1
+        fi
+        if ! checkyesno synapseids_sensor_enable; then
+            echo "synapseids_sensor: instance '${synapseids_sensor_profile}' is disabled, not starting it."
+            exit 0
+        fi
+        ;;
+    esac
+    run_rc_command "$1"
+    exit $?
+fi
+
+# ---------------------------------------------------------------------------
+# every instance: re-execute this script once per profile
+#
+# The profile list is the openvpn(8) / nginx idiom, and re-executing rather than
+# looping in-process is what keeps rc.subr's own state (pidfile, rcvar, precmd)
+# scoped to one instance. The aggregate exit status is the worst of the
+# individual ones, so the GUI's Start button still fails loudly when any one
+# sensor cannot start.
+# ---------------------------------------------------------------------------
+synapseids_sensor_rc=0
+
+if [ -z "${synapseids_sensor_profiles}" ]; then
+    echo "synapseids_sensor: no sensor instance is configured, so there is nothing to ${1:-do}."
+    echo "synapseids_sensor: add one instance per interface on Services > SynapseIDS Sensor."
+fi
+
+for synapseids_sensor_each in ${synapseids_sensor_profiles}; do
+    echo "===> sensor instance: ${synapseids_sensor_each}"
+    /usr/local/etc/rc.d/synapseids_sensor "$1" "${synapseids_sensor_each}" || synapseids_sensor_rc=1
+done
+
+# Sweep pidfiles that belong to no configured instance.
+#
+# Deleting or renaming an instance in the GUI removes it from the profile list,
+# and nothing above would ever touch its process again: a capture of a segment
+# the operator believes they stopped monitoring would keep running until the
+# next reboot. check_pidfile() confirms the pid really is a synapse-sensor
+# before anything is signalled, so a recycled pid is never killed.
+case "$1" in
+stop | onestop | faststop | forcestop | restart | onerestart | forcerestart)
+    for synapseids_sensor_pf in "${synapseids_sensor_rundir}"/*.pid; do
+        [ -f "${synapseids_sensor_pf}" ] || continue
+        synapseids_sensor_each="${synapseids_sensor_pf##*/}"
+        synapseids_sensor_each="${synapseids_sensor_each%.pid}"
+        case " ${synapseids_sensor_profiles} " in
+        *" ${synapseids_sensor_each} "*)
+            continue
+            ;;
+        esac
+        synapseids_sensor_orphan=$(check_pidfile "${synapseids_sensor_pf}" "${synapseids_sensor_bin}")
+        if [ -n "${synapseids_sensor_orphan}" ]; then
+            echo "===> stopping orphaned sensor instance: ${synapseids_sensor_each}"
+            kill -TERM ${synapseids_sensor_orphan} 2>/dev/null
+            wait_for_pids ${synapseids_sensor_orphan}
+        fi
+        rm -f "${synapseids_sensor_pf}"
+    done
+    ;;
+esac
+
+exit ${synapseids_sensor_rc}

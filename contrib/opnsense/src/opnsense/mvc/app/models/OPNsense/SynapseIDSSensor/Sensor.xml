@@ -28,177 +28,68 @@
 
     ========================================================================
 
-    Every field here maps onto exactly one flag of
+    ONE PROCESS PER INTERFACE (issue 124).
 
-        synapse-sensor pcap-over-ip [flags]
+    synapse-sensor captures exactly one device per process, so this model is a
+    LIST of capture instances plus one block of settings they share. Each
+    instance becomes its own synapse-sensor process, with its own sensor
+    identity, its own rendered configuration, its own pidfile and its own log.
+
+    That shape was chosen over merging several interfaces into one process
+    because it gives correct attribution with no protocol change: a packet
+    routed between two monitored segments is legitimately observed twice, by two
+    NAMED sensors, instead of two observations silently collapsing into one flow.
+    See docs/adr/0031-opnsense-one-sensor-process-per-interface.md.
+
+      general    - the transport posture and the secrets. One collector, one
+                   bearer token, one TLS identity for this firewall.
+      instances  - what to capture, once per interface, and WHO SAYS SO: the
+                   authorisation assertion is per instance (PROJECT.md 28.18),
+                   because capturing a new segment is a new decision that cannot
+                   be inherited from another instance.
 
     NOTE: an XML comment may not contain a double hyphen, so command line flags
     are written below without their leading dashes: "iface" means the `iface`
     flag, "token-file" means the `token-file` flag, and so on.
 
-    Two fields deliberately do not become flag *values*:
+    Two settings deliberately do not become flag *values*:
 
       * "token" is NEVER turned into a command line argument. It is rendered
         into /usr/local/etc/synapseids/sensor.token (0400 _synapseids) and
         passed by path with the `token-file` flag, so it can never show up in
         ps(1).
-      * "ca" / "client_cert" / "client_key" hold PEM *material*; the rc.d script
-        materialises them into files with restrictive modes and only the
-        resulting paths reach the command line.
+      * "ca" / "client_cert" / "client_key" hold PEM *material*; configd renders
+        them into files with restrictive modes and only the resulting paths
+        reach the command line.
 -->
 <model>
     <mount>//OPNsense/SynapseIDSSensor</mount>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <description>
-        SynapseIDS distributed capture sensor (synapse-sensor pcap-over-ip).
+        SynapseIDS distributed capture sensors (synapse-sensor pcap-over-ip),
+        one process per captured interface.
     </description>
     <items>
         <general>
             <!-- ============================= general ======================= -->
+            <!--
+                Master switch. Individual instances have their own enable flag;
+                this one turns the whole plugin off without disturbing them.
+            -->
             <enabled type="BooleanField">
                 <default>0</default>
                 <Required>Y</Required>
             </enabled>
 
-            <!--
-                OPNsense interface *identifiers* (wan, lan, opt1, ...).
-                synapse-sensor captures a single device per process, so exactly
-                one identifier is stored and used.
-
-                This comment used to say the field was Multiple "so a future
-                revision can fan out to several sensors without a schema change".
-                That reasoning was wrong twice over: nothing consumed the extra
-                values, and leaving the control multi-select shipped a form that
-                accepted four interfaces and monitored one.
-            -->
-            <interface type="InterfaceField">
-                <!--
-                    Single select, deliberately. The sensor captures from exactly
-                    one device and the configd template resolves only the first
-                    identifier, so a multi select silently discarded every
-                    additional choice.
-
-                    On a live gateway an operator picked WAN, IoT, DMZ and MGMT
-                    and got one VLAN, not even WAN: four segments believed
-                    monitored, one actually monitored, nothing reporting the
-                    difference. Silent under coverage is the worst failure a
-                    sensor can have, so the control must not offer what the
-                    sensor cannot do. Sensor::performValidation() also rejects a
-                    stored multi value left behind by an earlier release.
-
-                    Capturing several interfaces from one plugin instance is
-                    tracked as issue 124; it needs a real design (the same packet
-                    routed between two monitored segments is seen twice, and the
-                    flow record has nowhere to record which device saw it).
-                -->
-                <Required>N</Required>
-                <ValidationMessage>Please select the interface to capture from (normally WAN).</ValidationMessage>
-            </interface>
-
-            <!-- ============================= capture ======================= -->
-            <!--
-                Maps to the `filter` flag. An empty value means "no filter at
-                all" and the flag is omitted entirely.
-
-                An empty OptionValues key cannot be expressed in model XML (an
-                XML tag cannot be named ""), so the empty "All traffic" choice
-                uses Required=N plus BlankDesc, which is the supported core
-                idiom: BaseListField, the parent of OptionField, offers a blank
-                entry described by BlankDesc precisely when the field is not
-                required.
-
-                Worst case if that is wrong on some core: the dropdown simply
-                does not offer the blank entry, so an operator cannot select
-                "capture everything" and is limited to the four presets. That is
-                a cosmetic limitation, visible immediately in the GUI, and it
-                cannot produce a dead or misconfigured sensor, so it is not worth
-                the extra sentinel-value translation step in sensor.conf.
-
-                The rendered value is validated twice more anyway: the OptionField
-                itself refuses a value outside this list, and `synapse-sensor
-                doctor` fails its config check if sensor.conf ever names a filter
-                that is not a built-in preset.
-            -->
-            <filter type="OptionField">
-                <default>ip-any</default>
-                <Required>N</Required>
-                <BlankDesc>All traffic</BlankDesc>
-                <OptionValues>
-                    <ip>IPv4 only</ip>
-                    <ip6>IPv6 only</ip6>
-                    <ip-any>IPv4 + IPv6</ip-any>
-                    <not-arp>Everything except ARP</not-arp>
-                </OptionValues>
-                <ValidationMessage>Choose one of the built-in capture filter presets.</ValidationMessage>
-            </filter>
-
-            <!-- Maps to the `direction` flag; valid only together with `iface`. -->
-            <direction type="OptionField">
-                <default>in</default>
-                <Required>Y</Required>
-                <OptionValues>
-                    <inout>Both directions</inout>
-                    <in>Inbound only</in>
-                    <out>Outbound only</out>
-                </OptionValues>
-                <ValidationMessage>Choose inbound, outbound or both.</ValidationMessage>
-            </direction>
-
-            <!-- Maps to the boolean `promisc` flag. -->
-            <promiscuous type="BooleanField">
-                <default>1</default>
-                <Required>Y</Required>
-            </promiscuous>
-
-            <!-- Maps to the `snaplen` flag. -->
-            <snaplen type="IntegerField">
-                <default>262144</default>
-                <Required>Y</Required>
-                <MinimumValue>64</MinimumValue>
-                <MaximumValue>262144</MaximumValue>
-                <ValidationMessage>Snap length must be between 64 and 262144 bytes.</ValidationMessage>
-            </snaplen>
-
-            <!-- ============================ what to send =================== -->
-            <!--
-                Maps to the `mode` flag: how much of the pipeline runs here on
-                the firewall, and therefore how much crosses the WAN link.
-
-                  raw     - stream every captured frame. Most bandwidth, and the
-                            packet content leaves this host.
-                  flow    - aggregate flows here and send one flow record per
-                            closed flow. Measured at roughly 1.5 percent of the
-                            raw bandwidth on ordinary traffic.
-                  feature - also compute the 48 flow-features-v1 values here and
-                            send only those. NO packet content ever leaves this
-                            host, which is the point of the mode; roughly 1.9
-                            percent of the raw bandwidth.
-
-                The verdicts are identical in all three modes: this is a
-                transport and privacy choice, not a detection one.
-
-                Note the name: the transport posture field below is already
-                called "mode" (listen versus connect), so this one is
-                "send_mode" even though it renders as the `mode` flag.
-
-                The record modes need a SynapseIDS daemon new enough to speak
-                SYNPOIP v2. An older collector refuses the connection with
-                "mode-unsupported" rather than quietly falling back to sending
-                packets, so an operator who chose "feature" for privacy reasons
-                never silently loses that property.
-            -->
-            <send_mode type="OptionField">
-                <default>raw</default>
-                <Required>Y</Required>
-                <OptionValues>
-                    <raw>Raw packets - stream every frame (most bandwidth)</raw>
-                    <flow>Flow records - aggregate flows here (least bandwidth)</flow>
-                    <feature>Feature vectors only - no packet content leaves this host</feature>
-                </OptionValues>
-                <ValidationMessage>Choose raw, flow or feature.</ValidationMessage>
-            </send_mode>
-
             <!-- ============================ transport ====================== -->
+            <!--
+                Shared by every instance: there is one SynapseIDS collector and
+                one firewall, so a per-instance collector address, token or TLS
+                identity would multiply the secrets on the box without buying
+                anything. The one transport setting that CANNOT be shared is the
+                listen address, because four processes cannot bind one port -
+                that lives on the instance.
+            -->
             <!-- Selects between the mutually exclusive `listen` and `connect` flags. -->
             <mode type="OptionField">
                 <default>listen</default>
@@ -210,15 +101,7 @@
                 <ValidationMessage>Choose listen or connect.</ValidationMessage>
             </mode>
 
-            <!-- mode = listen: value of the `listen` flag. -->
-            <listen_address type="TextField">
-                <default>0.0.0.0:4789</default>
-                <Required>N</Required>
-                <Mask>/^(|(([0-9]{1,3}\.){3}[0-9]{1,3}|\[[0-9a-fA-F:.]+\])?:[0-9]{1,5})$/</Mask>
-                <ValidationMessage>Use host:port, for example 0.0.0.0:4789, :4789 or [::]:4789.</ValidationMessage>
-            </listen_address>
-
-            <!-- mode = connect: value of the `connect` flag. -->
+            <!-- mode = connect: value of the `connect` flag, shared by every instance. -->
             <address type="TextField">
                 <Required>N</Required>
                 <Mask>/^(|([a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?|\[[0-9a-fA-F:.]+\]):[0-9]{1,5})$/</Mask>
@@ -237,25 +120,10 @@
                 <ValidationMessage>The token must be printable ASCII without spaces (max 512 characters).</ValidationMessage>
             </token>
 
-            <!-- Maps to the `sensor-id` flag. -->
-            <sensor_id type="TextField">
-                <default>opnsense-wan</default>
-                <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9._-]{0,64}$/</Mask>
-                <ValidationMessage>Sensor ID may contain letters, digits, dot, dash and underscore (max 64).</ValidationMessage>
-            </sensor_id>
-
-            <!-- Maps to the `location` flag. -->
-            <location type="TextField">
-                <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9 ._\/-]{0,64}$/</Mask>
-                <ValidationMessage>Location may contain letters, digits, space, dot, slash, dash and underscore (max 64).</ValidationMessage>
-            </location>
-
             <!-- ================================ TLS ======================== -->
             <!--
-                connect mode only: when unchecked the sensor is started with the
-                `insecure-tls` flag, which the binary itself refuses unless
+                connect mode only: when unchecked every instance is started with
+                the `insecure-tls` flag, which the binary itself refuses unless
                 `authorized` is also given (see Sensor::performValidation).
             -->
             <verify_peer type="BooleanField">
@@ -297,7 +165,8 @@
             </ca>
 
             <!--
-                This sensor's own key pair, becoming the `cert` and `key` flags.
+                This firewall's own key pair, becoming the `cert` and `key`
+                flags on every instance.
                   listen  mode : the TLS server identity
                   connect mode : the mutual TLS client identity
                 Both or neither, enforced in performValidation().
@@ -313,8 +182,8 @@
                 the bearer token and it is treated the same way: rendered only to
                 a 0400 _synapseids file, clamped by the fixperms configd action
                 immediately after every template reload, re-checked by the rc.d
-                script before every start, and never written to sensor.conf, to
-                argv or to a log.
+                script before every start, and never written to any sensor.conf,
+                to argv or to a log.
             -->
             <client_key type="TextField">
                 <Required>N</Required>
@@ -322,17 +191,279 @@
                 <ValidationMessage>Paste an unencrypted PEM PRIVATE KEY block matching the certificate above.</ValidationMessage>
             </client_key>
 
-            <!-- =========================== authorization =================== -->
+            <!-- ====================== deprecated, model 1.0.0 ============== -->
             <!--
-                PROJECT.md 28.18: capturing live traffic is an explicit
-                authorization decision, never a default. Becomes the
-                `authorized` flag, which synapse-sensor requires whenever the
-                `iface` flag is used.
+                THESE TEN FIELDS ARE NOT SHOWN ANYWHERE AND ARE NOT USED AT RUN
+                TIME. They are the model 1.0.0 single-instance settings, kept
+                declared for exactly one reason: Migrations/M1_0_1.php reads them
+                to build the first instance, and a model migration can only read
+                what the model declares. Losing an operator's working sensor on
+                upgrade is not an acceptable outcome, and reaching around the
+                model into config.xml to avoid ten dead leaves would be a much
+                bigger assumption than leaving them here.
+
+                All are TextField/Required=N with no default and no Mask, so that
+                whatever 1.0.0 stored - including the "wan,opt5,opt4,opt2" that a
+                pre issue-132 multi-select could produce - loads without a
+                validation error and can be migrated. M1_0_1 blanks them once it
+                has copied them, so a migrated configuration carries no duplicate
+                of its own settings.
             -->
-            <authorized type="BooleanField">
-                <default>0</default>
-                <Required>Y</Required>
+            <interface type="TextField">
+                <Required>N</Required>
+            </interface>
+            <filter type="TextField">
+                <Required>N</Required>
+            </filter>
+            <direction type="TextField">
+                <Required>N</Required>
+            </direction>
+            <promiscuous type="TextField">
+                <Required>N</Required>
+            </promiscuous>
+            <snaplen type="TextField">
+                <Required>N</Required>
+            </snaplen>
+            <send_mode type="TextField">
+                <Required>N</Required>
+            </send_mode>
+            <listen_address type="TextField">
+                <Required>N</Required>
+            </listen_address>
+            <sensor_id type="TextField">
+                <Required>N</Required>
+            </sensor_id>
+            <location type="TextField">
+                <Required>N</Required>
+            </location>
+            <authorized type="TextField">
+                <Required>N</Required>
             </authorized>
         </general>
+
+        <!-- ============================== instances ======================== -->
+        <!--
+            One repeating item per capture interface, rendered as a grid on
+            Services then SynapseIDS Sensor. ArrayField is the core idiom for a
+            list of things (System then Settings then Cron is the reference
+            implementation: OPNsense/Cron/Cron.xml declares `job` exactly this
+            way), so nothing here is invented.
+
+            Each item becomes:
+              * one rc.d profile name, listed in synapseids_sensor_profiles
+              * one rendered /usr/local/etc/synapseids/instances/NAME.conf
+              * one pidfile  /var/run/synapseids/NAME.pid
+              * one log      /var/log/synapseids/NAME/sensor.log
+              * one line per check in `service synapseids_sensor selftest`
+        -->
+        <instances>
+            <instance type="ArrayField">
+                <!--
+                    Per-instance enable. The plugin-wide switch is
+                    general.enabled; this one takes a single segment out of
+                    service without deleting its configuration.
+                -->
+                <enabled type="BooleanField">
+                    <default>1</default>
+                    <Required>Y</Required>
+                </enabled>
+
+                <!--
+                    The instance name is not decoration: it is the FreeBSD rc
+                    profile name (synapseids_sensor_profiles), the name of the
+                    rendered configuration file, the pidfile stem, the log
+                    directory and the column the selftest prints. So it is
+                    restricted to what is simultaneously a safe filename and a
+                    safe shell variable fragment - letters, digits, underscore.
+                    A dash would break `synapseids_sensor_NAME_...` if this ever
+                    needs per-profile rc variables, so it is excluded now rather
+                    than after somebody hits it.
+                -->
+                <name type="TextField">
+                    <Required>Y</Required>
+                    <Mask>/^[a-zA-Z0-9_]{1,32}$/</Mask>
+                    <ValidationMessage>Use 1 to 32 letters, digits or underscores, unique across instances (it names the service profile, its log directory and its configuration file).</ValidationMessage>
+                </name>
+
+                <!--
+                    OPNsense interface *identifier* (wan, lan, opt1, ...), single
+                    select. One process captures one device.
+
+                    This was a multi-select in model 1.0.0 while the configd
+                    template resolved only the first identifier, which on a live
+                    gateway meant an operator selected WAN, IoT, DMZ and MGMT and
+                    got one VLAN: four segments believed monitored, one actually
+                    monitored, and nothing anywhere reporting the difference
+                    (issue 124). The answer is one instance per interface, not a
+                    control that takes input and discards it.
+                -->
+                <interface type="InterfaceField">
+                    <Required>N</Required>
+                    <ValidationMessage>Select the single interface this sensor captures from.</ValidationMessage>
+                </interface>
+
+                <!--
+                    listen mode only: the address THIS instance binds. It has to
+                    be per instance because four processes cannot share one port;
+                    performValidation refuses duplicates among enabled instances,
+                    since the second process to start would simply die with
+                    "address already in use" and the segment would go unmonitored.
+                    Ignored in connect mode, where every instance dials the one
+                    shared collector address.
+                -->
+                <listen_address type="TextField">
+                    <default>0.0.0.0:4789</default>
+                    <Required>N</Required>
+                    <Mask>/^(|(([0-9]{1,3}\.){3}[0-9]{1,3}|\[[0-9a-fA-F:.]+\])?:[0-9]{1,5})$/</Mask>
+                    <ValidationMessage>Use host:port, for example 0.0.0.0:4789, :4789 or [::]:4789. Each enabled instance needs its own port.</ValidationMessage>
+                </listen_address>
+
+                <!-- ========================= capture ======================= -->
+                <!--
+                    Maps to the `filter` flag. An empty value means "no filter at
+                    all" and the flag is omitted entirely.
+
+                    An empty OptionValues key cannot be expressed in model XML (an
+                    XML tag cannot be named ""), so the empty "All traffic" choice
+                    uses Required=N plus BlankDesc, which is the supported core
+                    idiom: BaseListField, the parent of OptionField, offers a blank
+                    entry described by BlankDesc precisely when the field is not
+                    required.
+
+                    Worst case if that is wrong on some core: the dropdown simply
+                    does not offer the blank entry, so an operator cannot select
+                    "capture everything" and is limited to the four presets. That is
+                    a cosmetic limitation, visible immediately in the GUI, and it
+                    cannot produce a dead or misconfigured sensor.
+
+                    The rendered value is validated twice more anyway: the OptionField
+                    itself refuses a value outside this list, and `synapse-sensor
+                    doctor` fails its config check if a rendered configuration ever
+                    names a filter that is not a built-in preset.
+                -->
+                <filter type="OptionField">
+                    <default>ip-any</default>
+                    <Required>N</Required>
+                    <BlankDesc>All traffic</BlankDesc>
+                    <OptionValues>
+                        <ip>IPv4 only</ip>
+                        <ip6>IPv6 only</ip6>
+                        <ip-any>IPv4 + IPv6</ip-any>
+                        <not-arp>Everything except ARP</not-arp>
+                    </OptionValues>
+                    <ValidationMessage>Choose one of the built-in capture filter presets.</ValidationMessage>
+                </filter>
+
+                <!-- Maps to the `direction` flag; valid only together with `iface`. -->
+                <direction type="OptionField">
+                    <default>in</default>
+                    <Required>Y</Required>
+                    <OptionValues>
+                        <inout>Both directions</inout>
+                        <in>Inbound only</in>
+                        <out>Outbound only</out>
+                    </OptionValues>
+                    <ValidationMessage>Choose inbound, outbound or both.</ValidationMessage>
+                </direction>
+
+                <!-- Maps to the boolean `promisc` flag. -->
+                <promiscuous type="BooleanField">
+                    <default>1</default>
+                    <Required>Y</Required>
+                </promiscuous>
+
+                <!-- Maps to the `snaplen` flag. -->
+                <snaplen type="IntegerField">
+                    <default>262144</default>
+                    <Required>Y</Required>
+                    <MinimumValue>64</MinimumValue>
+                    <MaximumValue>262144</MaximumValue>
+                    <ValidationMessage>Snap length must be between 64 and 262144 bytes.</ValidationMessage>
+                </snaplen>
+
+                <!-- ======================= what to send ==================== -->
+                <!--
+                    Maps to the `mode` flag: how much of the pipeline runs here on
+                    the firewall, and therefore how much crosses the WAN link.
+
+                      raw     - stream every captured frame. Most bandwidth, and the
+                                packet content leaves this host.
+                      flow    - aggregate flows here and send one flow record per
+                                closed flow. Measured at roughly 1.5 percent of the
+                                raw bandwidth on ordinary traffic.
+                      feature - also compute the 48 flow-features-v1 values here and
+                                send only those. NO packet content ever leaves this
+                                host, which is the point of the mode; roughly 1.9
+                                percent of the raw bandwidth.
+
+                    Per instance, deliberately: a WAN uplink and an internal SPAN
+                    port rarely warrant the same bandwidth or the same privacy
+                    posture. The verdicts are identical in all three modes.
+
+                    Note the name: the transport posture field in `general` is
+                    already called "mode" (listen versus connect), so this one is
+                    "send_mode" even though it renders as the `mode` flag.
+
+                    The record modes need a SynapseIDS daemon new enough to speak
+                    SYNPOIP v2. An older collector refuses the connection with
+                    "mode-unsupported" rather than quietly falling back to sending
+                    packets, so an operator who chose "feature" for privacy reasons
+                    never silently loses that property.
+                -->
+                <send_mode type="OptionField">
+                    <default>raw</default>
+                    <Required>Y</Required>
+                    <OptionValues>
+                        <raw>Raw packets - stream every frame (most bandwidth)</raw>
+                        <flow>Flow records - aggregate flows here (least bandwidth)</flow>
+                        <feature>Feature vectors only - no packet content leaves this host</feature>
+                    </OptionValues>
+                    <ValidationMessage>Choose raw, flow or feature.</ValidationMessage>
+                </send_mode>
+
+                <!-- ========================= identity ====================== -->
+                <!--
+                    Maps to the `sensor-id` flag. This is the whole reason for
+                    running a process per interface: the daemon attributes every
+                    flow to the sensor that saw it, so two instances must never
+                    share an id. performValidation refuses duplicates.
+                -->
+                <sensor_id type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[a-zA-Z0-9._-]{0,64}$/</Mask>
+                    <ValidationMessage>Sensor ID may contain letters, digits, dot, dash and underscore (max 64), and must be unique across instances.</ValidationMessage>
+                </sensor_id>
+
+                <!-- Maps to the `location` flag. -->
+                <location type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[a-zA-Z0-9 ._\/-]{0,64}$/</Mask>
+                    <ValidationMessage>Location may contain letters, digits, space, dot, slash, dash and underscore (max 64).</ValidationMessage>
+                </location>
+
+                <!-- ======================= authorization =================== -->
+                <!--
+                    PROJECT.md 28.18: capturing live traffic is an explicit
+                    authorization decision, never a default - and it is PER
+                    INSTANCE. Being authorised to monitor the WAN uplink says
+                    nothing about being authorised to monitor a tenant VLAN, so
+                    this assertion is never inherited from another instance and
+                    is never copied when a new instance is added.
+
+                    Becomes the `authorized` flag, which synapse-sensor requires
+                    whenever the `iface` flag is used.
+                -->
+                <authorized type="BooleanField">
+                    <default>0</default>
+                    <Required>Y</Required>
+                </authorized>
+
+                <description type="TextField">
+                    <Required>N</Required>
+                    <Mask>/^[a-zA-Z0-9 ._\/,()-]{0,128}$/</Mask>
+                    <ValidationMessage>Free text: letters, digits, space and . _ / , ( ) - (max 128).</ValidationMessage>
+                </description>
+            </instance>
+        </instances>
     </items>
 </model>

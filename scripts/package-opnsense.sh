@@ -165,6 +165,27 @@ else
 fi
 install -d -o root -g wheel -m 0750 /usr/local/etc/synapseids
 
+# Run the model migrations.
+#
+# THIS IS WHAT PRESERVES AN EXISTING SENSOR ACROSS AN UPGRADE. Model 1.0.1 moved
+# the single capture configuration under <general> into a repeating <instances>
+# node, one per interface (issue #124), and Migrations/M1_0_1.php is what carries
+# the old settings across. Without this the settings page would come up empty
+# after an upgrade and an operator's working sensor would look lost -- it would
+# still be in config.xml, but nothing would be capturing.
+#
+# rc.configure_plugins does NOT do this: it flushes caches and restarts syslog.
+# The migration runner is a separate core script, and it is idempotent (it does
+# nothing once the stored model version matches), so running it here is safe on
+# a fresh install and on a re-install. The class prefix keeps it to this plugin;
+# the runner turns "/" into "\" itself, so no backslash needs escaping.
+if [ -f /usr/local/opnsense/mvc/script/run_migrations.php ] && [ -x /usr/local/bin/php ]; then
+	/usr/local/bin/php /usr/local/opnsense/mvc/script/run_migrations.php \
+		OPNsense/SynapseIDSSensor || \
+		echo "WARNING: model migration failed; run it by hand with
+         /usr/local/opnsense/mvc/script/run_migrations.php OPNsense/SynapseIDSSensor"
+fi
+
 # Make the MVC pages, ACL and configd actions visible.
 if [ -x /usr/local/etc/rc.configure_plugins ]; then
 	/usr/local/etc/rc.configure_plugins install os-synapseids-sensor >/dev/null 2>&1 || true

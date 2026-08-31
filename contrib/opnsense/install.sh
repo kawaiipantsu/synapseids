@@ -110,15 +110,24 @@ if [ "$UNINSTALL" = 1 ]; then
 	fi
 	# Everything configd renders, including the TLS private key -- leaving a key
 	# behind after an uninstall is bad hygiene even though it is mode 0400.
+	#
+	# instances/*.conf is one file per capture instance (issue #124). It carries
+	# no secret, but a rendered configuration for a sensor that is no longer
+	# installed is exactly the kind of file that gets read a year later and
+	# believed.
 	for f in /usr/local/etc/synapseids/sensor.conf \
 		/usr/local/etc/synapseids/sensor.token \
 		/usr/local/etc/synapseids/sensor-ca.pem \
 		/usr/local/etc/synapseids/sensor-cert.pem \
-		/usr/local/etc/synapseids/sensor-key.pem; do
+		/usr/local/etc/synapseids/sensor-key.pem \
+		/usr/local/etc/synapseids/instances/*.conf; do
 		if [ -e "$f" ]; then
 			run rm -f "$f"
 		fi
 	done
+	if [ -d /usr/local/etc/synapseids/instances ]; then
+		run rmdir /usr/local/etc/synapseids/instances 2>/dev/null || true
+	fi
 	say ""
 	say "Removed the package, the rendered configuration and the rendered TLS material."
 	say "The bearer token and the PEM text stored in the OPNsense configuration were NOT"
