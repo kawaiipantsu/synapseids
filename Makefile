@@ -41,6 +41,11 @@ help: ## Show available targets
 	@echo "  bench / coverage   Benchmarks / HTML coverage report"
 	@echo "  generate           Regenerate PCAP fixtures (testdata/gen)"
 	@echo ""
+	@echo "Web UI (Node; never invoked by the Go build):"
+	@echo "  web                Build the React SPA into web/dist (commit the result)"
+	@echo "  web-dev            Vite dev server with /api proxy to :8080"
+	@echo "  web-check          Type-check the SPA (tsc --noEmit)"
+	@echo ""
 	@echo "Build:"
 	@echo "  build              Build all three host binaries"
 	@echo "  build-linux        Build every binary for all four Linux arches"
@@ -113,6 +118,25 @@ generate: ## Regenerate the committed PCAP fixtures
 run: ## Run synapsed (ARGS=... to pass arguments)
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/synapsed $(ARGS)
 
+## ---------------------------------------------------------------- web ui
+
+WEB_UI := web/ui
+
+# The Go build never runs any of these: web/dist/ is committed and embedded by
+# web/web.go (//go:embed all:dist). Run `make web` and commit web/dist/ after
+# touching anything under web/ui/. Requires Node 18 + npm (see web/ui/package.json).
+.PHONY: web
+web: ## Build the React SPA into web/dist (run + commit after editing web/ui/)
+	cd $(WEB_UI) && npm ci && npm run build
+
+.PHONY: web-dev
+web-dev: ## Vite dev server, proxying /api + /api/v1/stream to 127.0.0.1:8080
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm run dev
+
+.PHONY: web-check
+web-check: ## Type-check the SPA (tsc --noEmit)
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm run typecheck
+
 ## ---------------------------------------------------------------- build
 
 .PHONY: build
@@ -148,8 +172,9 @@ install: ## go install all three into GOPATH/bin
 	done
 
 .PHONY: clean
-clean: ## Remove generated files
+clean: ## Remove generated files (keeps the committed web/dist/ bundle)
 	rm -rf $(DIST) $(BINARIES) $(COVER) coverage.html
+	rm -rf $(WEB_UI)/node_modules $(WEB_UI)/.vite $(WEB_UI)/*.tsbuildinfo
 	$(GO) clean -cache -testcache >/dev/null 2>&1 || true
 
 .PHONY: security

@@ -40,7 +40,7 @@ end). See [PROJECT.md](../PROJECT.md) §2, §3, §5, §26 for the intended shape
                         └────────────────────────────────┬──────────────────────────────────┘
                                             HTTP + WebSocket (/api/v1)
                                                          ▼
-                                   browser (web/index.html)  ·  synapse CLI
+                              browser (web/ — React SPA)  ·  synapse CLI
 ```
 
 Adapted from PROJECT.md §3. The trainer, SQLite store, sensors and React SPA in
@@ -56,7 +56,7 @@ that diagram are not in the tree yet (see [What is not here yet](#what-is-not-he
   the 48 numbers. Nothing else computes a feature.
 - **Renderers never measure.** `internal/api` imports `storage`, `inference`,
   `schema` — not `flow`, `features` or `packet`. It serves structs the pipeline
-  already filled in. `synapse` and `web/index.html` do the same over HTTP.
+  already filled in. `synapse` and the `web/` SPA do the same over HTTP.
 - **Normalization is a per-model concern** (PROJECT.md §11). `pipeline.Run`
   hands `inference.Runtime` the **raw** vector. The Phase-1 `Heuristic` reads raw
   values directly. A trained model (Phase 2) applies the `normalizer.json` from
@@ -85,7 +85,7 @@ respected.
 | `config` | Load one JSON file + `SYNAPSE_*` env overrides onto `Default()`; validate; `LoopbackOnly()`. JSON only (see [ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)). | stdlib only | everything else internal |
 | `version` | Build metadata stamped by `-ldflags`. | stdlib only | everything else internal |
 | `schemas` | `//go:embed` bytes of the three schema JSON documents. | `embed` | — |
-| `web` | `//go:embed index.html`, the placeholder rolling-log page served at `/`. | `embed` | — |
+| `web` | `//go:embed all:dist` — the built React SPA served at `/` (source in `web/ui/`, committed build output in `web/dist/`; see [ADR 0004](adr/0004-react-spa-and-committed-build-output.md)). `FS()` returns the `dist` subtree. | `embed` | — |
 
 `cmd/synapsed` composes `config` + `events` + `storage.Mem` + `inference.Runtime`
 + `api.Server` and owns the `replayController` (which is the only caller of
@@ -193,6 +193,29 @@ The envelope schema is embedded but is not served over HTTP (only
 - **The API pump is its own goroutine**, started by `Server.Run`, holding one bus
   subscription and one `time.Ticker`.
 
+## Web UI
+
+The operator console is a TypeScript + React 18 SPA, bundled with Vite 5
+([ADR 0004](adr/0004-react-spa-and-committed-build-output.md), PROJECT.md §19,
+§27). It is a pure REST + WebSocket client — like `synapse`, it never computes a
+feature.
+
+- **Source** is `web/ui/` (`src/**`, `package.json`, `package-lock.json`,
+  `vite.config.ts`). `make web` runs `npm ci && npm run build`; `make web-dev`
+  serves it with `/api` and `/api/v1/stream` proxied to `127.0.0.1:8080`;
+  `make web-check` is `tsc --noEmit`.
+- **Build output** is `web/dist/` — content-hashed JS/CSS plus `index.html`,
+  **committed to the repo** and embedded by `web/web.go` (`//go:embed all:dist`).
+  `go build`, `make build-linux` and CI never run Node. Rebuild and commit
+  `web/dist/` after any `web/ui/` change.
+- **Routing is hash-based** (`/#/flow-log`): every document request stays on `/`,
+  so `internal/api` needs no SPA-fallback route. A `StreamProvider` opens the one
+  WebSocket, polls `/api/v1/status` once a second, fans event batches to
+  subscribers, and keeps rolling client-side aggregates for the Dashboard.
+- **Wired views:** Dashboard, the full-screen Flow Log, the Flow Inspector
+  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), and Replay
+  control. Every other §19 route is a "Planned — Phase N" placeholder.
+
 ## What is not here yet
 
 Phase 1 is the vertical slice. Everything below is deliberately absent and
@@ -204,7 +227,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | ONNX / trained neural-network models | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` and `schema.ValidateBundle` already accept more models | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
-| React / TypeScript SPA | `web/index.html` — one embedded, dependency-free rolling-log page | see EPIC: Phase 1 UI (PROJECT.md §19, §27) |
+| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
 | Anomaly model, model compare, drift, human review, datasets, training UI | — | see EPIC: Phase 4, Phase 5, Phase 7 |
 | YAML config, retention sweeper, host/investigation/detection API groups | JSON config; rings are size-bounded, not time-bounded | see EPIC: Phase 2 ([ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)), Phase 5 |
 
