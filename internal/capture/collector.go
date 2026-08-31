@@ -429,6 +429,11 @@ func (c *Collector) Addr() string {
 // Sensors returns the current per-peer view for GET /api/v1/sensors, newest
 // first. Live counters come from the matching capture.Manager row.
 func (c *Collector) Sensors() []SensorStatus {
+	// Nil-receiver safe: a caller holding a typed-nil *Collector in an
+	// interface reads as "no sensors", never a panic.
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	reg := c.reg
 	peers := make([]*peer, 0, len(c.peers))
@@ -448,6 +453,9 @@ func (c *Collector) Sensors() []SensorStatus {
 // Sensor returns one peer by sensor id (or, for an anonymous sensor, by the
 // source name it was registered under).
 func (c *Collector) Sensor(id string) (SensorStatus, bool) {
+	if c == nil {
+		return SensorStatus{}, false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, p := range c.peers {

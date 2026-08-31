@@ -272,7 +272,15 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, collector, rvs)
+	// collector is a *capture.Collector, so passing it directly would hand api a
+	// TYPED nil when no collector block is configured: the interface value is
+	// non-nil (it carries a type) and every "if sp != nil" guard passes, then the
+	// first method call panics on the nil receiver. Convert explicitly.
+	var sensors api.SensorStatusProvider
+	if collector != nil {
+		sensors = collector
+	}
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, sensors, rvs)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

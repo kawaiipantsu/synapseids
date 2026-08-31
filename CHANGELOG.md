@@ -146,6 +146,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GET /api/v1/sensors` and `/api/v1/sensors/topology` panicked and returned an
+  empty reply on a daemon with no `capture.collector` block configured — which is
+  the default. `cmd/synapsed` handed `api.New` a **typed-nil** `*capture.Collector`
+  as the `SensorStatusProvider`, so the interface value was non-nil (it carries a
+  type), every `if sp != nil` guard passed, and the first method call dereferenced
+  a nil receiver. Fixed at both layers: the daemon only assigns the provider when a
+  collector exists, and `(*Collector).Sensors`/`Sensor` are nil-receiver safe.
 - **A spurious `404` from `GET /api/v1/flows/{id}` for a long-lived flow that was
   still retained** (found while building #38). `flow.Table` increments
   `SnapshotIndex` on the *live* entry, so a flow's terminal record inherits the
