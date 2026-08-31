@@ -119,21 +119,50 @@ post_install_script() {
 	cat <<'POSTINSTALL'
 #!/bin/sh
 # Least privilege: the sensor runs as a dedicated unprivileged account, never
-# as root. Membership of "net" is what a devfs rule over bpf* grants read
-# access through (PROJECT.md 21).
+# as root. Membership of the group a devfs rule grants bpf* to is what gives it
+# read access (PROJECT.md 21).
 set -e
+
+# The bpf group is NOT hardcoded. FreeBSD base ships "network" (gid 69); a lot
+# of documentation -- including earlier versions of this package -- says "net",
+# which does not exist on a stock system. `pw useradd -G net` then fails, and
+# under `set -e` that aborted this whole script: the group was created, the
+# ACCOUNT WAS NOT, and every later step was skipped. Detect instead of assume,
+# and treat supplementary membership as best-effort so a missing group can
+# never again cost us the account.
+bpf_group=""
+for _g in network net; do
+	if /usr/sbin/pw groupshow "$_g" >/dev/null 2>&1; then
+		bpf_group="$_g"
+		break
+	fi
+done
 
 if ! /usr/sbin/pw groupshow _synapseids >/dev/null 2>&1; then
 	/usr/sbin/pw groupadd _synapseids
 fi
 if ! /usr/sbin/pw usershow _synapseids >/dev/null 2>&1; then
-	/usr/sbin/pw useradd _synapseids -g _synapseids -G net \
+	# Primary group only. Supplementary groups are added separately below so
+	# that this command cannot fail for a reason unrelated to the account.
+	/usr/sbin/pw useradd _synapseids -g _synapseids \
 		-d /nonexistent -s /usr/sbin/nologin -c 'SynapseIDS sensor'
+fi
+if [ -n "$bpf_group" ]; then
+	/usr/sbin/pw groupmod "$bpf_group" -m _synapseids >/dev/null 2>&1 || true
 else
-	/usr/sbin/pw groupmod net -m _synapseids >/dev/null 2>&1 || true
+	echo "WARNING: neither group 'network' nor 'net' exists, so _synapseids was"
+	echo "         not added to a bpf group. Create the devfs rule against a"
+	echo "         group the account is in, or the sensor cannot read /dev/bpf*."
 fi
 
-install -d -o _synapseids -g wheel -m 0750 /var/log/synapseids
+# Guarded: if the account somehow still does not exist, create the directory as
+# root rather than aborting. `configctl synapseidssensor fixperms` re-applies
+# ownership on every save, so a root-owned directory here self-corrects.
+if /usr/sbin/pw usershow _synapseids >/dev/null 2>&1; then
+	install -d -o _synapseids -g wheel -m 0750 /var/log/synapseids
+else
+	install -d -o root -g wheel -m 0750 /var/log/synapseids
+fi
 install -d -o root -g wheel -m 0750 /usr/local/etc/synapseids
 
 # Make the MVC pages, ACL and configd actions visible.
@@ -148,9 +177,28 @@ if [ -x /usr/local/etc/rc.restart_webgui ]; then
 fi
 
 echo "SynapseIDS sensor installed. Configure it at Services > SynapseIDS Sensor."
-echo "The sensor needs read access to /dev/bpf*. If it will not start, run:"
-echo "    printf '[synapseids_bpf=10]\\nadd path \\'bpf*\\' mode 0640 group net\\n' >> /etc/devfs.rules"
-echo "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
+
+# Only advise when there is actually something to do. install.sh --grant-bpf
+# writes this rule and then verifies it took effect, so printing the manual
+# recipe unconditionally told operators to redo work that was already done --
+# and left them wondering whether the installer had finished the job.
+#
+# The recipe uses a DOUBLE-quoted printf. The single-quoted form this used to
+# print could not be pasted at all: POSIX sh has no way to escape a single quote
+# inside single quotes, so `\'bpf*\'` terminated the string early and the paste
+# died with "Unterminated quoted string" having written nothing.
+if grep -q 'synapseids_bpf' /etc/devfs.rules 2>/dev/null; then
+	echo "A synapseids_bpf devfs ruleset is already present in /etc/devfs.rules."
+	echo "Confirm it took effect:  ls -l /dev/bpf0   (group should be ${bpf_group:-network})"
+else
+	echo "The sensor needs read access to /dev/bpf*. The installer does this for you"
+	echo "when run with --grant-bpf; to do it by hand:"
+	# printf '%s\n', not echo: whether echo expands \n is shell-dependent (FreeBSD
+	# sh leaves it literal, dash expands it), and this line must reach the operator
+	# byte-for-byte as something they can paste.
+	printf '%s\n' "    printf \"[synapseids_bpf=10]\\nadd path 'bpf*' mode 0640 group ${bpf_group:-network}\\n\" >> /etc/devfs.rules"
+	echo "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
+fi
 POSTINSTALL
 }
 

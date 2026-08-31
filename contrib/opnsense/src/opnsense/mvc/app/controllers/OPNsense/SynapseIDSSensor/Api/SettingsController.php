@@ -98,7 +98,24 @@ class SettingsController extends ApiMutableModelControllerBase
             return ['result' => 'failed', 'message' => gettext('POST required.')];
         }
 
-        $result = $this->setModelNodes();
+        // ApiMutableModelControllerBase provides getModelNodes() for the read
+        // side but there is NO symmetric setModelNodes(). Assuming there was
+        // cost an entire hardware bring-up: every POST died with
+        //   Error: Call to undefined method ...::setModelNodes()
+        // which the MVC layer turns into HTTP 500 and the GUI reports as
+        // "Unexpected error, check log for details". GET worked throughout,
+        // because getModelNodes() is real -- so the settings page looked
+        // healthy and Save silently never wrote config.xml.
+        //
+        // Delegate to the base class's own setAction() rather than
+        // reimplementing it. get_class_methods() on a live OPNsense 25.1 shows
+        // setAction() among the PUBLIC methods of
+        // ApiMutableModelControllerBase, so parent::setAction() is guaranteed to
+        // exist -- whereas open-coding setNodes()/save() here would depend on
+        // protected members whose names are exactly what went wrong above.
+        // It returns the same {"result":"saved"} /
+        // {"result":"failed","validations":{...}} shape this method promises.
+        $result = parent::setAction();
 
         if (isset($result['result']) && $result['result'] === 'saved') {
             $result['reconfigure'] = $this->applyConfiguration();
@@ -136,6 +153,25 @@ class SettingsController extends ApiMutableModelControllerBase
         $steps['service'] = trim($backend->configdRun(
             $enabled ? 'synapseidssensor restart' : 'synapseidssensor stop'
         ));
+
+        // A sensor that refuses to start is an EXPECTED state on a firewall that
+        // has not been granted /dev/bpf* access yet, or whose interface has not
+        // resolved. By this point the configuration IS saved -- the template and
+        // fixperms steps above have already run -- so the failure is about the
+        // service, not the settings.
+        //
+        // The problem is that configd's type:script actions return only
+        // "Error (1)". The rc script prints a precise reason (which device, which
+        // lookup, the exact devfs incantation) and all of it is discarded, so the
+        // operator sees a bare error and has to SSH in to find out why. That is
+        // what made a simple missing devfs rule take several rounds to identify
+        // on a real gateway.
+        //
+        // The selftest action is type:script_output, so its text does come back.
+        // Attach it on failure: one line per check, naming the cause.
+        if (stripos($steps['service'], 'error') !== false) {
+            $steps['selftest'] = trim($backend->configdRun('synapseidssensor selftest'));
+        }
 
         return $steps;
     }

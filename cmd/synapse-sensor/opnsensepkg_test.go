@@ -16,6 +16,7 @@ package main
 // silently rejected a bare name.
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -419,6 +420,238 @@ func TestOPNsenseScriptsAreShellCheckable(t *testing.T) {
 		out, err := runSh(t, "sh -n "+p)
 		if err != nil {
 			t.Errorf("sh -n %s failed: %v\n%s", p, err, out)
+		}
+	}
+}
+
+// ---------------------------------------------------------------- post-install
+
+// The post-install script must be able to create the service account on a stock
+// FreeBSD system. It once ran `pw useradd -G net`, and because FreeBSD base
+// ships the group as "network" (gid 69) and not "net", that command failed --
+// which under the script's `set -e` aborted everything after it. The observed
+// result on a real OPNsense 25.1 gateway was a created group, NO ACCOUNT, no log
+// directory, and an unregistered plugin: the sensor could not start at all and
+// the reason was several steps removed from the symptom.
+//
+// These assertions pin the shape of the fix rather than the wording.
+func TestPostInstallCreatesAccountIndependentlyOfTheBPFGroup(t *testing.T) {
+	pkg := readScript(t, packageSh)
+
+	useradd := regexp.MustCompile(`(?s)pw useradd _synapseids(.*?)\n`).FindStringSubmatch(pkg)
+	if useradd == nil {
+		t.Fatal("package-opnsense.sh: no `pw useradd _synapseids` found in the post-install script")
+	}
+	// The account creation must not depend on any supplementary group existing.
+	if strings.Contains(useradd[1], "-G ") {
+		t.Errorf("pw useradd still passes a supplementary group (-G): %q\n"+
+			"a missing group must not be able to fail account creation", useradd[1])
+	}
+
+	// The bpf group has to be discovered, and both candidate names considered.
+	for _, want := range []string{"pw groupshow", "network", "net"} {
+		if !strings.Contains(pkg, want) {
+			t.Errorf("post-install does not mention %q — the bpf group must be detected, not assumed", want)
+		}
+	}
+
+	// Adding the account to the bpf group must be best-effort.
+	groupmod := regexp.MustCompile(`pw groupmod "?\$?\{?bpf_group\}?"? -m _synapseids[^\n]*`).FindString(pkg)
+	if groupmod == "" {
+		t.Fatal("post-install does not add _synapseids to the detected bpf group")
+	}
+	if !strings.Contains(groupmod, "|| true") {
+		t.Errorf("group membership is not best-effort: %q", groupmod)
+	}
+}
+
+// A repository-dependent remedy is useless on the box that needs it: a stale pkg
+// database is itself a common reason the install went wrong ("Repository OPNsense
+// has a wrong packagesite"), and the plugin is normally installed from a local
+// file with `pkg add`. No selftest remedy may route through `pkg install`.
+func TestRemediesDoNotRequireAPackageRepository(t *testing.T) {
+	for _, path := range []string{"doctor.go", "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor"} {
+		// Only what the tool actually prints counts. Commentary is allowed to
+		// name the rejected command in order to explain why it is rejected.
+		for i, line := range strings.Split(readScript(t, path), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if strings.Contains(trimmed, "pkg install") {
+				t.Errorf("%s:%d suggests `pkg install`, which needs a working repository; "+
+					"use `pkg add -f <file>` or direct pw(8) commands instead\n\t%s",
+					path, i+1, trimmed)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------- configd actions
+
+const actionsConf = "../../contrib/opnsense/src/opnsense/service/conf/actions.d/actions_synapseidssensor.conf"
+
+// Saving the settings page with the sensor disabled runs the [stop] action.
+// rc.subr's default stop warns "not running? (check <pidfile>)" and returns 1 on
+// an already-stopped service, and configd renders a non-zero exit from a
+// type:script action as the GUI's "Unexpected error, check log for details" --
+// so on a real gateway EVERY save failed, while the configuration had in fact
+// been written and the template rendered. Stopping a stopped service is a no-op,
+// not a failure; both lifecycle actions must tolerate it.
+func TestStopAndRestartActionsToleratePreStoppedService(t *testing.T) {
+	conf := readScript(t, actionsConf)
+
+	for _, action := range []string{"stop", "restart"} {
+		cmd := configdActionCommand(t, conf, action)
+		if !strings.Contains(cmd, "onestatus") {
+			t.Errorf("[%s] command does not check onestatus first, so it fails on an "+
+				"already-stopped sensor:\n\t%s", action, cmd)
+		}
+	}
+
+	// configd applies parameter substitution to command:, so a stray % would be
+	// eaten. Assert it for every action, not just the two edited here.
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(line, "command:") && strings.Contains(line, "%") {
+			t.Errorf("action command contains %%, which configd will substitute:\n\t%s", line)
+		}
+	}
+}
+
+// configdActionCommand returns the command: line of the named [action] block.
+func configdActionCommand(t *testing.T, conf, action string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?ms)^\[` + regexp.QuoteMeta(action) + `\]\s*$(.*?)(?:^\[|\z)`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatalf("no [%s] action block found in %s", action, actionsConf)
+	}
+	for _, line := range strings.Split(m[1], "\n") {
+		if strings.HasPrefix(line, "command:") {
+			return strings.TrimPrefix(line, "command:")
+		}
+	}
+	t.Fatalf("[%s] has no command: line", action)
+	return ""
+}
+
+// setModelNodes() does not exist on OPNsense's ApiMutableModelControllerBase.
+// Calling it made every POST to settings/set fail with "Call to undefined
+// method" -> HTTP 500 -> the GUI's generic "Unexpected error", while GET kept
+// working because getModelNodes() IS real. The settings page therefore looked
+// entirely healthy and Save silently never wrote config.xml -- found only on a
+// live gateway, after the plugin had passed every local check.
+//
+// This guard is deliberately crude: there is no way to resolve OPNsense core's
+// class hierarchy from this repo, so it pins the one name that burned us.
+func TestControllersDoNotCallNonexistentBaseMethods(t *testing.T) {
+	const controllers = "../../contrib/opnsense/src/opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor"
+	banned := map[string]string{
+		"setModelNodes": "does not exist on ApiMutableModelControllerBase; " +
+			"use $this->getModel()->setNodes(...) followed by $this->save()",
+	}
+	err := filepath.WalkDir(controllers, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".php") {
+			return err
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			// Comments may name the method in order to explain the trap.
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			for name, why := range banned {
+				if strings.Contains(trimmed, name+"(") {
+					t.Errorf("%s:%d calls %s(), which %s\n\t%s",
+						filepath.Base(path), i+1, name, why, trimmed)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", controllers, err)
+	}
+}
+
+// daemon(8) creates its pidfile AFTER dropping privileges to -u, so the pidfile
+// must live somewhere the unprivileged service user can write. Pointing it
+// straight at /var/run (root:wheel) failed on a live gateway with
+//
+//	daemon: pidfile ``/var/run/synapseids_sensor.pid'': Permission denied
+//
+// and rc.subr reported only "failed to start", with the sensor never running.
+func TestPidfileLivesInADirectoryTheServiceUserOwns(t *testing.T) {
+	rc := readScript(t, "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor")
+
+	m := regexp.MustCompile(`(?m)^pidfile="([^"]+)"`).FindStringSubmatch(rc)
+	if m == nil {
+		t.Fatal("rc.d script has no pidfile= assignment")
+	}
+	pidfile := m[1]
+
+	// A literal path directly under /var/run cannot be created by the service
+	// user; it has to sit in a subdirectory the script creates and chowns.
+	if regexp.MustCompile(`^/var/run/[^/]+$`).MatchString(pidfile) {
+		t.Errorf("pidfile %q is directly in /var/run, which is root:wheel; "+
+			"daemon(8) -u cannot create it there", pidfile)
+	}
+	if !strings.Contains(pidfile, "rundir") && !strings.Contains(pidfile, "/synapseids/") {
+		t.Errorf("pidfile %q does not appear to be inside a dedicated directory", pidfile)
+	}
+
+	// start_precmd must create it and hand it to the service user, because
+	// /var/run is cleared at boot.
+	precmd := regexp.MustCompile(`(?s)synapseids_sensor_precmd\(\)\s*\{(.*?)\n\}`).FindStringSubmatch(rc)
+	if precmd == nil {
+		t.Fatal("could not find synapseids_sensor_precmd()")
+	}
+	for _, want := range []string{"rundir", "mkdir", "chown"} {
+		if !strings.Contains(precmd[1], want) {
+			t.Errorf("start_precmd does not %s the pid directory; it will not exist after a reboot", want)
+		}
+	}
+}
+
+// rc.subr reserves a set of ${name}_* variables and acts on them itself. Naming
+// our own knob synapseids_sensor_user meant rc.subr dropped privileges before
+// running the command, so daemon(8)'s -u then ran unprivileged and failed:
+//
+//	daemon: failed to set user environment
+//
+// preceded by "pidfile: Permission denied" against root-owned /var/run. Neither
+// message points at a variable name, and rc.subr's own route is unusable here
+// because it wraps the command in su(1), which fails for a service account with
+// /usr/sbin/nologin as its shell.
+//
+// rcvar (${name}_enable) is the one reserved name we must define.
+func TestRCScriptAvoidsRCSubrReservedVariables(t *testing.T) {
+	const rcPath = "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor"
+	rc := readScript(t, rcPath)
+
+	// From rc.subr(8): these are consumed by run_rc_command, not by us.
+	reserved := []string{
+		"user", "group", "groups", "chroot", "chdir", "flags", "env", "env_file",
+		"fib", "login_class", "limits", "nice", "oomprotect", "program", "umask",
+		"prepend",
+	}
+	for _, suffix := range reserved {
+		name := "synapseids_sensor_" + suffix
+		for i, line := range strings.Split(rc, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue // commentary may name it to explain the trap
+			}
+			// An assignment or a : ${...:=default} definition of a reserved name.
+			if strings.Contains(trimmed, name+"=") || strings.Contains(trimmed, name+":=") {
+				t.Errorf("%s:%d defines %s, which rc.subr reserves and acts on itself\n\t%s",
+					filepath.Base(rcPath), i+1, name, trimmed)
+			}
 		}
 	}
 }

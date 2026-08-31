@@ -71,7 +71,17 @@ fi
 : ${synapseids_sensor_iface_id:=""}
 : ${synapseids_sensor_iface_src:=""}
 : ${synapseids_sensor_iface_error:=""}
-: ${synapseids_sensor_user:="_synapseids"}
+# NOT named synapseids_sensor_user: rc.subr reserves ${name}_user and, when it
+# is set, drops privileges ITSELF before running command. That collided with
+# daemon(8)'s own -u, so the command was already unprivileged when daemon tried
+# setusercontext(), and the sensor died with
+#     daemon: failed to set user environment
+# (and, before that, "pidfile: Permission denied" writing to root-owned
+# /var/run). rc.subr's route is also unusable here: it wraps the command in
+# su(1), which fails for an account whose shell is /usr/sbin/nologin -- exactly
+# what a service account should have. So daemon(8) owns the privilege drop and
+# this variable stays out of rc.subr's namespace.
+: ${synapseids_sensor_runas:="_synapseids"}
 : ${synapseids_sensor_bin:="/usr/local/bin/synapse-sensor"}
 : ${synapseids_sensor_etcdir:="/usr/local/etc/synapseids"}
 : ${synapseids_sensor_logdir:="/var/log/synapseids"}
@@ -82,7 +92,14 @@ synapseids_sensor_cert="${synapseids_sensor_etcdir}/sensor-cert.pem"
 synapseids_sensor_key="${synapseids_sensor_etcdir}/sensor-key.pem"
 synapseids_sensor_log="${synapseids_sensor_logdir}/sensor.log"
 
-pidfile="/var/run/synapseids_sensor.pid"
+# daemon(8) creates this file AFTER dropping privileges to -u, so it must live
+# somewhere ${synapseids_sensor_runas} can write. /var/run itself is root:wheel,
+# which produced:
+#     daemon: pidfile ``/var/run/synapseids_sensor.pid'': Permission denied
+# The directory is created by start_precmd on every start because /var/run is
+# cleared at boot.
+synapseids_sensor_rundir="/var/run/synapseids"
+pidfile="${synapseids_sensor_rundir}/sensor.pid"
 procname="${synapseids_sensor_bin}"
 command="/usr/sbin/daemon"
 
@@ -112,7 +129,7 @@ selftest_cmd="synapseids_sensor_selftest"
 # reports that explicitly on its `log-sink` line, together with the one-line
 # remedy (drop `-f` here).  It is a diagnosability bug, not a capture bug.
 command_args="-f -S -T ${name} -o ${synapseids_sensor_log} \
-    -p ${pidfile} -u ${synapseids_sensor_user} \
+    -p ${pidfile} -u ${synapseids_sensor_runas} \
     ${synapseids_sensor_bin} pcap-over-ip ${synapseids_sensor_args} \
     --token-file ${synapseids_sensor_token}"
 
@@ -224,19 +241,34 @@ synapseids_sensor_check_iface()
     return 0
 }
 
-# Print the devfs guidance and fail.  Kept verbatim so it can be pasted.
+# Resolve the group a devfs rule should grant bpf* to.  FreeBSD base ships
+# "network" (gid 69); much documentation says "net", which does not exist on a
+# stock system, and a rule naming a nonexistent group grants nothing.
+synapseids_sensor_bpf_group()
+{
+    for _g in network net; do
+        if /usr/sbin/pw groupshow "${_g}" >/dev/null 2>&1; then
+            echo "${_g}"
+            return 0
+        fi
+    done
+    echo network
+}
+
+# Print the devfs guidance and fail.  Pasteable as printed.
 synapseids_sensor_bpf_help()
 {
-    cat <<'EOF'
-synapseids_sensor: the _synapseids user cannot read /dev/bpf*.
+    _bpfgrp=$(synapseids_sensor_bpf_group)
+    cat <<EOF
+synapseids_sensor: the ${synapseids_sensor_runas} user cannot read /dev/bpf*.
 Add to /etc/devfs.rules:
     [synapseids_bpf=10]
-    add path 'bpf*' mode 0640 group net
+    add path 'bpf*' mode 0640 group ${_bpfgrp}
 then: sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart
 EOF
 }
 
-# Return 0 when ${synapseids_sensor_user} can open a BPF device.
+# Return 0 when ${synapseids_sensor_runas} can open a BPF device.
 #
 # There is no portable way to test read access "as another user" without a
 # usable login shell, so this inspects the device's owner, group and mode the
@@ -261,12 +293,12 @@ synapseids_sensor_bpf_ok()
     _mode=$(stat -f '%Lp' "${_dev}" 2>/dev/null) || return 0
 
     # owner read bit
-    if [ "${_owner}" = "${synapseids_sensor_user}" ] && [ $((0${_mode} & 0400)) -ne 0 ]; then
+    if [ "${_owner}" = "${synapseids_sensor_runas}" ] && [ $((0${_mode} & 0400)) -ne 0 ]; then
         return 0
     fi
     # group read bit, and the service user is a member of that group
     if [ $((0${_mode} & 0040)) -ne 0 ]; then
-        if id -Gn "${synapseids_sensor_user}" 2>/dev/null | tr ' ' '\n' | grep -qx "${_group}"; then
+        if id -Gn "${synapseids_sensor_runas}" 2>/dev/null | tr ' ' '\n' | grep -qx "${_group}"; then
             return 0
         fi
     fi
@@ -288,18 +320,28 @@ synapseids_sensor_precmd()
         return 1
     fi
 
+    # -- pid directory -----------------------------------------------------
+    # Must exist and be writable by the unprivileged user before daemon(8) drops
+    # privileges, or the start fails with "pidfile: Permission denied".
+    if [ ! -d "${synapseids_sensor_rundir}" ]; then
+        mkdir -p "${synapseids_sensor_rundir}" || return 1
+    fi
+    chown "${synapseids_sensor_runas}:${synapseids_sensor_runas}" \
+        "${synapseids_sensor_rundir}" 2>/dev/null
+    chmod 0755 "${synapseids_sensor_rundir}" 2>/dev/null
+
     # -- log directory -----------------------------------------------------
     if [ ! -d "${synapseids_sensor_logdir}" ]; then
         mkdir -p "${synapseids_sensor_logdir}" || return 1
     fi
-    chown "${synapseids_sensor_user}:wheel" "${synapseids_sensor_logdir}" 2>/dev/null
+    chown "${synapseids_sensor_runas}:wheel" "${synapseids_sensor_logdir}" 2>/dev/null
     chmod 0750 "${synapseids_sensor_logdir}" 2>/dev/null
 
     # -- configuration directory ------------------------------------------
     if [ ! -d "${synapseids_sensor_etcdir}" ]; then
         mkdir -p "${synapseids_sensor_etcdir}" || return 1
     fi
-    chown "root:${synapseids_sensor_user}" "${synapseids_sensor_etcdir}" 2>/dev/null
+    chown "root:${synapseids_sensor_runas}" "${synapseids_sensor_etcdir}" 2>/dev/null
     chmod 0750 "${synapseids_sensor_etcdir}" 2>/dev/null
 
     # sensor.conf carries no secrets, but there is no reason for it to be world
@@ -316,7 +358,7 @@ synapseids_sensor_precmd()
     if [ ! -f "${synapseids_sensor_token}" ]; then
         ( umask 077; : > "${synapseids_sensor_token}" ) || return 1
     fi
-    chown "${synapseids_sensor_user}:${synapseids_sensor_user}" "${synapseids_sensor_token}" || return 1
+    chown "${synapseids_sensor_runas}:${synapseids_sensor_runas}" "${synapseids_sensor_token}" || return 1
     chmod 0400 "${synapseids_sensor_token}" || return 1
 
     # -- TLS material ------------------------------------------------------
@@ -327,7 +369,7 @@ synapseids_sensor_precmd()
     synapseids_sensor_check_pem "${synapseids_sensor_ca}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_cert}" "root:wheel" 0444 || return 1
     synapseids_sensor_check_pem "${synapseids_sensor_key}" \
-        "${synapseids_sensor_user}:${synapseids_sensor_user}" 0400 || return 1
+        "${synapseids_sensor_runas}:${synapseids_sensor_runas}" 0400 || return 1
 
     # -- capture interface -------------------------------------------------
     synapseids_sensor_check_iface || return 1
@@ -356,7 +398,8 @@ synapseids_sensor_selftest()
 {
     if [ ! -x "${synapseids_sensor_bin}" ]; then
         echo "[FAIL] binary        ${synapseids_sensor_bin} is missing or not executable."
-        echo "       reinstall the package:  pkg install -f os-synapseids-sensor"
+        echo "       reinstall from the file you installed (no repository needed):"
+        echo "           pkg add -f /path/to/os-synapseids-sensor-*.pkg"
         return 1
     fi
 
@@ -364,7 +407,7 @@ synapseids_sensor_selftest()
         --config "${synapseids_sensor_conf}" \
         --etc-dir "${synapseids_sensor_etcdir}" \
         --log-dir "${synapseids_sensor_logdir}" \
-        --user "${synapseids_sensor_user}"
+        --user "${synapseids_sensor_runas}"
 }
 
 # selftest is dispatched HERE, before run_rc_command, and deliberately so.

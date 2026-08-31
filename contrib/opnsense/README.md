@@ -50,7 +50,7 @@ certificate subjects.
 [ OK ] binary        synapse-sensor 0.1.0 (abc1234, 2026-08-31) go1.27 freebsd/amd64
 [ OK ] config        /usr/local/etc/synapseids/sensor.conf: enable=YES, 17 flags, transport=connect
 [ OK ] service-user  _synapseids uid=1001 gid=1001 groups=_synapseids,net
-[ OK ] bpf-access    /dev/bpf mode 0640 root:net — readable by group net, which _synapseids is in
+[ OK ] bpf-access    /dev/bpf mode 0640 root:network — readable by group network, which _synapseids is in
 [ OK ] interface     wan -> em0 (via interfaces.wan.if) — exists, flags up|broadcast|running
 [ OK ] token-file    /usr/local/etc/synapseids/sensor.token mode 0400 _synapseids:_synapseids, 44 bytes
 [ OK ] tls-identity  sensor-cert.pem + sensor-key.pem: pair matches, subject "CN=fw1.example", expires 2027-08-31T00:00:00Z
@@ -73,8 +73,8 @@ prints ten.)
 | `[FAIL] config` — *shell metacharacter* / *not name=value* | `sensor.conf` was hand-edited, or a template escaping bug | never edit it; re-render. This file is sourced by `rc.d` as **root** |
 | `[FAIL] config` — *`--authorized` is absent* | the authorisation checkbox is not ticked | tick it. `synapse-sensor` refuses live capture without it (PROJECT.md §28.18) |
 | `[WARN] config` — *not enabled* | saved but disabled | tick **Enable** |
-| `[FAIL] service-user` | `pkg add`'s `post-install` did not run | `pkg install -f os-synapseids-sensor`, or `pw useradd _synapseids -d /nonexistent -s /usr/sbin/nologin -G net` |
-| `[WARN] service-user` — *not in group net* | the devfs rule grants `bpf*` to group `net` | `pw groupmod net -m _synapseids` |
+| `[FAIL] service-user` | `pkg add`'s `post-install` did not finish | `pw groupadd _synapseids && pw useradd _synapseids -g _synapseids -d /nonexistent -s /usr/sbin/nologin && pw groupmod network -m _synapseids`. Do **not** use `pkg install` — it needs a working repository, which is often the reason the install failed. |
+| `[WARN] service-user` — *not in the bpf group* | the devfs rule grants `bpf*` to that group | `pw groupmod network -m _synapseids` (the selftest prints the group it detected) |
 | `[FAIL] bpf-access` | **the sensor would capture nothing** | run the installer with `--grant-bpf`, or the two `devfs.rules` commands the line prints |
 | `[FAIL] interface` — *does not exist* | **the worst case: bound to nothing** | the line lists the devices that *do* exist. Check **Interfaces → Assignments** and `ifconfig -l`, then re-save |
 | `[FAIL] interface` — *could not be resolved* | the configd template could not turn the identifier into a device name | re-select the interface and save. The message names both lookups it tried; please report it — this is the assumption most likely to be wrong |
@@ -323,7 +323,7 @@ someone's firewall is not a package's business, so `pkg add` does not do it:
 either run the installer with `--grant-bpf`, or
 
 ```sh
-printf "[synapseids_bpf=10]\nadd path 'bpf*' mode 0640 group net\n" >> /etc/devfs.rules
+printf "[synapseids_bpf=10]\nadd path 'bpf*' mode 0640 group network\n" >> /etc/devfs.rules
 sysrc devfs_system_ruleset=synapseids_bpf
 service devfs restart
 ```
