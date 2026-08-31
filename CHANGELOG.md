@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live local-interface capture (Phase 3, GitHub issue #28).** `synapsed
+  --capture <iface>` (repeatable), or `capture.sources[]` in the JSON config, or
+  `SYNAPSE_CAPTURE_IFACE`, opens an `AF_PACKET` raw socket on a NIC and runs its
+  traffic through the same `packet → flow → features → inference` pipeline a PCAP
+  replay uses. Stdlib-only (`syscall`), `CGO_ENABLED=0`, cross-builds to all four
+  Linux arches; a full pcap-filter-expression compiler is deliberately out of
+  scope (see below). Needs `CAP_NET_RAW` (and `CAP_NET_ADMIN` for promiscuous
+  mode); on `EPERM` the error names the capability and never demands root
+  (PROJECT.md §21). A source that cannot open is logged and skipped — the daemon
+  keeps serving the API in a degraded mode. See
+  [ADR 0010](docs/adr/0010-live-capture-af_packet-and-the-source-manager.md).
+- `capture.Manager` runs N capture sources concurrently and merges their packets
+  into one channel, so the single-goroutine flow `Table` downstream is still fed
+  from exactly one place (PROJECT.md §22). A source that errors is isolated
+  (`state: "error"`), leaving the others and the pipeline running. It computes
+  rolling `pps`/`bps` per source off the packet path.
+- `GET /api/v1/captures` and `GET /api/v1/captures/{name}` — per-source live
+  status: `state`, `pps`, `bps`, `drops`, `last_packet`, `filter`, `error`, plus
+  `name`/`kind` and a `connection_latency_ms` (0 for a local NIC) (PROJECT.md
+  §19.14). Returns an empty array when no live capture is configured.
+- `capture.Stats` gains a `Drops` field — kernel packet drops from the
+  `AF_PACKET` `PACKET_STATISTICS` `tp_drops` counter (`PCAPFile` leaves it 0), so
+  capture loss is measurable (PROJECT.md §22, §24).
+- Config: `capture.sources` — an array of `{ name, kind: "nic", interface,
+  promiscuous, snaplen, filter }`. `filter` is `""` (everything) or a built-in
+  cBPF preset (`ip`, `ip6`, `ip-any`, `not-arp`); tcpdump-style filter
+  expressions are a follow-up (#29+).
 - `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
   `started`, `closed`, `snapshots` and `evicted` counters plus the configured
   `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction

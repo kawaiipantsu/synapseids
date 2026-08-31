@@ -18,6 +18,10 @@ type Stats struct {
 	DecodeErr uint64
 	Bytes     uint64
 	LastTS    time.Time
+	// Drops counts packets the kernel discarded before this process could read
+	// them (AF_PACKET PACKET_STATISTICS tp_drops). It is a live-capture concern:
+	// file-backed sources leave it 0 (PROJECT.md §22, §24).
+	Drops uint64
 }
 
 // Source is a packet producer. Packets runs until the context is cancelled or the

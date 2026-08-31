@@ -76,7 +76,7 @@ respected.
 | Package | Owns | Imports | Must not import |
 |---|---|---|---|
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
-| `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
+| `capture` | `Source` interface + adapters: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW), `Replay` (paces an inner source to wall-clock × speed), and `AFPacket` (Phase 3 — stdlib-only Linux `AF_PACKET` raw socket; built-in cBPF filter presets; `Stats.Drops` from `PACKET_STATISTICS`; non-Linux stub). `Manager` runs N sources and merges them into one stream for a single pipeline goroutine, isolating a failed source; it is itself a `Source`. `Stats` counters (incl. `Drops`). See [ADR 0010](adr/0010-live-capture-af_packet-and-the-source-manager.md). | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api`, `config` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
 | `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle` and `Architecture` + `ValidateArchitecture` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p` and the fitted `Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`). No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
@@ -87,7 +87,7 @@ respected.
 | `storage` | `Store` interface, `FlowRecord` / `Classification` DTOs, `FlowRecordFrom`, and `Mem` (fixed-capacity ring buffers, oldest evicted + counted). | `features`, `flow`, `inference` | `capture`, `events`, `api`, `pipeline` |
 | `wshub` | Dependency-free RFC 6455 server (`Upgrade`, text frames, ping/pong, disconnect detection) and `Hub` (per-client bounded send queue, drops slow clients). | stdlib only | `api`, `events`, `pipeline` |
 | `pipeline` | The wiring. `Run(ctx, src, rt, bus, store, opt)` consumes a `Source` to completion, driving `flow → features → inference → store + publish` on one goroutine. | `capture`, `events`, `features`, `flow`, `inference`, `storage` | `api`, `wshub` |
-| `api` | Versioned REST surface, the `/api/v1/stream` WebSocket, the event `pump` (bus → batched JSON arrays → `Hub`), `ReplayController` interface, static file serving. | `capture`, `config`, `events`, `inference`, `schema`, `storage`, `version`, `wshub`, `web` | `pipeline`, `flow`, `features`, `packet` |
+| `api` | Versioned REST surface, the `/api/v1/stream` WebSocket, the event `pump` (bus → batched JSON arrays → `Hub`), `ReplayController` and `CaptureStatusProvider` interfaces (the latter backs `GET /api/v1/captures[/{name}]`), static file serving. | `capture`, `config`, `events`, `inference`, `schema`, `storage`, `version`, `wshub`, `web` | `pipeline`, `flow`, `features`, `packet` |
 | `config` | Load one JSON file + `SYNAPSE_*` env overrides onto `Default()`; validate; `LoopbackOnly()`. JSON only (see [ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)). | stdlib only | everything else internal |
 | `version` | Build metadata stamped by `-ldflags`. | stdlib only | everything else internal |
 | `schemas` | `//go:embed` bytes of the three schema JSON documents. | `embed` | — |
@@ -199,6 +199,15 @@ The envelope schema is embedded but is not served over HTTP (only
 - **The replay controller runs one replay at a time.** `replayController.Start`
   refuses to start while `status.Running` is set; `Stop` cancels the run's
   context. A separate `progress` goroutine ticks `ReplayProgress` every 500ms.
+- **`capture.Manager` fans N live sources into one channel.** One forwarder
+  goroutine per source copies packets into a single shared output channel that a
+  dedicated `pipeline.Run` consumes — so the `flow.Table` it feeds is still
+  touched by exactly one goroutine. Channel sends from many goroutines are safe;
+  the fan-in is `-race`-clean. A source that returns a terminal error has its
+  forwarder marked `error` and stopped without disturbing the others or the
+  pipeline. A once-a-second sampler goroutine computes per-source `pps`/`bps`
+  off the packet path. The daemon runs this alongside the replay pipeline; both
+  share one `IDGen` so flow IDs stay globally unique.
 - **`capture.Replay` paces on the emit goroutine.** For a fractional/×N speed it
   sleeps on a `time.Timer` between packets; at `--speed max` there is no sleep,
   so it calls `runtime.Gosched()` every 256 packets to stay off the scheduler's
@@ -275,7 +284,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 
 | Missing | Present instead | Tracked |
 |---|---|---|
-| Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
+| Live capture — tcpdump stream, SSH `tcpdump`, PCAP-over-IP; a pcap-filter-expression compiler; runtime add/remove of sources; live-capture flow-table stats on `/api/v1/status` | **Local NIC capture is wired** (`capture.AFPacket` + `capture.Manager`, `synapsed --capture <iface>` / `capture.sources[]`, `GET /api/v1/captures`; [ADR 0010](adr/0010-live-capture-af_packet-and-the-source-manager.md)). Filters are built-in cBPF presets (`ip`, `ip6`, `ip-any`, `not-arp`) only. `capture.PCAPFile` + `capture.Replay` still handle classic pcap and minimal pcapng. | see EPIC: Phase 3 (#28 done; #29–#32 open) |
 | Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. The offline `synapse-trainer` that produces those bundles now lives in `trainer/` (Python/PyTorch; [ADR 0007](adr/0007-python-trainer-and-bundle-export.md)). A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |

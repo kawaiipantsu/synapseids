@@ -67,6 +67,16 @@ type FlowStatsProvider interface {
 	FlowStats() FlowStats
 }
 
+// CaptureStatusProvider surfaces the live capture manager's per-source status
+// for GET /api/v1/captures (PROJECT.md §19.14). capture.Manager implements it.
+// It is read-only here; runtime add/remove of sources is tracked for the
+// capture-sources UI (#32). A nil provider means "no live capture configured"
+// and the endpoint returns an empty list.
+type CaptureStatusProvider interface {
+	List() []capture.SourceStatus
+	Get(name string) (capture.SourceStatus, bool)
+}
+
 // Server bundles the HTTP handler, the live hub and the event pump.
 type Server struct {
 	cfg   config.Config
@@ -75,16 +85,17 @@ type Server struct {
 	rt    *inference.Runtime
 	rc    ReplayController
 	fs    FlowStatsProvider
+	cap   CaptureStatusProvider
 	hub   *wshub.Hub
 	start time.Time
 }
 
 // New builds a Server. rc may be nil (replay endpoints then return 503); fs may
 // be nil (/api/v1/status then reports a zeroed flow table with the configured
-// cap).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController, fs FlowStatsProvider) *Server {
+// cap); cp may be nil (/api/v1/captures then returns an empty list).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider) *Server {
 	return &Server{
-		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc, fs: fs,
+		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc, fs: fs, cap: cp,
 		hub:   wshub.NewHub(cfg.Live.ClientQueueSize),
 		start: time.Now(),
 	}
@@ -100,6 +111,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
+	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)
+	mux.HandleFunc("GET /api/v1/captures/{name}", s.handleCapture)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)
 	mux.HandleFunc("POST /api/v1/replay/stop", s.handleReplayStop)

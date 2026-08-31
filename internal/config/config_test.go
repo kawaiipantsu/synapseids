@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-func mustWrite(t *testing.T, path string, data []byte, mode os.FileMode) {
+func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()
-	if err := os.WriteFile(path, data, mode); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -24,7 +24,7 @@ func TestDefaultIsLoopback(t *testing.T) {
 func TestLoadFileAndEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.json")
-	mustWrite(t, p, []byte(`{"server":{"listen":"0.0.0.0:9000"},"capture":{"flow_idle_timeout":"15s","flow_max_lifetime":"2m","snapshot_interval":"30s","max_flows":1000},"live":{"websocket_batch":"200ms","client_queue_size":10}}`), 0o644)
+	mustWrite(t, p, []byte(`{"server":{"listen":"0.0.0.0:9000"},"capture":{"flow_idle_timeout":"15s","flow_max_lifetime":"2m","snapshot_interval":"30s","max_flows":1000},"live":{"websocket_batch":"200ms","client_queue_size":10}}`))
 
 	c, err := Load(p)
 	if err != nil {
@@ -59,17 +59,60 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"zero-idle":   `{"capture":{"flow_idle_timeout":"0s"}}`,
 	} {
 		p := filepath.Join(dir, name+".json")
-		mustWrite(t, p, []byte(body), 0o644)
+		mustWrite(t, p, []byte(body))
 		if _, err := Load(p); err == nil {
 			t.Errorf("%s: expected a validation error", name)
 		}
 	}
 }
 
+func TestCaptureSourcesLoadAndValidate(t *testing.T) {
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "good.json")
+	mustWrite(t, good, []byte(`{"capture":{"sources":[
+		{"name":"wan","kind":"nic","interface":"eth0","promiscuous":true,"filter":"ip-any"},
+		{"name":"lo","kind":"nic","interface":"lo"}
+	]}}`))
+	c, err := Load(good)
+	if err != nil {
+		t.Fatalf("Load good sources: %v", err)
+	}
+	if len(c.Capture.Sources) != 2 || c.Capture.Sources[0].Filter != "ip-any" || !c.Capture.Sources[0].Promiscuous {
+		t.Fatalf("sources not parsed: %+v", c.Capture.Sources)
+	}
+
+	for name, body := range map[string]string{
+		"empty-name":   `{"capture":{"sources":[{"name":"","kind":"nic","interface":"eth0"}]}}`,
+		"dup-name":     `{"capture":{"sources":[{"name":"a","kind":"nic","interface":"eth0"},{"name":"a","kind":"nic","interface":"eth1"}]}}`,
+		"bad-kind":     `{"capture":{"sources":[{"name":"a","kind":"tap","interface":"eth0"}]}}`,
+		"no-interface": `{"capture":{"sources":[{"name":"a","kind":"nic","interface":""}]}}`,
+		"bad-snaplen":  `{"capture":{"sources":[{"name":"a","kind":"nic","interface":"eth0","snaplen":9999999}]}}`,
+		"unknown-filt": `{"capture":{"sources":[{"name":"a","kind":"nic","interface":"eth0","filter":"tcp port 80"}]}}`,
+	} {
+		p := filepath.Join(dir, name+".json")
+		mustWrite(t, p, []byte(body))
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestCaptureIfaceEnvAddsSource(t *testing.T) {
+	t.Setenv("SYNAPSE_CAPTURE_IFACE", "eth9")
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !hasNICInterface(c.Capture.Sources, "eth9") {
+		t.Fatalf("SYNAPSE_CAPTURE_IFACE did not add a source: %+v", c.Capture.Sources)
+	}
+}
+
 func TestUnknownFieldRejected(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.json")
-	mustWrite(t, p, []byte(`{"server":{"listen":"127.0.0.1:8080"},"nope":1}`), 0o644)
+	mustWrite(t, p, []byte(`{"server":{"listen":"127.0.0.1:8080"},"nope":1}`))
 	if _, err := Load(p); err == nil {
 		t.Fatalf("unknown field should be rejected")
 	}
