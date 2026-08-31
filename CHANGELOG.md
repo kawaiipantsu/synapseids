@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-31
+
 ### Added
 
 - **OPNsense plugin: one sensor process per interface** (issue #124,
@@ -1736,6 +1738,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a single-CPU host a long replay could monopolise the Go scheduler and delay
   `/api/v1` responses. The paced speeds are unchanged — they already block on a
   timer. (#71)
+
+### Known limitations
+
+Validated end to end on a live OPNsense 25.1 gateway (FreeBSD 14): a sensor
+captured real WAN traffic through BPF, streamed it over SYNPOIP v2 with a pinned
+CA, and the daemon classified the result. Eleven packaging, configd and rc.d
+defects were found and fixed there, none of which a Linux build host could reach.
+What is still open, stated plainly:
+
+- **The management API is unauthenticated** (#58). Bind it to loopback and put an
+  authenticating reverse proxy in front; the daemon warns at startup when the
+  listen address is not loopback.
+- **The classifier is a hand-written heuristic, not a trained model.** It does not
+  detect `web_attack` at all any more — its only rule flagged ordinary uploads and
+  was removed rather than retuned (#134) — and it misses cross-flow recon, because
+  per-flow features carry no host state (#90).
+- **There is no suppression layer** (#133). A host that does security research,
+  scanning or uptime probing will generate correct-but-unwanted detections, with
+  no way to declare that behaviour expected.
+- **One-way capture degrades the feature vector** (#129). `flow-features-v1` is
+  bidirectional; capturing a single direction leaves half of it structurally
+  dead. Capture in and out.
+- **The BPF drop rate has not been re-measured** since immediate mode was turned
+  off (#127). Before that fix a raw-mode sensor lost 63% of frames under load;
+  `flow` mode measured 0.016% on the same link afterwards, but the two runs
+  differed in more than one variable.
+- **`Manager.Close()` discards in-flight packets without counting them** (#138),
+  so a finite source can be truncated silently.
+- **Multi-instance capture is unverified on hardware.** configd's repeating
+  `+TARGETS` expansion, the 1.0.0 → 1.0.1 migration against a real `config.xml`,
+  four concurrent BPF captures, and the rc.d profile loop under real `rc.subr`
+  have all been reproduced and tested locally but never run by FreeBSD. **Back up
+  `config.xml` before the first upgrade.**
+- **Storage is in-memory only** (#53) — history is lost on restart and bounded by
+  `storage.max_flows`.
+- Raw mode re-streams every captured byte and is bandwidth-bound by design; use
+  `flow` or `feature` mode on a busy link.
 
 ## [0.1.0] - 2026-08-31
 
