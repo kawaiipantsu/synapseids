@@ -655,3 +655,98 @@ func TestRCScriptAvoidsRCSubrReservedVariables(t *testing.T) {
 		}
 	}
 }
+
+// Every network call in install.sh must be bounded. fetch(1) and curl(1) both
+// block forever by default, and fetch's -q makes that wait silent: on a real
+// OPNsense gateway that could not reach api.github.com, the installer printed one
+// line and then hung with no output and no indication of why.
+func TestInstallerBoundsEveryNetworkCall(t *testing.T) {
+	install := readScript(t, installSh)
+
+	for _, fn := range []string{"dl()", "dlo()"} {
+		// Grab the body of each definition, both the fetch and the curl branch.
+		re := regexp.MustCompile(regexp.QuoteMeta(fn) + `\s*\{([^}]*)\}`)
+		ms := re.FindAllStringSubmatch(install, -1)
+		if len(ms) == 0 {
+			t.Fatalf("no %s definition found in install.sh", fn)
+		}
+		for _, m := range ms {
+			body := m[1]
+			hasTimeout := strings.Contains(body, "-T ") ||
+				strings.Contains(body, "--max-time") ||
+				strings.Contains(body, "--connect-timeout")
+			if !hasTimeout {
+				t.Errorf("%s body has no timeout, so it can hang forever:\n\t%s", fn, strings.TrimSpace(body))
+			}
+		}
+	}
+}
+
+// The installer must not depend on api.github.com to discover the latest
+// release: it is rate-limited unauthenticated and blocked on plenty of firewalls
+// that can still reach github.com. The releases/latest redirect carries the tag
+// and needs no API.
+func TestInstallerResolvesVersionWithoutTheGitHubAPI(t *testing.T) {
+	install := readScript(t, installSh)
+	if !strings.Contains(install, "releases/latest") {
+		t.Error("install.sh does not use the releases/latest redirect to resolve the version")
+	}
+	api := strings.Index(install, "api.github.com/repos")
+	redirect := strings.Index(install, "redirect_tag")
+	if api >= 0 && redirect < 0 {
+		t.Error("install.sh resolves the version only via api.github.com")
+	}
+	if api >= 0 && redirect > api {
+		t.Error("api.github.com is consulted before the redirect; the redirect should be tried first")
+	}
+}
+
+// /usr/local/opnsense/version/core is a bare version string on some builds and a
+// JSON object on others (OPNsense 25.10, and the Business edition). cat'ing it
+// printed a 40-line JSON blob into the installer's banner.
+func TestInstallerReadsBothVersionFileFormats(t *testing.T) {
+	install := readScript(t, installSh)
+	// The assignment is a chain of fallbacks, so take the whole block from the
+	// first CORE_VERSION= to the "unknown" default rather than one statement.
+	start := strings.Index(install, `CORE_VERSION="$(`)
+	endMark := `CORE_VERSION="unknown"`
+	end := strings.Index(install, endMark)
+	if start < 0 || end < start {
+		t.Fatal("could not find the CORE_VERSION assignment block; did the script change shape?")
+	}
+	block := install[start : end+len(endMark)]
+
+	for _, tc := range []struct{ name, file, want string }{
+		{"json (25.10 / business)", `{
+    "CORE_ABI": "25.10",
+    "CORE_VERSION": "25.10.2",
+    "product_version": "25.10.2_4"
+}`, "25.10.2_4"},
+		{"plain text (older)", "25.1.4\n", "25.1.4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// NOT t.TempDir(): it embeds the subtest name, and a name with
+			// parentheses substituted into the script's unquoted path is a shell
+			// syntax error. The real path is a fixed literal, so this is a test
+			// artefact, not a script bug.
+			dir, err := os.MkdirTemp("", "corever")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = os.RemoveAll(dir) }()
+			path := filepath.Join(dir, "core")
+			if err := os.WriteFile(path, []byte(tc.file), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Run the shipped parsing chain verbatim against the fixture.
+			script := strings.ReplaceAll(block, "/usr/local/opnsense/version/core", path)
+			out, err := runSh(t, script+"\necho \"$CORE_VERSION\"")
+			if err != nil {
+				t.Fatalf("parse failed: %v\n%s", err, out)
+			}
+			if out != tc.want {
+				t.Errorf("CORE_VERSION = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
