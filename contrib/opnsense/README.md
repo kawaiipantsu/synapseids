@@ -6,7 +6,7 @@ for a central SynapseIDS daemon: capture through FreeBSD's BPF devices, stream t
 **Services → SynapseIDS Sensor**.
 
 **One `synapse-sensor` process per captured interface** (issue #124,
-[ADR 0030](../../docs/adr/0030-opnsense-one-sensor-process-per-interface.md)).
+[ADR 0031](../../docs/adr/0031-opnsense-one-sensor-process-per-interface.md)).
 The settings page holds a **list** of sensor instances; each has its own
 interface, its own sensor identity, its own rendered configuration, its own
 pidfile and its own log. That shape was chosen over merging several interfaces

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **OPNsense plugin: one sensor process per interface** (issue #124,
-  [ADR 0030](docs/adr/0030-opnsense-one-sensor-process-per-interface.md)). The
+  [ADR 0031](docs/adr/0031-opnsense-one-sensor-process-per-interface.md)). The
   plugin ran exactly one sensor on exactly one interface. On a live gateway an
   operator selected WAN, IoT, DMZ and MGMT in what was then a multi-select and
   got a single VLAN captured: three segments believed monitored, none of them
@@ -401,6 +401,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expansion, and asserts the render for 0, 1 and 4 instances — the single-instance
   case matters because `config.xml` stores one repeating element as a dict and
   several as a list.
+- **Every classification from a remote sensor was attributed to the daemon, not
+  the sensor — and two sensors watching one conversation would have merged into a
+  single flow with doubled counters** (issues #126 and #125;
+  [ADR 0030](docs/adr/0030-flow-attribution-scoped-by-observation-point.md)).
+  Found on the first live-hardware run: an OPNsense sensor `opnsense-wan` at
+  `cph-valby-gw01` streamed real WAN traffic in `raw` mode and every row came back
+  as `"sensor":"local"`, while `/api/v1/sensors` knew the sensor perfectly well.
+  - **The observation point is now part of the flow key.** `packet.Packet` carries
+    a `Sensor` field, stamped by the two SYNPOIP sources as they decode (and by
+    `capture.Manager` for any source that reports an identity without applying it),
+    and `flow.Key` is scoped by it. `packet.Decode` never sets it — nothing in a
+    frame may be trusted to say where it was seen (§28.11).
+  - **This is the part that is not cosmetic.** `flow.Key` was the bare 5-tuple, so
+    two sensors on one gateway — WAN and DMZ watching the same routed conversation
+    — would have folded their two observations into *one* flow with doubled packet
+    and byte counts, corrupting every rate, ratio and inter-arrival feature derived
+    from them, with nothing in the output to say so. Scoping the key keeps them as
+    two honest flows. The trade-off, stated in the ADR: one table and one
+    `max_flows` cap means eviction is global oldest-idle, so a flooding sensor can
+    still evict a quiet one's flows.
+  - `storage.FlowRecord` gains `sensor` beside the `sensor_mode` it already had,
+    and the pipeline stamps the flow and its classification from one resolved
+    value, so the two can never disagree. `sensor=` / `location=` now select real
+    rows for all three sensor modes, on `/api/v1/flows` as well as
+    `/api/v1/classifications`, and `"local"` narrows to what it says: this
+    daemon's own capture.
+  - `GET /api/v1/sensors/topology` gains a third `flow_attribution` value,
+    `"packets"` — a raw-mode sensor is scopeable, but via the packet path rather
+    than tagged records. `"none"` now means only "this peer reported no id", and
+    `attributable_sensors` is non-zero for the deployment that reported this.
+  - **`flow-features-v1` is untouched.** Provenance is metadata on the record,
+    never model input: the vector is still 48 values and the golden test passes
+    with no `-update`. Identity in a feature vector is the host memorisation §8
+    forbids.
+  - **#125, the same plumbing:** `/api/v1/status` reported
+    `{"active":0,"started":0,...}` on a sensor-fed daemon that had built 421 flows,
+    because it read the *replay* controller's flow table — a table that never runs
+    when packets arrive through the collector. The capture pipeline's `OnStats`
+    hook existed and was simply never wired. Both pipelines now report into one
+    `flowStatsHub` and `/api/v1/status` sums them; `max` stays the per-table
+    configured cap, because that is the limit actually enforced.
+- **`TestSensorModesConcurrent` was flaky at roughly 1 run in 20** (issue #120).
+  Its completion gate waited only on the flow- and feature-mode counters;
+  `wg.Wait()` proves the three sensors stopped *sending*, not that raw-mode
+  packets — which travel a different path, session → `Manager` → the packet loop —
+  had been forwarded. `mgr.Close()` could then cut the raw source off mid-stream
+  and the run ended with `Packets:0`. The gate now waits for all three modes: the
+  record modes on classified-record counts, and raw on the Collector's
+  `OnDisconnect`, which fires only after `Manager.Remove` has returned and that
+  source's forwarder has drained. A genuinely lost packet or record times out
+  instead of quietly under-counting.
 - **A `raw`-mode sensor lost 63% of frames to BPF kernel drops because it wrote
   one TLS record — and one syscall — per captured packet** (issue #127;
   [ADR 0029](docs/adr/0029-synpoip-batched-sensor-writes.md)). On an OPNsense WAN

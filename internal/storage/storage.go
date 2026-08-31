@@ -33,6 +33,14 @@ type FlowRecord struct {
 	SnapshotIndex int             `json:"snapshot_index"`
 	Features      features.Vector `json:"features"`
 
+	// Sensor is the observation point this flow was built at: the id of the
+	// sensor whose traffic produced it, or the daemon's own configured sensor
+	// name ("local" by default) for traffic it captured itself.
+	//
+	// It always equals the Sensor on this flow's Classification — the pipeline
+	// stamps both from the same resolved value — so `sensor=` selects the same
+	// rows on /api/v1/flows as on /api/v1/classifications (issue #126).
+	Sensor string `json:"sensor,omitempty"`
 	// SensorMode records how this row reached the daemon: "" for a record built
 	// locally from packets (the `raw` path, and every local capture), "flow" for a
 	// remotely-aggregated flow record, "feature" for a record whose 48 values were
@@ -102,9 +110,13 @@ type Store interface {
 }
 
 // FlowRecordFrom builds a stored FlowRecord from a flow record and its features.
+// Sensor comes from the record's observation scope (flow.Key.Sensor) and is "" for
+// a record the daemon built from its own capture; the pipeline resolves that to
+// the daemon's configured sensor name before storing.
 func FlowRecordFrom(r flow.Record, fv features.Vector) FlowRecord {
 	return FlowRecord{
 		ID:            r.ID,
+		Sensor:        r.Sensor(),
 		Proto:         r.Proto.String(),
 		InitiatorIP:   ipString(r.InitiatorIP),
 		InitiatorPort: r.InitiatorPort,

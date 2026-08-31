@@ -77,6 +77,23 @@ type Packet struct {
 	IPVersion  uint8
 	TotalLen   int // total captured L2-agnostic length: IP header + everything after
 	PayloadLen int // L4 payload length (after the TCP/UDP header)
+
+	// Sensor identifies the *observation point* this packet was captured at: the
+	// id of the remote sensor whose SYNPOIP session delivered it, or "" for a
+	// packet the daemon captured itself (a local NIC, a PCAP file, a replay).
+	//
+	// Decode never sets it — nothing in a frame can be trusted to say where it was
+	// seen (§28.11). It is stamped by capture.Manager from the identity the source
+	// reported at registration, which is the only place that knows it, and it is
+	// carried through flow.Key so two sensors observing the same 5-tuple keep two
+	// separate flows instead of merging into one with doubled counters
+	// (docs/adr/0030, issue #126).
+	//
+	// It is provenance, not signal: it never reaches flow-features-v1, which is
+	// frozen at 48 values and carries no identity of any kind (PROJECT.md §8).
+	// The string is shared by every packet from one source, so the copy here is a
+	// header copy — no allocation on the packet path (§22).
+	Sensor string
 }
 
 const (

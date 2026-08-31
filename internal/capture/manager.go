@@ -53,12 +53,27 @@ type SourceStatus struct {
 	Mode        string `json:"mode,omitempty"`
 	Records     uint64 `json:"records,omitempty"`
 	RecordBytes uint64 `json:"record_bytes,omitempty"`
+
+	// SensorID / Location are the observation point this source speaks for, when
+	// it speaks for one: the identity a SYNPOIP peer reported. Empty for a local
+	// NIC or a replay, whose flows are attributed to the daemon's own configured
+	// sensor name. SensorID is exactly the value stamped on every packet this
+	// source yields and therefore the value `sensor=` matches (issue #126).
+	SensorID string `json:"sensor_id,omitempty"`
+	Location string `json:"location,omitempty"`
 }
 
 type managedSource struct {
 	name string
 	src  Source
 	meta SourceMeta
+	// sensor / location are resolved once at registration from the source's
+	// SensorIdentity, if it reports one. sensor is stamped on every packet the
+	// forwarder moves, which is what carries flow attribution into the flow table
+	// (issue #126, docs/adr/0030). Both are immutable for the life of the source,
+	// so the packet path reads them without synchronisation.
+	sensor   string
+	location string
 
 	mu       sync.Mutex
 	state    string
@@ -122,6 +137,13 @@ func (m *Manager) Add(name string, src Source, meta SourceMeta) error {
 		return fmt.Errorf("capture: source %q already registered", name)
 	}
 	ms := &managedSource{name: name, src: src, meta: meta, state: StateStopped, lastSample: time.Now()}
+	// Resolve the observation point once, here, rather than per packet: both
+	// SYNPOIP postures know their peer's identity before the first frame arrives
+	// (the collector parsed it out of the accept, the dialled client configured
+	// it), so nothing about it can change while packets are flowing.
+	if sr, ok := src.(sensorReporter); ok {
+		ms.sensor, ms.location = sr.SensorIdentity()
+	}
 	m.srcs[name] = ms
 	m.order = append(m.order, name)
 	if m.started {
@@ -242,6 +264,19 @@ func (m *Manager) launch(ms *managedSource) {
 				if !ok {
 					m.pendingErr(ms, errs)
 					return
+				}
+				// Stamp the observation point on the way into the merged stream,
+				// for a source that reports an identity but does not stamp its
+				// own packets. The two SYNPOIP sources do stamp them, at decode
+				// time, where the identity is known first hand — so this is the
+				// backstop, not the mechanism, and it never overwrites what a
+				// source asserted about its own traffic.
+				//
+				// The whole packet-path cost of flow attribution is this branch
+				// and, at most, one string-header copy: no allocation, nothing
+				// shared, nothing locked (PROJECT.md §22, issue #126).
+				if p.Sensor == "" && ms.sensor != "" {
+					p.Sensor = ms.sensor
 				}
 				select {
 				case m.out <- p:
@@ -369,6 +404,24 @@ type filterReporter interface{ DynamicFilter() (string, bool) }
 // connecting (the sensor declares it in the SYNPOIP v2 accept).
 type modeReporter interface{ SensorMode() (string, bool) }
 
+// sensorReporter is implemented by sources that speak for a named observation
+// point — the two SYNPOIP postures. Unlike the reporters above it does not only
+// feed status: the id also reaches the packet path, where it lets the flow table
+// keep one sensor's flows apart from another's (issue #126).
+//
+// The SYNPOIP sources stamp packet.Packet.Sensor themselves as they decode, so
+// their attribution holds even when something other than a Manager drives them;
+// what the Manager does with this is publish it on the source's status row and
+// stamp any source that reports an identity without applying it. A source that
+// returns "" is anonymous and its flows are attributed to the daemon's own
+// configured sensor name.
+//
+// It is answered once, at Add time, so it must not depend on state that changes
+// mid-session.
+type sensorReporter interface {
+	SensorIdentity() (sensorID, location string)
+}
+
 func (ms *managedSource) status() SourceStatus {
 	st := ms.src.Stats()
 	ms.mu.Lock()
@@ -390,6 +443,8 @@ func (ms *managedSource) status() SourceStatus {
 		Mode:         ms.meta.Mode,
 		Records:      st.Records,
 		RecordBytes:  st.RecordBytes,
+		SensorID:     ms.sensor,
+		Location:     ms.location,
 	}
 	ms.mu.Unlock()
 

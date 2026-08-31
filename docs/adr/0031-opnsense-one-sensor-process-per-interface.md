@@ -1,4 +1,4 @@
-# 0030 — OPNsense: one sensor process per interface, as a repeating model item
+# 0031 — OPNsense: one sensor process per interface, as a repeating model item
 
 **Status:** Accepted, 2026-08-31
 
@@ -37,6 +37,17 @@ segments monitored:
 Option 2 was chosen. The cost is N processes and N TLS connections on the
 firewall; the benefit is correct attribution today rather than a protocol
 revision first.
+
+[ADR 0030](0030-flow-attribution-scoped-by-observation-point.md), landed on
+`develop` while this was being written, settles the question from the other end:
+the daemon now makes the **observation point part of the flow key**, precisely so
+that "two sensors on one gateway — WAN and DMZ watching the same routed
+conversation" do not fold into one flow with doubled counters. The scope it keys
+on is the sensor identity. That is exactly what option 1 could not have provided
+and what this ADR gives it: **one identity per captured interface**. The two
+changes are the two halves of the same correctness property, and neither is
+useful alone — a daemon that scopes by sensor gains nothing from a firewall that
+reports four segments under one name.
 
 ## Decision
 
@@ -207,7 +218,9 @@ leaves. The migration blanks them once it has copied them.
   instance is the lever for that.
 - The daemon sees four distinct sensors. A packet routed between two monitored
   segments is reported twice, by two named sensors — correct, and visible as such
-  in `GET /api/v1/sensors`, rather than two observations quietly merging.
+  in `GET /api/v1/sensors`, rather than two observations quietly merging. Since
+  ADR 0030 the daemon scopes `flow.Key` by the observation point, so the two are
+  kept apart in the flow table as well as in the labels.
 - The core service widget reduces N processes to one word and reports "stopped"
   as soon as any instance is down. That is the conservative reading and it is
   kept, but the settings page shows a per-instance breakdown from
@@ -253,5 +266,6 @@ not. Both checks earn their place.
 - [ADR 0018](0018-daemon-side-synpoip-collector-and-sensor-identity.md) — sensor identity on the daemon side
 - [ADR 0024](0024-sensor-modes-and-synpoip-record-frames.md) — `send_mode`
 - [ADR 0028](0028-opnsense-tls-material-and-selftest.md) — rendered TLS material and the selftest
+- [ADR 0030](0030-flow-attribution-scoped-by-observation-point.md) — the daemon half: the observation point is part of the flow key
 - PROJECT.md §21 (least privilege, authenticated sensor identity), §23
   (configuration), §28.18 (authorised captures)

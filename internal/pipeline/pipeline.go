@@ -121,6 +121,11 @@ func Run(
 	// concern: a trained model applies the normalizer.json from its own bundle;
 	// the heuristic model reads raw values (PROJECT.md §11).
 	publish := func(fr storage.FlowRecord, sensor string) {
+		// One resolved sensor id lands on both rows. Storing it twice is
+		// deliberate denormalization — the rolling log renders a verdict without a
+		// join, and `sensor=` has to select the same flows as classifications
+		// (issue #126).
+		fr.Sensor = sensor
 		store.PutFlow(fr)
 		st.Flows++
 		if fr.CloseReason == string(flow.ReasonSnapshot) {
@@ -170,7 +175,11 @@ func Run(
 					opt.Flow.MaxFlows, evicted)
 			}
 		}
-		publish(storage.FlowRecordFrom(r, features.Extract(r)), opt.Sensor)
+		// A flow built from packets is attributed to the observation point those
+		// packets carried — the sensor id capture.Manager stamped on them. Local
+		// capture and replay stamp nothing, and fall back to this pipeline's own
+		// configured name (issue #126).
+		publish(storage.FlowRecordFrom(r, features.Extract(r)), sensorOr(r.Sensor(), opt.Sensor))
 	}
 
 	fopt := opt.Flow
@@ -190,16 +199,17 @@ func Run(
 	}
 
 	onRecord := func(rec pcapoverip.SensorRecord) {
-		sensor := rec.Sensor
-		if sensor == "" {
-			sensor = opt.Sensor
-		}
+		sensor := sensorOr(rec.Sensor, opt.Sensor)
 		switch {
 		case rec.Flow != nil:
 			// `flow` mode joins here: the sensor already ran the flow engine, so
 			// the daemon must NOT re-run its table over this record. Extract
 			// features from it and classify.
-			r := *rec.Flow
+			//
+			// The record still gets the observation scope stamped on it, even
+			// though no local table will key on it: a stored flow's provenance
+			// must not depend on which path it arrived by.
+			r := (*rec.Flow).WithSensor(sensor)
 			sensorFlowID := r.ID
 			r.ID = nextID()
 			fr := storage.FlowRecordFrom(r, features.Extract(r))
@@ -313,6 +323,16 @@ loop:
 	st.Elapsed = time.Since(start)
 	st.ElapsedMS = st.Elapsed.Milliseconds()
 	return st, termErr
+}
+
+// sensorOr resolves a row's observation point: the sensor that actually saw the
+// traffic, or this pipeline's configured name when nothing did (local capture,
+// replay, or an anonymous peer that reported no id).
+func sensorOr(sensor, fallback string) string {
+	if sensor != "" {
+		return sensor
+	}
+	return fallback
 }
 
 // ipText renders an address for a stored record, matching what

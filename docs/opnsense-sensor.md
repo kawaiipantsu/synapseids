@@ -12,7 +12,7 @@ identity, its own capture settings, its own log and its own authorisation
 assertion. Four monitored segments are four named sensors on the daemon, which is
 what makes a packet routed between two of them legible: it is reported twice, by
 the two sensors that saw it, rather than two observations quietly merging into
-one flow. See [ADR 0030](adr/0030-opnsense-one-sensor-process-per-interface.md)
+one flow. See [ADR 0031](adr/0031-opnsense-one-sensor-process-per-interface.md)
 and the [worked four-interface example](#a-worked-four-interface-example).
 
 The firewall only observes. Flow assembly, feature extraction and

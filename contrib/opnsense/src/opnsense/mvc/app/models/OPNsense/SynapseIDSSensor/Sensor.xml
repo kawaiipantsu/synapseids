@@ -39,7 +39,7 @@
     because it gives correct attribution with no protocol change: a packet
     routed between two monitored segments is legitimately observed twice, by two
     NAMED sensors, instead of two observations silently collapsing into one flow.
-    See docs/adr/0030-opnsense-multi-instance-sensors.md.
+    See docs/adr/0031-opnsense-one-sensor-process-per-interface.md.
 
       general    - the transport posture and the secrets. One collector, one
                    bearer token, one TLS identity for this firewall.

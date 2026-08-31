@@ -344,6 +344,10 @@ func (p *PCAPOverIP) readLoop(ctx context.Context, sess *pcapoverip.Session, lin
 				atomic.AddUint64(&p.stats.decodeErr, 1)
 				continue
 			}
+			// The observation point, stamped where it is known first hand —
+			// exactly as the collector-accepted session does, so a sensor's flows
+			// are attributed to it whichever end opened the socket (issue #126).
+			pk.Sensor = p.sensorID
 			atomic.AddUint64(&p.stats.decoded, 1)
 			select {
 			case out <- pk:
@@ -399,6 +403,14 @@ func (p *PCAPOverIP) SensorMode() (string, bool) {
 	}
 	return "", false
 }
+
+// SensorIdentity reports the observation point this source speaks for. On the
+// dialled posture the identity is the operator's — sensor_id / location from the
+// capture-source config, the same values advertised in the ClientHello — because
+// the daemon chose which sensor to dial. The Manager stamps the id on every
+// packet this source yields, so its flows are attributable to it and not merged
+// with another sensor's identical 5-tuple (issue #126).
+func (p *PCAPOverIP) SensorIdentity() (string, string) { return p.sensorID, p.location }
 
 // ConnLatencyMS reports the TLS dial + handshake time in milliseconds, or 0
 // before the first successful connect. The Manager surfaces it as

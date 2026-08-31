@@ -229,6 +229,17 @@ class Sensor extends BaseModel
 
         $this->validateInstances($messages, $instances, $mode);
 
+        // NOTE for anyone diffing against #132: the "Select exactly one
+        // interface" refusal that release added against `general.interface` is
+        // gone from here, and deliberately. That field no longer describes a
+        // capture -- it is a deprecated 1.0.0 leaf that Migrations\M1_0_1 reads
+        // and blanks -- so a comma in it is a pre-migration artefact, not an
+        // operator mistake, and erroring on it would block the first save after
+        // an upgrade on a configuration nobody had touched. The rule it stood
+        // for is now enforced where a capture is actually described:
+        // validateInstances() refuses a comma in an *instance's* interface, and
+        // the answer to wanting four segments is four instances.
+
         // --cert and --key must be supplied together, enabled or not: half a key
         // pair is always a configuration mistake.
         if ($clientCert !== '' && $clientKey === '') {

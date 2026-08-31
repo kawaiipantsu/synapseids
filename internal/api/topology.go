@@ -7,24 +7,22 @@ package api
 //
 // §19.15 asks that clicking a location or a sensor scope the other views, so the
 // first question is whether a stored flow can be attributed to the sensor that
-// produced it. Today, only partly:
+// produced it. Since issue #126 it can, in every sensor mode, but by two
+// different mechanisms — and FlowAttribution says which:
 //
 //   - `flow`- and `feature`-mode SYNPOIP sensors send pre-aggregated records that
 //     the collector tags with the sensor id, and the pipeline copies that id onto
-//     storage.Classification.Sensor. Those rows are attributable, and sensor= /
-//     location= really do scope them.
-//   - `raw`-mode sensors are not attributable. Their packets are merged into the
-//     capture.Manager's single output channel, and neither packet.Packet nor
-//     flow.Record has a sensor field, so by the time a flow record exists the
-//     origin is gone and the row is labelled "local" — the same label a local NIC
-//     or a PCAP replay gets. Fixing that means putting sensor identity on the
-//     packet path and in flow.Key (otherwise two sensors' identical 5-tuples
-//     merge into one flow), which is a data-plane change, not an API one.
+//     the stored flow and its classification (AttributionRecords).
+//   - `raw`-mode sensors ship packets. capture.Manager stamps each one with the
+//     identity the session reported, flow.Key is scoped by it, and the flow the
+//     daemon builds is attributed to it (AttributionPackets). Scoping the key is
+//     what keeps two sensors that both see one routed conversation from merging
+//     it into a single flow with doubled counters — see ADR 0030.
 //
-// Rather than ship a filter that quietly returns nothing, this response states
-// per sensor whether its flows can be scoped, in FlowAttribution. A client is
-// expected to read it and offer counter-scoped detail instead of a flow filter
-// where it says "none". ADR 0026 has the full reasoning and what was deferred.
+// AttributionNone survives for the one case that genuinely cannot be scoped: a
+// peer that reported no sensor id at all. Its flows are indistinguishable from
+// local capture and fall into the "local" bucket. ADR 0026 has the original
+// reasoning; ADR 0030 records what changed and why.
 
 import (
 	"net/http"
@@ -42,20 +40,27 @@ import (
 // the string, and no location is invented for the sensor itself.
 const UnassignedLocation = "unassigned"
 
-// LocalSensorLabel is the value storage.Classification.Sensor carries for every
-// row built locally from packets: local captures, PCAP replay, and raw-mode
-// sensors alike. sensor=local is therefore a legitimate, working scope — it just
-// does not mean "one sensor".
+// LocalSensorLabel is the value a stored row carries when the daemon itself saw
+// the traffic: a local NIC, a PCAP replay, or a SYNPOIP peer that reported no
+// sensor id. sensor=local is a legitimate, working scope — it means "this
+// daemon's own capture", not "a sensor".
 const LocalSensorLabel = "local"
 
-// Flow-attribution verdicts for one sensor.
+// Flow-attribution verdicts for one sensor: how — not whether — its stored rows
+// carry its identity.
 const (
-	// AttributionRecords: this sensor ships tagged records, so sensor= and
-	// location= scope its flows and classifications.
+	// AttributionRecords: this sensor ships pre-aggregated, tagged records
+	// (`flow` / `feature` mode), so sensor= and location= scope its flows and
+	// classifications.
 	AttributionRecords = "records"
-	// AttributionNone: this sensor's packets merge into the local flow table
-	// before a record exists. Its rows are indistinguishable from local capture,
-	// and a sensor= scope would match nothing.
+	// AttributionPackets: this sensor ships packets (`raw` mode). They are
+	// stamped with its id on the way into the merged capture stream and the flow
+	// table is keyed by it, so its flows are scopeable too — and never merged
+	// with another sensor's identical 5-tuple (issue #126, ADR 0030).
+	AttributionPackets = "packets"
+	// AttributionNone: this sensor reported no id, so its rows are
+	// indistinguishable from the daemon's own capture and land in "local". A
+	// sensor= scope on it would match nothing.
 	AttributionNone = "none"
 )
 
@@ -71,9 +76,10 @@ const (
 // field by field so the two routes can never drift apart.
 type TopologySensor struct {
 	capture.SensorStatus
-	// FlowAttribution is AttributionRecords or AttributionNone — see the package
-	// comment. It is the field a UI must consult before offering "scope the flow
-	// log to this sensor".
+	// FlowAttribution is AttributionRecords, AttributionPackets or
+	// AttributionNone — see the package comment. It is the field a UI must
+	// consult before offering "scope the flow log to this sensor": anything but
+	// "none" means the scope works.
 	FlowAttribution string `json:"flow_attribution"`
 }
 
@@ -105,8 +111,9 @@ type TopologyLocation struct {
 	LastPacket time.Time `json:"last_packet,omitempty"`
 
 	// AttributableSensors is how many of these sensors' flows a sensor= or
-	// location= scope can actually select. When it is 0, location= for this group
-	// would match nothing, and a UI should scope to counters instead.
+	// location= scope can actually select — every sensor that reported an id,
+	// whatever mode it speaks. When it is 0, location= for this group would match
+	// nothing, and a UI should scope to counters instead.
 	AttributableSensors int `json:"attributable_sensors"`
 
 	Sensors []TopologySensor `json:"sensors"`
@@ -148,19 +155,26 @@ type SensorTopology struct {
 	ScopeNote string `json:"scope_note"`
 }
 
-const scopeNote = "sensor= and location= match the sensor id stored on a classification. " +
-	"Only flow- and feature-mode sensors carry one; raw-mode sensors' packets merge " +
-	"into the local flow table and their rows are labelled \"local\", so check each " +
-	"sensor's flow_attribution before scoping."
+const scopeNote = "sensor= and location= match the sensor id stored on every flow and " +
+	"classification. All three sensor modes carry one: record modes tag their records, " +
+	"raw-mode packets are stamped and keyed by observation point. Only a sensor that " +
+	"reported no id is unscopeable — its rows fall into \"local\" with the daemon's own " +
+	"capture, and its flow_attribution says \"none\"."
 
-// flowAttribution reports whether this sensor's mode tags the rows it produces.
-// The record modes are authoritative here because the collector tags exactly the
-// record frames and nothing else (see internal/capture/records.go).
+// flowAttribution reports how this sensor's rows carry its identity. The mode
+// decides the mechanism — records are tagged by the collector, raw packets are
+// stamped by capture.Manager (see internal/capture/records.go and manager.go) —
+// and a sensor with no id at all cannot be scoped either way, which the caller
+// resolves before calling this.
 func flowAttribution(mode string) string {
 	switch mode {
 	case pcapoverip.ModeFlow.String(), pcapoverip.ModeFeature.String():
 		return AttributionRecords
+	case pcapoverip.ModeRaw.String():
+		return AttributionPackets
 	default:
+		// An unknown or unreported mode: this build cannot say how (or whether)
+		// the rows are tagged, so it does not claim they are.
 		return AttributionNone
 	}
 }
@@ -214,13 +228,18 @@ func (s *Server) handleSensorTopology(w http.ResponseWriter, _ *http.Request) {
 			order = append(order, key)
 		}
 
-		attr := flowAttribution(st.Mode)
+		// An anonymous peer is unscopeable whatever mode it speaks: with no id
+		// there is no value for sensor= to match.
+		attr := AttributionNone
+		if strings.TrimSpace(st.SensorID) != "" {
+			attr = flowAttribution(st.Mode)
+		}
 		g.Sensors = append(g.Sensors, TopologySensor{SensorStatus: st, FlowAttribution: attr})
 		g.SensorCount++
 		if st.State == capture.StateRunning {
 			g.Running++
 		}
-		if attr == AttributionRecords {
+		if attr != AttributionNone {
 			g.AttributableSensors++
 		}
 		g.Packets += st.Packets
