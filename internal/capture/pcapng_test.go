@@ -176,8 +176,8 @@ func ngEPB(le bool, ifID uint32, ticks uint64, data []byte) []byte {
 	return ngBlock(le, 0x00000006, body)
 }
 
-// rawIPUDP is a minimal IPv4/UDP datagram for DLT_RAW captures.
-func rawIPUDP(dstPort uint16) []byte {
+// rawIPUDP is a minimal IPv4/UDP datagram (dst port 53) for DLT_RAW captures.
+func rawIPUDP() []byte {
 	b := make([]byte, 28)
 	b[0] = 0x45
 	binary.BigEndian.PutUint16(b[2:4], 28)
@@ -185,7 +185,7 @@ func rawIPUDP(dstPort uint16) []byte {
 	copy(b[12:16], []byte{10, 0, 0, 1})
 	copy(b[16:20], []byte{10, 0, 0, 2})
 	binary.BigEndian.PutUint16(b[20:22], 1000)
-	binary.BigEndian.PutUint16(b[22:24], dstPort)
+	binary.BigEndian.PutUint16(b[22:24], 53)
 	return b
 }
 
@@ -218,7 +218,7 @@ func TestPCAPNGTimestampResolution(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := writeTmp(t, "res.pcapng",
-				ngSHB(true), ngIDB(true, 101, tc.tsresol), ngEPB(true, 0, tc.ticks, rawIPUDP(53)))
+				ngSHB(true), ngIDB(true, 101, tc.tsresol), ngEPB(true, 0, tc.ticks, rawIPUDP()))
 			pkts, err := drain(t, p)
 			if err != nil {
 				t.Fatalf("terminal error: %v", err)
@@ -235,7 +235,7 @@ func TestPCAPNGTimestampResolution(t *testing.T) {
 
 func TestPCAPNGBigEndianSection(t *testing.T) {
 	p := writeTmp(t, "be.pcapng",
-		ngSHB(false), ngIDB(false, 101, 6), ngEPB(false, 0, 1_724_000_000_000_000, rawIPUDP(53)))
+		ngSHB(false), ngIDB(false, 101, 6), ngEPB(false, 0, 1_724_000_000_000_000, rawIPUDP()))
 	pkts, err := drain(t, p)
 	if err != nil {
 		t.Fatalf("terminal error: %v", err)
@@ -251,9 +251,9 @@ func TestPCAPNGRejections(t *testing.T) {
 		parts [][]byte
 	}{
 		{"unsupported link type", [][]byte{ngSHB(true), ngIDB(true, 105 /* 802.11 */, 6)}},
-		{"no interface description block", [][]byte{ngSHB(true), ngEPB(true, 0, 1, rawIPUDP(53))}},
-		{"packet references undefined interface", [][]byte{ngSHB(true), ngIDB(true, 101, 6), ngEPB(true, 7, 1, rawIPUDP(53))}},
-		{"second section header block", [][]byte{ngSHB(true), ngIDB(true, 101, 6), ngEPB(true, 0, 1, rawIPUDP(53)), ngSHB(true)}},
+		{"no interface description block", [][]byte{ngSHB(true), ngEPB(true, 0, 1, rawIPUDP())}},
+		{"packet references undefined interface", [][]byte{ngSHB(true), ngIDB(true, 101, 6), ngEPB(true, 7, 1, rawIPUDP())}},
+		{"second section header block", [][]byte{ngSHB(true), ngIDB(true, 101, 6), ngEPB(true, 0, 1, rawIPUDP()), ngSHB(true)}},
 		{"bad byte-order magic", [][]byte{{0x0a, 0x0d, 0x0d, 0x0a, 0x1c, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1c, 0, 0, 0}}},
 		{"crafted oversized block length", [][]byte{ngSHB(true), {0x01, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f}}},
 		{"truncated block body", [][]byte{ngSHB(true), {0x01, 0, 0, 0, 0x20, 0, 0, 0, 1, 0, 0, 0}}},
@@ -278,7 +278,7 @@ func TestPCAPNGRejections(t *testing.T) {
 
 func TestPCAPNGSimplePacketBlock(t *testing.T) {
 	bo := binary.LittleEndian
-	data := rawIPUDP(53)
+	data := rawIPUDP()
 	spbBody := bo.AppendUint32(nil, uint32(len(data)))
 	spbBody = append(spbBody, data...)
 	spb := ngBlock(true, 0x00000003, spbBody)
@@ -306,7 +306,7 @@ func TestPCAPNGSkipsUnknownBlocks(t *testing.T) {
 	isb := ngBlock(true, 0x00000005, isbBody)
 
 	p := writeTmp(t, "isb.pcapng",
-		ngSHB(true), ngIDB(true, 101, 6), isb, ngEPB(true, 0, 1_724_000_000_000_000, rawIPUDP(53)))
+		ngSHB(true), ngIDB(true, 101, 6), isb, ngEPB(true, 0, 1_724_000_000_000_000, rawIPUDP()))
 	pkts, err := drain(t, p)
 	if err != nil {
 		t.Fatalf("terminal error: %v", err)
