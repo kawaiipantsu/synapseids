@@ -190,6 +190,10 @@ The envelope schema is embedded but is not served over HTTP (only
 - **The replay controller runs one replay at a time.** `replayController.Start`
   refuses to start while `status.Running` is set; `Stop` cancels the run's
   context. A separate `progress` goroutine ticks `ReplayProgress` every 500ms.
+- **`capture.Replay` paces on the emit goroutine.** For a fractional/×N speed it
+  sleeps on a `time.Timer` between packets; at `--speed max` there is no sleep,
+  so it calls `runtime.Gosched()` every 256 packets to stay off the scheduler's
+  back and keep the API responsive on a single-CPU host (issue #71).
 - **The API pump is its own goroutine**, started by `Server.Run`, holding one bus
   subscription and one `time.Ticker`.
 

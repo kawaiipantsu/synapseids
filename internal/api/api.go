@@ -164,20 +164,30 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	pub, drop, subs := s.bus.Stats()
-	clients, accepted, framesOut, wsDrops := s.hub.Stats()
+	ws := s.hub.Stats()
 	var rs ReplayStatus
 	if s.rc != nil {
 		rs = s.rc.Status()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":        version.Short("synapsed"),
-		"commit":         version.Commit,
-		"uptime_sec":     int64(time.Since(s.start).Seconds()),
-		"listen":         s.cfg.Server.Listen,
-		"loopback":       s.cfg.LoopbackOnly(),
-		"storage":        s.store.Stats(),
-		"events":         map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
-		"live":           map[string]any{"clients": clients, "accepted": accepted, "frames_out": framesOut, "client_drops": wsDrops},
+		"version":    version.Short("synapsed"),
+		"commit":     version.Commit,
+		"uptime_sec": int64(time.Since(s.start).Seconds()),
+		"listen":     s.cfg.Server.Listen,
+		"loopback":   s.cfg.LoopbackOnly(),
+		"storage":    s.store.Stats(),
+		"events":     map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
+		"live": map[string]any{
+			// Canonical WebSocket-hub counters (issue #70).
+			"ws_clients":        ws.Clients,
+			"ws_client_drops":   ws.Drops,
+			"ws_frames_batched": ws.FramesBatched,
+			// Pre-existing keys, kept for back-compat (additive).
+			"clients":      ws.Clients,
+			"accepted":     ws.Accepted,
+			"frames_out":   ws.FramesOut,
+			"client_drops": ws.Drops,
+		},
 		"models":         s.modelList(),
 		"replay":         rs,
 		"feature_schema": schema.FlowFeaturesV1().Schema,

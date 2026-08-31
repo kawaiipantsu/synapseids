@@ -153,7 +153,7 @@ func TestHubBroadcastAndSlowClientDrop(t *testing.T) {
 	// Read the first frame so the client is alive, then stop reading.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if n, _, _, _ := hub.Stats(); n == 1 {
+		if hub.Stats().Clients == 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -161,16 +161,42 @@ func TestHubBroadcastAndSlowClientDrop(t *testing.T) {
 	hub.Broadcast([]byte("[1]"))
 	readServerFrame(t, br)
 
+	if got := hub.Stats().FramesBatched; got != 1 {
+		t.Fatalf("FramesBatched = %d after one Broadcast, want 1", got)
+	}
+
 	// Flood without reading: the bounded queue fills and the client is dropped.
 	dropDeadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(dropDeadline) {
 		for i := 0; i < 20; i++ {
 			hub.Broadcast([]byte("[2]"))
 		}
-		if _, _, _, drops := hub.Stats(); drops > 0 {
+		st := hub.Stats()
+		if st.Drops > 0 {
+			if st.FramesBatched < 2 {
+				t.Fatalf("FramesBatched = %d, want it to advance once per Broadcast", st.FramesBatched)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("slow client was never dropped")
+}
+
+func TestHubBroadcastCountsBatchedFrames(t *testing.T) {
+	hub := NewHub(4)
+	if got := hub.Stats().FramesBatched; got != 0 {
+		t.Fatalf("fresh hub FramesBatched = %d, want 0", got)
+	}
+	// One batched frame per call, independent of the (here zero) client count.
+	for i := 0; i < 5; i++ {
+		hub.Broadcast([]byte("[]"))
+	}
+	st := hub.Stats()
+	if st.FramesBatched != 5 {
+		t.Fatalf("FramesBatched = %d, want 5 (one per Broadcast call)", st.FramesBatched)
+	}
+	if st.Drops != 0 || st.FramesOut != 0 {
+		t.Fatalf("no clients: Drops=%d FramesOut=%d, want 0/0", st.Drops, st.FramesOut)
+	}
 }
