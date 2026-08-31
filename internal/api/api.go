@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/alert"
 	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/config"
@@ -107,6 +108,7 @@ type Server struct {
 	insight *insight.Index
 	tr      *training.Store
 	rv      *review.Store
+	alerts  *alert.Store
 	hub     *wshub.Hub
 	start   time.Time
 
@@ -129,14 +131,21 @@ type Server struct {
 // tr may be nil (GET /api/v1/training then returns an empty list and the
 // trainer-facing POST routes return 503); sp may be nil (/api/v1/sensors then
 // returns an empty list and /{id} a 404); rv may be nil (every /api/v1/review*
-// route then returns 503).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, sp SensorStatusProvider, rv *review.Store) *Server {
+// route then returns 503); al may be nil (/api/v1/detections then returns an
+// empty page and /{id} a 404 — *alert.Store is nil-safe on every read).
+//
+// ix, tr, rv and al are concrete pointers rather than interfaces on purpose: a
+// concrete nil pointer with nil-safe methods cannot reproduce the typed-nil
+// crash of issue #116, where a nil *capture.Collector stored in an interface
+// passed every `!= nil` guard and then panicked on first use.
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, sp SensorStatusProvider, rv *review.Store, al *alert.Store) *Server {
 	return &Server{
 		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, ds: ds, rc: rc, fs: fs, cap: cp,
 		sensors: sp,
 		insight: ix,
 		tr:      tr,
 		rv:      rv,
+		alerts:  al,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
 		start:   time.Now(),
 	}
@@ -151,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/flows/{id}/explain", s.handleFlowExplain)
 	mux.HandleFunc("GET /api/v1/flows/{id}/snapshots", s.handleFlowSnapshots)
 	mux.HandleFunc("GET /api/v1/classifications", s.handleClassifications)
+	mux.HandleFunc("GET /api/v1/detections", s.handleDetections)
+	mux.HandleFunc("GET /api/v1/detections/{id}", s.handleDetection)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
@@ -314,6 +325,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		},
 		"flow":           fs,
 		"insight":        s.insight.Stats(),
+		"alerts":         s.alerts.Stats(),
 		"models":         s.modelList(),
 		"replay":         rs,
 		"feature_schema": schema.FlowFeaturesV1().Schema,

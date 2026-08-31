@@ -92,7 +92,7 @@ func matrixServer(t *testing.T) http.Handler {
 		{SensorID: "raw-1", Location: "wan", State: capture.StateRunning, Mode: "raw"},
 	}}
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	return New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix, nil, sp, nil).Handler()
+	return New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix, nil, sp, nil, nil).Handler()
 }
 
 func TestMatrixUnfilteredComesFromTheIncrementalTable(t *testing.T) {
