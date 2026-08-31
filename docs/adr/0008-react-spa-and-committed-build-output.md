@@ -1,4 +1,4 @@
-# 0004 — TypeScript + React SPA with committed build output
+# 0008 — TypeScript + React SPA with committed build output
 
 **Status:** Accepted, 2026-08-31
 

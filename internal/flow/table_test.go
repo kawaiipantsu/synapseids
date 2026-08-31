@@ -99,20 +99,55 @@ func TestSnapshotsForLongFlow(t *testing.T) {
 }
 
 func TestMaxFlowsEviction(t *testing.T) {
-	var evicted int
+	var got []Record
 	tbl := NewTable(Options{IdleTimeout: time.Hour, MaxLifetime: time.Hour, MaxFlows: 3}, func(r Record) {
-		if r.Reason == ReasonEvicted {
-			evicted++
-		}
+		got = append(got, r)
 	})
 	t0 := time.Unix(4000, 0)
 	for i := 0; i < 5; i++ {
 		tbl.Observe(mkPkt(t0.Add(time.Duration(i)*time.Second), "10.0.0.1", "10.0.0.2", uint16(6000+i), 80, packet.ProtoUDP, 0, 80))
 	}
-	if evicted != 2 {
-		t.Fatalf("want 2 evictions, got %d", evicted)
+	// Two opens pushed the table past MaxFlows=3; each emitted one eviction
+	// record for the oldest-idle flow (ports 6000 then 6001).
+	if len(got) != 2 {
+		t.Fatalf("want 2 emitted records, got %d: %+v", len(got), got)
 	}
-	if s := tbl.Stats(); s.Active != 3 || s.Evicted != 2 {
+	for i, r := range got {
+		if r.Reason != ReasonEvicted {
+			t.Fatalf("record %d reason = %s, want evicted", i, r.Reason)
+		}
+		if want := uint16(6000 + i); r.InitiatorPort != want {
+			t.Fatalf("record %d evicted port %d, want %d (oldest-idle first)", i, r.InitiatorPort, want)
+		}
+	}
+	if s := tbl.Stats(); s.Active != 3 || s.Evicted != 2 || s.Started != 5 || s.Closed != 2 {
+		t.Fatalf("stats: %+v", s)
+	}
+}
+
+// TestMaxFlowsEvictsLeastRecentlySeen proves eviction picks the flow with the
+// oldest LastSeen, not merely the oldest-created flow: an early flow that keeps
+// receiving packets is spared while a quiet younger flow is dropped.
+func TestMaxFlowsEvictsLeastRecentlySeen(t *testing.T) {
+	var got []Record
+	tbl := NewTable(Options{IdleTimeout: time.Hour, MaxLifetime: time.Hour, MaxFlows: 2},
+		func(r Record) { got = append(got, r) })
+	t0 := time.Unix(5000, 0)
+	// A (7000) opens first, then B (7001).
+	tbl.Observe(mkPkt(t0, "10.0.0.1", "10.0.0.2", 7000, 80, packet.ProtoUDP, 0, 80))
+	tbl.Observe(mkPkt(t0.Add(1*time.Second), "10.0.0.1", "10.0.0.2", 7001, 80, packet.ProtoUDP, 0, 80))
+	// A is refreshed, so it is now more recently seen than B.
+	tbl.Observe(mkPkt(t0.Add(2*time.Second), "10.0.0.1", "10.0.0.2", 7000, 80, packet.ProtoUDP, 0, 80))
+	// C opens and tips the table over the cap: B (least recently seen) goes.
+	tbl.Observe(mkPkt(t0.Add(3*time.Second), "10.0.0.1", "10.0.0.2", 7002, 80, packet.ProtoUDP, 0, 80))
+
+	if len(got) != 1 || got[0].Reason != ReasonEvicted {
+		t.Fatalf("want one evicted record, got %+v", got)
+	}
+	if got[0].InitiatorPort != 7001 {
+		t.Fatalf("evicted port %d, want 7001 (least recently seen)", got[0].InitiatorPort)
+	}
+	if s := tbl.Stats(); s.Active != 2 || s.Evicted != 1 {
 		t.Fatalf("stats: %+v", s)
 	}
 }
