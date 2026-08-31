@@ -352,7 +352,8 @@ params. Always `200` — an empty array `[]` when no live capture is configured
     "last_packet": "2026-08-31T09:15:25.737730002Z",
     "filter": "(all)",
     "error": "",
-    "connection_latency_ms": 0
+    "connection_latency_ms": 0,
+    "origin": "config"
   }
 ]
 ```
@@ -384,14 +385,108 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 - `connection_latency_ms` — 0 for a local NIC or a local tcpdump; for
   `pcap-over-ip` the measured TLS dial + handshake time; the SSH dial time for
   an `ssh` source is a follow-up (currently 0).
+- `origin` — `config` (opened at startup from `capture.sources[]`) or `api`
+  (added at runtime through `POST /api/v1/captures`). Both are removable.
+
+### POST /api/v1/captures
+
+Start a capture source at runtime, without restarting the daemon (PROJECT.md
+§19.14, issue #32). The body is exactly **one `capture.sources[]` entry** — the
+same `config.CaptureSource` object the config file uses — and is validated by
+the same `config.ValidateCaptureSource` the file loader runs, so a request that
+would be rejected in the file is rejected here with the same sentence. Unknown
+JSON fields are rejected; the body is capped at 64 KiB.
+
+> **This is a powerful, currently unauthenticated endpoint.** It opens a raw
+> socket, spawns a `tcpdump` subprocess, dials a remote sensor over TLS, or
+> starts an SSH session. It relies on the daemon binding loopback by default
+> (PROJECT.md §21). Do not expose the management API off loopback before issue
+> **#58** (auth/RBAC) lands. `authorized: true` is an operator assertion
+> (§28.18), not an access control.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/captures \
+  -H 'content-type: application/json' \
+  -d '{"name":"lo","kind":"tcpdump","interface":"lo","filter":"ip"}'
+```
+
+Per-kind bodies:
+
+```jsonc
+// nic — a local AF_PACKET interface (needs CAP_NET_RAW / CAP_NET_ADMIN)
+{"name":"wan0","kind":"nic","interface":"eth0","promiscuous":true,
+ "snaplen":65535,"filter":"ip-any"}          // filter: "" | ip | ip6 | ip-any | not-arp
+
+// tcpdump — a local `tcpdump -U --immediate-mode -w -` subprocess
+{"name":"span","kind":"tcpdump","interface":"eth0","filter":"tcp port 80 or udp",
+ "snaplen":65535,"binary":"","extra_args":[]}   // filter: a raw tcpdump expression
+
+// ssh — an authorized remote tcpdump; requires "authorized": true (§28.18)
+{"name":"edge","kind":"ssh","destination":"sensor@10.0.0.9","interface":"eth1",
+ "filter":"not port 22","port":22,"identity_file":"/keys/id","remote_binary":"tcpdump",
+ "known_hosts":"strict","authorized":true}
+
+// pcap-over-ip — a framed authenticated TLS stream from a remote sensor.
+// An inline "token" is REFUSED (§23): use token_file or SYNAPSE_POIP_TOKEN.
+{"name":"hq","kind":"pcap-over-ip","addr":"sensor.hq:4789",
+ "token_file":"/etc/synapse/poip.tok","server_name":"sensor.hq","ca_file":"/etc/synapse/ca.pem",
+ "client_cert_file":"","client_key_file":"","insecure_tls":false,"authorized":true}
+```
+
+`201 Created` returns the new source's `SourceStatus` (the same object
+`GET /api/v1/captures` lists, with `"origin": "api"`):
+
+```json
+{
+  "name": "lo", "kind": "tcpdump", "state": "running",
+  "packets": 0, "decoded": 0, "decode_errors": 0, "bytes": 0, "drops": 0,
+  "pps": 0, "bps": 0, "last_packet": "0001-01-01T00:00:00Z",
+  "filter": "ip", "error": "", "connection_latency_ms": 0, "origin": "api"
+}
+```
+
+| code | when |
+| --- | --- |
+| `201` | source built, registered and (if the pipeline is running) started |
+| `400` | malformed / unknown-field body, an inline `token`, or a failed per-kind validation — the config error text verbatim (e.g. `capture source "edge": remote capture requires "authorized": true — you must be authorised to monitor sensor@10.0.0.9 (PROJECT.md §28.18)`) |
+| `409` | a source with that `name` already exists |
+| `422` | a **local** source (`nic`, `tcpdump`) could not be opened — missing capability, no such interface, binary not on `PATH`; the cause is in the body |
+| `502` | a **remote** source (`ssh`, `pcap-over-ip`) could not be opened |
+| `503` | no capture manager is wired into this daemon |
+
+A source that fails to open is not registered and the daemon keeps serving
+(PROJECT.md §21). The add is written to the daemon log and published as a
+`CaptureSourceConnected` event with `"origin": "api"`.
 
 ### GET /api/v1/captures/{name}
 
 One source, same object as above. `404` `capture source not found` if the name
 is unknown or no live capture is configured.
 
-Runtime add/remove of sources (`POST` / `DELETE`) is tracked with the
-capture-sources UI (#32).
+### DELETE /api/v1/captures/{name}
+
+Stop and deregister a source: it is cancelled, closed (raw socket closed /
+subprocess killed / SSH session ended / TLS stream torn down) and its forwarder
+goroutine is joined before the response is written. Sources with
+`"origin": "config"` and `"origin": "api"` are **both** removable. Same
+loopback-only / `#58` caveat as `POST`.
+
+```bash
+curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
+```
+
+```json
+{ "removed": "lo" }
+```
+
+| code | when |
+| --- | --- |
+| `200` | removed; the row is dropped immediately, so a following `GET /api/v1/captures/{name}` is a `404` |
+| `404` | unknown name, or no capture manager is wired |
+
+The removal is written to the daemon log and published as a
+`CaptureSourceDisconnected` event with `"origin": "api"`. Other sources and the
+pipeline are unaffected.
 ### POST /api/v1/architecture/estimate
 
 Parameter, size and FLOP math for a candidate `flow-classifier-v1` hidden stack

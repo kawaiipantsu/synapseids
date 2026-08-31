@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,10 +31,163 @@ func (s stubCaptures) Get(name string) (capture.SourceStatus, bool) {
 	return capture.SourceStatus{}, false
 }
 
+// The GET-only tests never exercise these; the mutating routes are covered
+// against a real *capture.Manager below.
+func (s stubCaptures) Add(string, capture.Source, capture.SourceMeta) error { return nil }
+func (s stubCaptures) Remove(string) bool                                   { return false }
+
 func serverWithCaptures(cp CaptureStatusProvider) http.Handler {
 	return New(config.Default(), events.New(), storage.NewMem(100, 100),
 		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
 		nil, nil, nil, nil, cp).Handler()
+}
+
+// serverWithManager wires a real, idle capture.Manager into the API so the
+// POST / DELETE routes run their real path (validation → capturewire.Build →
+// Manager.Add/Remove). The manager is never started, so Add just registers the
+// source and its status reads back as "stopped".
+func serverWithManager() http.Handler {
+	m := capture.NewManager()
+	h := New(config.Default(), events.New(), storage.NewMem(100, 100),
+		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
+		nil, nil, nil, nil, m).Handler()
+	return h
+}
+
+func writeTokenFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "poip.tok")
+	if err := os.WriteFile(p, []byte("s3cr3t-bearer-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func doJSON(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("content-type", "application/json")
+	}
+	h.ServeHTTP(rr, r)
+	return rr
+}
+
+func TestCaptureCreateAndDelete(t *testing.T) {
+	h := serverWithManager()
+	tok := writeTokenFile(t)
+	body := `{"name":"hq","kind":"pcap-over-ip","addr":"127.0.0.1:4789","token_file":` + strconv.Quote(tok) + `}`
+
+	rr := doJSON(t, h, "POST", "/api/v1/captures", body)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("POST code %d, body %s", rr.Code, rr.Body.String())
+	}
+	var created capture.SourceStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatalf("POST body: %v (%s)", err, rr.Body.String())
+	}
+	if created.Name != "hq" || created.Kind != "pcap-over-ip" || created.Origin != "api" {
+		t.Fatalf("created = %+v", created)
+	}
+
+	rr = doJSON(t, h, "GET", "/api/v1/captures", "")
+	var list []capture.SourceStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil || len(list) != 1 || list[0].Name != "hq" {
+		t.Fatalf("GET list = %s (%v)", rr.Body.String(), err)
+	}
+
+	rr = doJSON(t, h, "GET", "/api/v1/captures/hq", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET by-name code %d", rr.Code)
+	}
+
+	rr = doJSON(t, h, "DELETE", "/api/v1/captures/hq", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE code %d, body %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doJSON(t, h, "GET", "/api/v1/captures/hq", "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("GET after DELETE code %d, want 404", rr.Code)
+	}
+	rr = doJSON(t, h, "GET", "/api/v1/captures", "")
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil || len(list) != 0 {
+		t.Fatalf("list after DELETE = %s", rr.Body.String())
+	}
+}
+
+func TestCaptureCreateValidationRejections(t *testing.T) {
+	h := serverWithManager()
+	cases := map[string]struct {
+		body string
+		want int
+		frag string
+	}{
+		"bad json":           {`{`, http.StatusBadRequest, "bad request body"},
+		"unknown field":      {`{"name":"x","kind":"nic","interface":"lo","bogus":1}`, http.StatusBadRequest, ""},
+		"ssh not authorized": {`{"name":"edge","kind":"ssh","destination":"h","interface":"eth0"}`, http.StatusBadRequest, `"authorized": true`},
+		"inline token":       {`{"name":"hq","kind":"pcap-over-ip","addr":"127.0.0.1:1","token":"abc"}`, http.StatusBadRequest, "inline token"},
+		"unknown kind":       {`{"name":"x","kind":"tap","interface":"lo"}`, http.StatusBadRequest, "unknown kind"},
+		"nic no interface":   {`{"name":"x","kind":"nic"}`, http.StatusBadRequest, "interface is required"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			rr := doJSON(t, h, "POST", "/api/v1/captures", c.body)
+			if rr.Code != c.want {
+				t.Fatalf("code %d, want %d (body %s)", rr.Code, c.want, rr.Body.String())
+			}
+			if c.frag != "" && !strings.Contains(rr.Body.String(), c.frag) {
+				t.Fatalf("body %q missing %q", rr.Body.String(), c.frag)
+			}
+		})
+	}
+}
+
+func TestCaptureCreateDuplicate(t *testing.T) {
+	h := serverWithManager()
+	tok := writeTokenFile(t)
+	body := `{"name":"hq","kind":"pcap-over-ip","addr":"127.0.0.1:4789","token_file":` + strconv.Quote(tok) + `}`
+	if rr := doJSON(t, h, "POST", "/api/v1/captures", body); rr.Code != http.StatusCreated {
+		t.Fatalf("first POST code %d", rr.Code)
+	}
+	if rr := doJSON(t, h, "POST", "/api/v1/captures", body); rr.Code != http.StatusConflict {
+		t.Fatalf("duplicate POST code %d, want 409", rr.Code)
+	}
+}
+
+func TestCaptureCreateOpenFailure(t *testing.T) {
+	h := serverWithManager()
+	// A tcpdump source whose binary is not on PATH: config validation passes,
+	// the constructor fails, and a local kind maps to 422.
+	body := `{"name":"span","kind":"tcpdump","interface":"lo","binary":"synapse-no-such-binary-xyz"}`
+	rr := doJSON(t, h, "POST", "/api/v1/captures", body)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code %d, want 422 (body %s)", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not be opened") {
+		t.Fatalf("body %q missing cause", rr.Body.String())
+	}
+	if rr := doJSON(t, h, "GET", "/api/v1/captures/span", ""); rr.Code != http.StatusNotFound {
+		t.Fatalf("failed source must not be registered, GET code %d", rr.Code)
+	}
+}
+
+func TestCaptureDeleteUnknown(t *testing.T) {
+	h := serverWithManager()
+	if rr := doJSON(t, h, "DELETE", "/api/v1/captures/nope", ""); rr.Code != http.StatusNotFound {
+		t.Fatalf("DELETE unknown code %d, want 404", rr.Code)
+	}
+}
+
+func TestCaptureCreateWithoutProvider(t *testing.T) {
+	h := serverWithCaptures(nil)
+	if rr := doJSON(t, h, "POST", "/api/v1/captures", `{"name":"x","kind":"nic","interface":"lo"}`); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no provider POST code %d, want 503", rr.Code)
+	}
 }
 
 func TestCapturesEmptyWithoutProvider(t *testing.T) {

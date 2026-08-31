@@ -54,6 +54,15 @@ which runs the identical pipeline.
 | `capture.max_flows` | int | `200000` | `200000` | Upper bound on the live flow table (concurrent tracked flows). Must be `>= 1`. When full, the oldest idle flow is evicted. Env: `SYNAPSE_MAX_FLOWS` (ignored unless `> 0`). |
 | `capture.sources` | array | `[]` | `[]` | Live capture inputs opened at startup (Phase 3). Each is an object — see below. `--capture IFACE` and `SYNAPSE_CAPTURE_IFACE` append a promiscuous NIC source without editing the file. A source that fails to open is logged and skipped; the daemon keeps serving the API. |
 
+> **These objects are also the runtime API body.** One `capture.sources[]` entry
+> is exactly the JSON `POST /api/v1/captures` takes, and it is checked by the
+> same validator, so anything valid here is valid there and vice versa
+> (`DELETE /api/v1/captures/{name}` removes it again). Nothing posted at runtime
+> is written back to this file — it lives until the daemon restarts. The
+> mutating routes are unauthenticated and rely on the loopback bind (issue #58);
+> see [docs/api.md](../../docs/api.md) and
+> [ADR 0013](../../docs/adr/0013-runtime-capture-source-management.md).
+
 ### `capture.sources[]`
 
 | Key | Type | Default | Meaning |

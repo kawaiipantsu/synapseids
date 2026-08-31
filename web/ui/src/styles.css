@@ -726,6 +726,140 @@ table.mini td.num {
   letter-spacing: 1px;
 }
 
+/* ------------------------------------------------- capture sources (§19.14) */
+
+.src-scroll {
+  overflow-x: auto;
+}
+table.src-table {
+  min-width: 900px;
+}
+table.src-table td,
+table.src-table th {
+  white-space: nowrap;
+}
+table.src-table tr.src-errrow td {
+  white-space: normal;
+  color: var(--dos);
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 92, 108, 0.35);
+}
+
+.src-state {
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  color: #04222a;
+}
+.src-state.running {
+  background: var(--accent);
+}
+.src-state.error {
+  background: var(--dos);
+}
+.src-state.stopped {
+  background: var(--normal);
+  color: var(--ink);
+}
+
+.src-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.src-badge.api {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button.src-rm {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+button.src-rm:hover:not(:disabled) {
+  border-color: var(--dos);
+  color: var(--dos);
+}
+
+.src-form {
+  margin-top: 12px;
+}
+.src-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 14px;
+  margin: 6px 0 12px;
+}
+.src-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.src-field > span:first-child {
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+.src-field .hint {
+  color: var(--dim);
+  font-size: 10px;
+}
+.src-field.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  padding-bottom: 5px;
+}
+.src-field.row input {
+  width: auto;
+}
+
+.src-auth {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.src-auth.required {
+  border-color: var(--suspicious);
+  background: rgba(255, 209, 102, 0.08);
+}
+.src-auth.required b {
+  color: var(--suspicious);
+}
+
+.src-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.src-msg {
+  border-radius: 6px;
+  padding: 2px 10px;
+}
+.src-msg.ok {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.src-msg.err {
+  color: var(--dos);
+  border: 1px solid var(--dos);
+  white-space: pre-wrap;
+}
+
 @media (max-width: 720px) {
   .app-body {
     grid-template-columns: 1fr;

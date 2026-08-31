@@ -286,6 +286,24 @@ A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 -
 
 `synapsed` manages the `tcpdump -U -w -` subprocess (locally, or over `ssh … tcpdump -U -w -` for `kind: "ssh"`) — no temporary capture files. `ssh` runs with `BatchMode=yes` (never prompts — use a key) and `StrictHostKeyChecking` = `known_hosts` (`"strict"` default, or `"accept-new"`). **A `kind: "ssh"` source must set `"authorized": true`** — an explicit assertion that you are authorised to monitor that host (PROJECT.md §21, §28.18); without it the config is rejected. A subprocess that exits is reported as `state: "error"` on `GET /api/v1/captures` and is not restarted automatically.
 
+#### Adding a source at runtime (no restart)
+
+Since #32 the same source objects can be posted to a **running** daemon. The body is exactly one `capture.sources[]` entry and is validated by the identical rules the config file gets:
+
+```bash
+# start a local tcpdump capture on lo, right now
+curl -sS -X POST http://127.0.0.1:8080/api/v1/captures \
+  -H 'content-type: application/json' \
+  -d '{"name":"lo","kind":"tcpdump","interface":"lo","filter":"ip"}'
+# → 201 {"name":"lo","kind":"tcpdump","state":"running", … ,"origin":"api"}
+
+curl -sS http://127.0.0.1:8080/api/v1/captures        # watch it count
+curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
+# → 200 {"removed":"lo"}
+```
+
+`400` echoes the config validation error verbatim (including the `"authorized": true` gate), `409` is a duplicate name, `422` / `502` mean a local / remote source could not be opened — the daemon names the cause and keeps serving. Sources loaded from the config file and sources added over the API are both removable, and both show which they are via `"origin"`. The same thing with a mouse: **CAPTURE ▸ Sources** in the web UI (`#/sources`) — a live table plus a per-kind add form with the authorisation checkbox. ⚠️ These routes open raw sockets, spawn subprocesses and start SSH sessions, and are **unauthenticated**: keep the API on loopback until [#58](https://github.com/kawaiipantsu/synapseids/issues/58) (auth/RBAC) lands.
+
 **`synapse`** talks to a running `synapsed` and holds no logic of its own:
 
 | Command | Does |
@@ -304,7 +322,7 @@ A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 -
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `captures` · `captures/{name}` · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 <br/>
 

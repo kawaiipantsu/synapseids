@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 import { Placeholder } from '../components/Placeholder'
 import { Architecture } from './Architecture'
+import { CaptureSources } from './CaptureSources'
 import { Dashboard } from './Dashboard'
 import { FlowLog } from './FlowLog'
 import { ReplayPage } from './ReplayPage'
@@ -57,9 +58,9 @@ export const ROUTES: RouteDef[] = [
     group: 'CAPTURE',
     path: '/sources',
     label: 'Sources',
-    tag: 'P3',
-    live: false,
-    element: P(3, 'Capture Sources', 'EPIC: Phase 3 — Live Capture', 'Manage local interfaces, tcpdump streams, SSH captures and PCAP-over-IP (§19.14). Phase 1 has PCAP replay only.'),
+    tag: 'live',
+    live: true,
+    element: <CaptureSources />,
   },
   {
     group: 'CAPTURE',

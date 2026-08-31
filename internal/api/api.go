@@ -69,14 +69,20 @@ type FlowStatsProvider interface {
 	FlowStats() FlowStats
 }
 
-// CaptureStatusProvider surfaces the live capture manager's per-source status
-// for GET /api/v1/captures (PROJECT.md §19.14). capture.Manager implements it.
-// It is read-only here; runtime add/remove of sources is tracked for the
-// capture-sources UI (#32). A nil provider means "no live capture configured"
-// and the endpoint returns an empty list.
+// CaptureStatusProvider is the live capture manager as the API uses it: the
+// per-source status for GET /api/v1/captures[/{name}] (PROJECT.md §19.14) plus
+// runtime add/remove for POST/DELETE /api/v1/captures (issue #32).
+// capture.Manager implements it. A nil provider means "no capture manager
+// wired": the GETs return an empty list / 404 and the mutating routes return
+// 503. The interface keeps the api package off a concrete *capture.Manager.
 type CaptureStatusProvider interface {
 	List() []capture.SourceStatus
 	Get(name string) (capture.SourceStatus, bool)
+	// Add registers and (if the manager is already running) starts a source.
+	// It returns an error on a duplicate name or an empty name.
+	Add(name string, src capture.Source, meta capture.SourceMeta) error
+	// Remove stops, closes and deregisters a source; false if unknown.
+	Remove(name string) bool
 }
 
 // Server bundles the HTTP handler, the live hub and the event pump.
@@ -122,7 +128,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)
+	mux.HandleFunc("POST /api/v1/captures", s.handleCaptureCreate)
 	mux.HandleFunc("GET /api/v1/captures/{name}", s.handleCapture)
+	mux.HandleFunc("DELETE /api/v1/captures/{name}", s.handleCaptureDelete)
 	mux.HandleFunc("POST /api/v1/architecture/estimate", s.handleArchitectureEstimate)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)

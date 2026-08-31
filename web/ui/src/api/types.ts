@@ -69,6 +69,58 @@ export interface ModelInfo {
   role: string
 }
 
+/** capture.SourceStatus — one row of GET /api/v1/captures (PROJECT.md §19.14). */
+export interface CaptureSourceStatus {
+  name: string
+  kind: string
+  /** running | error | stopped */
+  state: string
+  packets: number
+  decoded: number
+  decode_errors: number
+  bytes: number
+  drops: number
+  pps: number
+  bps: number
+  last_packet: string
+  filter: string
+  error: string
+  connection_latency_ms: number
+  /** "config" (opened at startup) | "api" (added at runtime) | "" */
+  origin: string
+}
+
+export type CaptureKind = 'nic' | 'tcpdump' | 'ssh' | 'pcap-over-ip'
+
+/**
+ * config.CaptureSource — the POST /api/v1/captures body. Only the fields the
+ * add-source form sends are listed; everything is optional on the wire and the
+ * server runs the same per-kind validation the config file gets. An inline
+ * `token` is deliberately absent: the UI offers `token_file` only (§23).
+ */
+export interface CaptureSourceInput {
+  name: string
+  kind: CaptureKind
+  interface?: string
+  promiscuous?: boolean
+  snaplen?: number
+  filter?: string
+  binary?: string
+  destination?: string
+  port?: number
+  identity_file?: string
+  remote_binary?: string
+  known_hosts?: string
+  addr?: string
+  token_file?: string
+  server_name?: string
+  ca_file?: string
+  client_cert_file?: string
+  client_key_file?: string
+  insecure_tls?: boolean
+  authorized?: boolean
+}
+
 /** api.ReplayStatus */
 export interface ReplayStatus {
   running: boolean

@@ -3,6 +3,8 @@
 // changed here — these are exactly the endpoints present on origin/develop.
 
 import type {
+  CaptureSourceInput,
+  CaptureSourceStatus,
   Classification,
   ClassSchema,
   DaemonStatus,
@@ -41,6 +43,49 @@ export function getFlow(id: number): Promise<FlowRecord> {
 
 export function getClassifications(limit = 100): Promise<Classification[]> {
   return getJSON<Classification[]>(`/api/v1/classifications?limit=${limit}`)
+}
+
+// ---- capture sources (§19.14, issue #32) --------------------------------
+
+export function getCaptures(): Promise<CaptureSourceStatus[]> {
+  return getJSON<CaptureSourceStatus[]>('/api/v1/captures')
+}
+
+export interface CaptureMutationResult {
+  ok: boolean
+  /** the new SourceStatus on a 201, else the server's error text */
+  message: string
+  status: number
+  source?: CaptureSourceStatus
+}
+
+export async function createCapture(body: CaptureSourceInput): Promise<CaptureMutationResult> {
+  const res = await fetch('/api/v1/captures', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (res.ok) {
+    let source: CaptureSourceStatus | undefined
+    try {
+      source = JSON.parse(text) as CaptureSourceStatus
+    } catch {
+      source = undefined
+    }
+    return { ok: true, message: 'added', status: res.status, source }
+  }
+  return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
+}
+
+export async function deleteCapture(name: string): Promise<CaptureMutationResult> {
+  const res = await fetch(`/api/v1/captures/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  const text = (await res.text().catch(() => '')).trim()
+  return {
+    ok: res.ok,
+    message: res.ok ? 'removed' : text || `${res.status} ${res.statusText}`,
+    status: res.status,
+  }
 }
 
 // The two frozen schemas never change within a process lifetime; fetch once.

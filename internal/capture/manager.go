@@ -22,6 +22,7 @@ const (
 type SourceMeta struct {
 	Kind   string // "nic", "replay", ...
 	Filter string // human-readable current filter ("" or "(all)" = everything)
+	Origin string // "config" (opened at startup) | "api" (POST /api/v1/captures) | "" unknown
 }
 
 // SourceStatus is one row of GET /api/v1/captures (PROJECT.md §19.14).
@@ -40,6 +41,7 @@ type SourceStatus struct {
 	Filter        string    `json:"filter"`
 	Error         string    `json:"error"`
 	ConnLatencyMS int64     `json:"connection_latency_ms"` // 0 / not-applicable for a local NIC
+	Origin        string    `json:"origin"`                // "config" | "api" | "" — where the source was added from
 }
 
 type managedSource struct {
@@ -52,6 +54,7 @@ type managedSource struct {
 	errText  string
 	pps, bps float64
 	cancel   context.CancelFunc
+	done     chan struct{} // closed when this source's forwarder goroutine exits
 	// rate sampling baseline
 	lastSample time.Time
 	lastPkts   uint64
@@ -93,8 +96,11 @@ func newManager(buf int, sample time.Duration) *Manager {
 }
 
 // Add registers src under name. It may be called before Packets (the common
-// case) or after (the forwarder starts immediately). Runtime removal and a
-// REST-driven add are tracked for the capture-sources UI (#32).
+// case, startup config sources) or after it (the dynamic fan-in path: the
+// forwarder is spun up immediately against the already-running merged output
+// and the rate sampler, without disturbing the other sources or the single
+// pipeline goroutine that drains m.out — PROJECT.md §22). The runtime
+// POST /api/v1/captures handler uses the after-start path (issue #32).
 func (m *Manager) Add(name string, src Source, meta SourceMeta) error {
 	if name == "" {
 		return errors.New("capture: source name is required")
@@ -113,8 +119,11 @@ func (m *Manager) Add(name string, src Source, meta SourceMeta) error {
 	return nil
 }
 
-// Remove stops and deregisters a source. It is present for #32; the daemon does
-// not call it yet. Returns false if the name is unknown.
+// Remove stops and deregisters a source: it cancels the source, closes it, and
+// waits for its forwarder goroutine to exit so nothing outlives the call. The
+// row is dropped immediately — a following GET /api/v1/captures/{name} is a 404,
+// not a lingering "stopped" entry. Returns false if the name is unknown. Used by
+// DELETE /api/v1/captures/{name} (issue #32).
 func (m *Manager) Remove(name string) bool {
 	m.mu.Lock()
 	ms, ok := m.srcs[name]
@@ -133,11 +142,22 @@ func (m *Manager) Remove(name string) bool {
 	}
 	ms.mu.Lock()
 	cancel := ms.cancel
+	done := ms.done
 	ms.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	_ = ms.src.Close()
+	if done != nil {
+		// Wait for the forwarder to drain and return. The bound is a safety
+		// valve for a wedged source; the normal path closes in microseconds
+		// once the source's packet channel closes.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	m.setState(ms, StateStopped, "")
 	return true
 }
 
@@ -167,9 +187,11 @@ func (m *Manager) Packets(ctx context.Context) (<-chan packet.Packet, <-chan err
 // is freshly created and unpublished).
 func (m *Manager) launch(ms *managedSource) {
 	sctx, scancel := context.WithCancel(m.ctx)
+	done := make(chan struct{})
 
 	ms.mu.Lock()
 	ms.cancel = scancel
+	ms.done = done
 	ms.state = StateRunning
 	ms.errText = ""
 	ms.lastSample = time.Now()
@@ -179,6 +201,7 @@ func (m *Manager) launch(ms *managedSource) {
 	m.fwg.Add(1)
 	go func() {
 		defer m.fwg.Done()
+		defer close(done)
 		defer scancel()
 
 		pkts, errs := ms.src.Packets(sctx)
@@ -348,6 +371,7 @@ func (ms *managedSource) status() SourceStatus {
 		LastPacket:   st.LastTS,
 		Filter:       ms.meta.Filter,
 		Error:        ms.errText,
+		Origin:       ms.meta.Origin,
 	}
 	ms.mu.Unlock()
 
