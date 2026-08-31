@@ -67,7 +67,7 @@ func dsServer(t *testing.T) (*Server, string, string) {
 	st := dsStore(dsRows)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	srv := New(cfg, events.New(), st, rt, nil, audit.New(auditDir, quiet),
-		dataset.Open(dsDir, st, quiet), nil, nil, nil, nil)
+		dataset.Open(dsDir, st, quiet), nil, nil, nil, nil, nil)
 	return srv, dsDir, auditDir
 }
 
@@ -375,7 +375,7 @@ func TestDatasetErrorCodes(t *testing.T) {
 func TestDatasetRoutesWithoutAManager(t *testing.T) {
 	cfg := config.Default()
 	rt := inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary))
-	h := New(cfg, events.New(), storage.NewMem(10, 10), rt, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), storage.NewMem(10, 10), rt, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	// The list always renders, so the SPA has something to show.
 	rr := do(t, h, http.MethodGet, "/api/v1/datasets")

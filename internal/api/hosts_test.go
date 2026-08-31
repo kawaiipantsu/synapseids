@@ -62,7 +62,7 @@ func investigateServer(t *testing.T) http.Handler {
 
 	ix.Sync()
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	return New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix).Handler()
+	return New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix, nil).Handler()
 }
 
 func get(t *testing.T, h http.Handler, url string) *httptest.ResponseRecorder {
@@ -275,7 +275,7 @@ func TestHostAddressCanonicalisation(t *testing.T) {
 	ix.Sync()
 
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	h := New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix).Handler()
+	h := New(config.Default(), events.New(), store, rt, nil, nil, nil, nil, nil, nil, ix, nil).Handler()
 
 	for _, spelling := range []string{"2001:db8::1", "2001:0db8:0000::0001"} {
 		if rr := get(t, h, "/api/v1/hosts/"+spelling); rr.Code != http.StatusOK {

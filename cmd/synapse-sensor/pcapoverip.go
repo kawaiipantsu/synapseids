@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
+	"github.com/kawaiipantsu/synapseids/internal/version"
 )
 
 // runPCAPOverIP serves the SYNPOIP protocol over TLS. It returns a process exit
@@ -87,12 +89,26 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 		return 1
 	}
 
+	// Sensor identity travels in the ServerAccept session id (PROTOCOL.md §6): on
+	// both postures the sensor answers the daemon's ClientHello, so it cannot use
+	// the hello metadata. FormatSessionPrefix packs id + location + agent version
+	// + os/arch; the daemon collector unpacks it for /api/v1/sensors and the
+	// SensorConnected event. No wire change — the session id is already free-form.
+	ident := pcapoverip.SensorIdentity{
+		SensorID:     opts.sensorID,
+		Location:     opts.location,
+		AgentVersion: version.Version,
+		OSArch:       runtime.GOOS + "/" + runtime.GOARCH,
+	}
+	log.Printf("pcap-over-ip: sensor identity id=%q location=%q agent=%s os=%s",
+		ident.SensorID, ident.Location, ident.AgentVersion, ident.OSArch)
+
 	srvCfg := pcapoverip.ServerConfig{
 		Token:         opts.token,
 		LinkType:      link,
 		Filter:        opts.filterLabel(),
 		Drops:         drops,
-		SessionPrefix: opts.sensorID,
+		SessionPrefix: pcapoverip.FormatSessionPrefix(ident),
 		Logf:          log.Printf,
 	}
 
@@ -169,6 +185,8 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 		return nil, code
 	}
 
+	resolveSensorIdentity(o)
+
 	tok := strings.TrimSpace(tokenLiteral)
 	if tokenFile != "" {
 		b, rerr := os.ReadFile(tokenFile) //nolint:gosec // the operator names the token file
@@ -184,6 +202,27 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 	o.token = tok
 
 	return o, 0
+}
+
+// resolveSensorIdentity fills sensor-id and location from the environment and a
+// stable host-derived default when the flags were not given (PROJECT.md §5.3
+// "identify their location and sensor ID"). Precedence: flag, then
+// SYNAPSE_SENSOR_ID / SYNAPSE_SENSOR_LOCATION, then the hostname for the id.
+func resolveSensorIdentity(o *sensorOpts) {
+	if o.sensorID == "" {
+		o.sensorID = strings.TrimSpace(os.Getenv("SYNAPSE_SENSOR_ID"))
+	}
+	if o.sensorID == "" {
+		if h, err := os.Hostname(); err == nil {
+			o.sensorID = strings.TrimSpace(h)
+		}
+	}
+	if o.sensorID == "" {
+		o.sensorID = "sensor"
+	}
+	if o.location == "" {
+		o.location = strings.TrimSpace(os.Getenv("SYNAPSE_SENSOR_LOCATION"))
+	}
 }
 
 // validateSensorOpts enforces the mutually exclusive choices and the
