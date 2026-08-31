@@ -105,7 +105,7 @@ func spec(id string) dataset.Spec {
 
 func TestCreateWritesEveryManifestField(t *testing.T) {
 	root := t.TempDir()
-	m := dataset.Open(root, twoClassStore(t, 40), quiet)
+	m := dataset.Open(root, twoClassStore(t, 40), nil, quiet)
 
 	d := mustCreate(t, m, spec("thugs/lab-attacks-2026-08"))
 
@@ -203,7 +203,7 @@ func TestLabelCountsMatchTheCSV(t *testing.T) {
 			putFlow(st, id, p.class)
 		}
 	}
-	d := mustCreate(t, dataset.Open(root, st, quiet), spec("hq/mixed"))
+	d := mustCreate(t, dataset.Open(root, st, nil, quiet), spec("hq/mixed"))
 
 	want := map[string]int{"normal": 30, "scan": 8, "brute_force": 4}
 	for k, v := range want {
@@ -234,7 +234,7 @@ func TestLabelCountsMatchTheCSV(t *testing.T) {
 // TestSelectionJSONOmitsUnsetTimes: an unbounded selection must not record a
 // zero time as if it were a real bound.
 func TestSelectionJSONOmitsUnsetTimes(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 
 	d := mustCreate(t, m, spec("json/unbounded"))
 	raw := readFile(t, filepath.Join(d.Dir, dataset.ManifestFileName))
@@ -273,8 +273,8 @@ func TestContentHashIsReproducible(t *testing.T) {
 	st := twoClassStore(t, 40)
 
 	// Two independent managers over two independent roots, same store.
-	a := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("a/one"))
-	b := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), dataset.Spec{
+	a := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("a/one"))
+	b := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), dataset.Spec{
 		// Different name, description, location, tags, id and version — none of
 		// which may influence the hash.
 		ID: "b/two", Version: "v7", Name: "something else", Description: "different",
@@ -294,10 +294,10 @@ func TestContentHashIsReproducible(t *testing.T) {
 
 func TestContentHashChangesWithTheRows(t *testing.T) {
 	st := twoClassStore(t, 40)
-	a := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("a/one"))
+	a := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("a/one"))
 
 	putFlow(st, 41, "scan")
-	b := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("a/one"))
+	b := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("a/one"))
 
 	if a.ContentHash == b.ContentHash {
 		t.Fatal("adding a row did not change the content hash")
@@ -306,7 +306,7 @@ func TestContentHashChangesWithTheRows(t *testing.T) {
 
 func TestContentHashChangesWithTheLabels(t *testing.T) {
 	base := twoClassStore(t, 40)
-	a := mustCreate(t, dataset.Open(t.TempDir(), base, quiet), spec("a/one"))
+	a := mustCreate(t, dataset.Open(t.TempDir(), base, nil, quiet), spec("a/one"))
 
 	// Same 40 flows, same features, one relabelled.
 	relabelled := storage.NewMem(1000, 1000)
@@ -320,7 +320,7 @@ func TestContentHashChangesWithTheLabels(t *testing.T) {
 		}
 		putFlow(relabelled, uint64(i), class) //nolint:gosec // small positive loop bound
 	}
-	b := mustCreate(t, dataset.Open(t.TempDir(), relabelled, quiet), spec("a/one"))
+	b := mustCreate(t, dataset.Open(t.TempDir(), relabelled, nil, quiet), spec("a/one"))
 
 	if a.ContentHash == b.ContentHash {
 		t.Fatal("changing a label did not change the content hash")
@@ -331,7 +331,7 @@ func TestContentHashChangesWithTheLabels(t *testing.T) {
 
 func TestVersionIsImmutable(t *testing.T) {
 	root := t.TempDir()
-	m := dataset.Open(root, twoClassStore(t, 40), quiet)
+	m := dataset.Open(root, twoClassStore(t, 40), nil, quiet)
 	first := mustCreate(t, m, spec("thugs/lab"))
 
 	_, err := m.Create(spec("thugs/lab"))
@@ -356,7 +356,7 @@ func TestVersionIsImmutable(t *testing.T) {
 }
 
 func TestVersionAutoIncrements(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 
 	s := spec("hq/base")
 	s.Version = ""
@@ -379,7 +379,7 @@ func TestVersionAutoIncrements(t *testing.T) {
 // ---- derive --------------------------------------------------------------
 
 func TestDeriveRecordsTheParent(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 	parent := mustCreate(t, m, spec("thugs/lab"))
 
 	childSpec := spec("thugs/lab")
@@ -414,11 +414,11 @@ func TestDeriveRecordsTheParent(t *testing.T) {
 func TestReopenFindsEveryVersion(t *testing.T) {
 	root := t.TempDir()
 	st := twoClassStore(t, 40)
-	m := dataset.Open(root, st, quiet)
+	m := dataset.Open(root, st, nil, quiet)
 	mustCreate(t, m, spec("thugs/lab"))
 	mustCreate(t, m, spec("global"))
 
-	reopened := dataset.Open(root, st, quiet)
+	reopened := dataset.Open(root, st, nil, quiet)
 	if got := len(reopened.List()); got != 2 {
 		t.Fatalf("reopened List has %d entries, want 2", got)
 	}
@@ -431,7 +431,7 @@ func TestReopenFindsEveryVersion(t *testing.T) {
 }
 
 func TestOpenToleratesAMissingDirectory(t *testing.T) {
-	m := dataset.Open(filepath.Join(t.TempDir(), "does", "not", "exist"), nil, quiet)
+	m := dataset.Open(filepath.Join(t.TempDir(), "does", "not", "exist"), nil, nil, quiet)
 	if got := m.List(); len(got) != 0 {
 		t.Fatalf("List = %v, want empty", got)
 	}
@@ -443,7 +443,7 @@ func TestOpenToleratesAMissingDirectory(t *testing.T) {
 func TestOpenToleratesACorruptManifest(t *testing.T) {
 	root := t.TempDir()
 	st := twoClassStore(t, 40)
-	good := mustCreate(t, dataset.Open(root, st, quiet), spec("good/one"))
+	good := mustCreate(t, dataset.Open(root, st, nil, quiet), spec("good/one"))
 
 	bad := filepath.Join(root, "bad", "v1")
 	if err := os.MkdirAll(bad, 0o750); err != nil {
@@ -462,7 +462,7 @@ func TestOpenToleratesACorruptManifest(t *testing.T) {
 	}
 
 	logged := 0
-	m := dataset.Open(root, st, func(string, ...any) { logged++ })
+	m := dataset.Open(root, st, nil, func(string, ...any) { logged++ })
 	if got := m.List(); len(got) != 1 || got[0].ContentHash != good.ContentHash {
 		t.Fatalf("List = %d entries, want just the good one", len(got))
 	}
@@ -515,7 +515,7 @@ func TestValidateVersionRejectsSeparators(t *testing.T) {
 
 func TestCreateRejectsATraversalID(t *testing.T) {
 	root := t.TempDir()
-	m := dataset.Open(root, twoClassStore(t, 40), quiet)
+	m := dataset.Open(root, twoClassStore(t, 40), nil, quiet)
 
 	for _, id := range []string{"../escape", "a/../../escape", "/etc/passwd"} {
 		s := spec(id)
@@ -548,7 +548,7 @@ func TestParseRef(t *testing.T) {
 // ---- selection guard rails ----------------------------------------------
 
 func TestSelectionRejections(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 
 	t.Run("no rows", func(t *testing.T) {
 		s := spec("x/none")
@@ -627,7 +627,7 @@ func TestSelectionRejections(t *testing.T) {
 	})
 
 	t.Run("no flow store wired", func(t *testing.T) {
-		nm := dataset.Open(t.TempDir(), nil, quiet)
+		nm := dataset.Open(t.TempDir(), nil, nil, quiet)
 		if _, err := nm.Create(spec("x/nostore")); !errors.Is(err, dataset.ErrInvalid) {
 			t.Fatalf("err = %v, want ErrInvalid", err)
 		}
@@ -638,13 +638,13 @@ func TestSelectionRejections(t *testing.T) {
 // not. Off-by-one here would either block a legitimate small dataset or let an
 // unusable one through.
 func TestRowFloorBoundary(t *testing.T) {
-	exact := dataset.Open(t.TempDir(), twoClassStore(t, dataset.MinRows), quiet)
+	exact := dataset.Open(t.TempDir(), twoClassStore(t, dataset.MinRows), nil, quiet)
 	d := mustCreate(t, exact, spec("floor/exact"))
 	if d.FlowCount != dataset.MinRows {
 		t.Fatalf("flow_count = %d, want exactly MinRows (%d)", d.FlowCount, dataset.MinRows)
 	}
 
-	under := dataset.Open(t.TempDir(), twoClassStore(t, dataset.MinRows-1), quiet)
+	under := dataset.Open(t.TempDir(), twoClassStore(t, dataset.MinRows-1), nil, quiet)
 	if _, err := under.Create(spec("floor/under")); !errors.Is(err, dataset.ErrUnusable) {
 		t.Fatalf("MinRows-1 rows: err = %v, want ErrUnusable", err)
 	}
@@ -665,7 +665,7 @@ func TestSelectionFilters(t *testing.T) {
 			}
 		})
 	}
-	m := dataset.Open(t.TempDir(), st, quiet)
+	m := dataset.Open(t.TempDir(), st, nil, quiet)
 
 	s := spec("f/proto")
 	s.Selection = dataset.Selection{Proto: "udp"} // case-insensitive
@@ -706,7 +706,7 @@ func TestOneRowPerFlowNewestVerdictWins(t *testing.T) {
 	// Flow 1 is reclassified: the newer verdict must be the one that lands.
 	putFlow(st, 1, "brute_force")
 
-	d := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("x/dedupe"))
+	d := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("x/dedupe"))
 	if d.FlowCount != 40 {
 		t.Fatalf("flow_count = %d, want 40 (one row per flow)", d.FlowCount)
 	}
@@ -724,7 +724,7 @@ func TestImbalanceWarning(t *testing.T) {
 	}
 	putFlow(st, 100, "scan")
 
-	d := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("x/skewed"))
+	d := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("x/skewed"))
 	found := false
 	for _, w := range d.Warnings {
 		if strings.Contains(w, "class imbalance") && strings.Contains(w, "normal") {
@@ -768,7 +768,7 @@ func TestDuplicateRowWarning(t *testing.T) {
 				Models: []inference.ModelOutput{{ModelID: "heuristic-v1", Class: class}}},
 		})
 	}
-	d := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("x/dupes"))
+	d := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("x/dupes"))
 	found := false
 	for _, w := range d.Warnings {
 		if strings.Contains(w, "duplicate an earlier row") {
@@ -792,7 +792,7 @@ func TestEvictedFlowIsSkippedAndReported(t *testing.T) {
 		}
 		putFlow(st, uint64(i), class) //nolint:gosec // small positive loop bound
 	}
-	d := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("x/evicted"))
+	d := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("x/evicted"))
 	if d.FlowCount != 30 {
 		t.Fatalf("flow_count = %d, want 30 (10 verdicts lost their flow record)", d.FlowCount)
 	}
@@ -822,7 +822,7 @@ func TestLabelingSourceNamesTheModels(t *testing.T) {
 				inference.ModelOutput{ModelID: "flow-classifier-v1", Class: class})
 		})
 	}
-	d := mustCreate(t, dataset.Open(t.TempDir(), st, quiet), spec("x/labels"))
+	d := mustCreate(t, dataset.Open(t.TempDir(), st, nil, quiet), spec("x/labels"))
 
 	// Sorted, joined, and unmistakably not a human.
 	if d.LabelingSource != "model_prediction:flow-classifier-v1+heuristic-v1" {
@@ -837,7 +837,7 @@ func TestLabelingSourceNamesTheModels(t *testing.T) {
 
 func TestDeleteRemovesTheVersionAndPrunesEmptyParents(t *testing.T) {
 	root := t.TempDir()
-	m := dataset.Open(root, twoClassStore(t, 40), quiet)
+	m := dataset.Open(root, twoClassStore(t, 40), nil, quiet)
 	mustCreate(t, m, spec("thugs/lab"))
 
 	if err := m.Delete("thugs/lab", "v1"); err != nil {
@@ -859,7 +859,7 @@ func TestDeleteRemovesTheVersionAndPrunesEmptyParents(t *testing.T) {
 
 func TestDeleteKeepsSiblingVersions(t *testing.T) {
 	root := t.TempDir()
-	m := dataset.Open(root, twoClassStore(t, 40), quiet)
+	m := dataset.Open(root, twoClassStore(t, 40), nil, quiet)
 	s := spec("thugs/lab")
 	mustCreate(t, m, s)
 	s.Version = "v2"
@@ -879,7 +879,7 @@ func TestDeleteKeepsSiblingVersions(t *testing.T) {
 // ---- ordering ------------------------------------------------------------
 
 func TestListIsNewestFirstAndTotal(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 	// Created within the same RFC3339 second, so the id/version tiebreak decides.
 	for _, id := range []string{"c/three", "a/one", "b/two"} {
 		mustCreate(t, m, spec(id))
@@ -907,7 +907,7 @@ func TestListIsNewestFirstAndTotal(t *testing.T) {
 // TestConcurrentCreateAndList exercises the RWMutex under -race: the API lists
 // datasets while another request writes one.
 func TestConcurrentCreateAndList(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -944,7 +944,7 @@ func TestConcurrentCreateAndList(t *testing.T) {
 // TestConcurrentCreateSameVersion: two goroutines racing for the same
 // (id, version) — exactly one may win, immutability holds under concurrency.
 func TestConcurrentCreateSameVersion(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 
 	var wg sync.WaitGroup
 	var okCount, existsCount atomic.Int32

@@ -59,13 +59,40 @@ function LabelBar({ counts, total }: { counts: Record<string, number>; total: nu
   )
 }
 
-/** How the labels were produced, rendered so it cannot be mistaken for truth. */
+/** How the labels were produced, rendered so it cannot be mistaken for truth.
+ *
+ *  Three possible values since the review loop landed (§16, issue #42):
+ *  "human_review" (every label asserted by a person), "human_review+
+ *  model_prediction:<ids>" (a mixed cut — include_ignored rows are labelled by
+ *  the model), and "model_prediction:<ids>" (the daemon grading its own
+ *  homework). Only the first drops the caution badge. */
 function LabelingSource({ source }: { source: string }) {
-  const human = source.startsWith('human_review')
-  const models = source.startsWith('model_prediction:') ? source.slice('model_prediction:'.length) : ''
-  if (human) {
-    return <span className="ds-label-src human">human review</span>
+  const modelsOf = (s: string) =>
+    s.startsWith('model_prediction:') ? s.slice('model_prediction:'.length) : ''
+
+  if (source === 'human_review') {
+    return (
+      <span
+        className="ds-label-src human"
+        title="every label in this dataset was confirmed or corrected by a person (PROJECT.md §16)"
+      >
+        human review
+      </span>
+    )
   }
+  if (source.startsWith('human_review+')) {
+    const models = modelsOf(source.slice('human_review+'.length))
+    return (
+      <span
+        className="ds-label-src mixed"
+        title={`mixed: most labels are human decisions, but the ignored_pattern rows carry ${models || 'a model'}'s unconfirmed prediction`}
+      >
+        human review <span className="dim">+ model</span>
+        {models ? <span className="dim"> · {models}</span> : null}
+      </span>
+    )
+  }
+  const models = modelsOf(source)
   return (
     <span
       className="ds-label-src model"
@@ -94,7 +121,9 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
 
 // ---- the create form's draft --------------------------------------------
 
-interface DraftState {
+/** The create-form draft. Exported (with its key) so LIVE ▸ Review can prefill
+ *  a curated `reviewed` cut and hand it over — see writePersisted. */
+export interface DraftState {
   id: string
   version: string
   name: string
@@ -114,9 +143,16 @@ interface DraftState {
   min_confidence: string
   disagreement: boolean
   limit: string
+  /** build from human-reviewed flows, using the operator's label (§16, #42) */
+  reviewed: boolean
+  /** with `reviewed`: also take ignored_pattern rows, labelled by the model */
+  include_ignored: boolean
 }
 
-const EMPTY_DRAFT: DraftState = {
+/** The localStorage key the draft lives under (usePersistedState prefixes it). */
+export const DATASETS_DRAFT_KEY = 'datasets.draft'
+
+export const EMPTY_DRAFT: DraftState = {
   id: '',
   version: '',
   name: '',
@@ -135,6 +171,8 @@ const EMPTY_DRAFT: DraftState = {
   min_confidence: '',
   disagreement: false,
   limit: '',
+  reviewed: false,
+  include_ignored: false,
 }
 
 const csvList = (v: string): string[] =>
@@ -172,6 +210,14 @@ function toBody(d: DraftState): DatasetCreateInput {
   if (d.disagreement) selection.disagreement = true
   const lim = n(d.limit)
   if (lim != null) selection.limit = lim
+  if (d.reviewed) {
+    selection.reviewed = true
+    // include_ignored only means anything with reviewed, and the daemon rejects
+    // it on its own — do not send a contradiction.
+    if (d.include_ignored) selection.include_ignored = true
+    // Ditto disagreement: a review record has no ensemble disagreement flag.
+    delete selection.disagreement
+  }
 
   const body: DatasetCreateInput = { id: d.id.trim(), selection }
   if (s(d.version)) body.version = d.version.trim()
@@ -370,6 +416,8 @@ export function Datasets() {
       min_confidence: d.selection.min_confidence != null ? String(d.selection.min_confidence) : '',
       disagreement: d.selection.disagreement ?? false,
       limit: d.selection.limit != null ? String(d.selection.limit) : '',
+      reviewed: d.selection.reviewed ?? false,
+      include_ignored: d.selection.include_ignored ?? false,
     })
     setMsg({ ok: true, text: `form prefilled to derive from ${d.id}@${d.version}` })
   }
@@ -387,12 +435,19 @@ export function Datasets() {
       </div>
 
       <div className="arch-warn ds-honesty">
-        <b>These labels are model predictions, not ground truth.</b> The human review loop
-        (issue&nbsp;#42) does not exist yet, so every dataset built here is labelled by the daemon&rsquo;s
-        own classifier — the heuristic, or whichever model was active. Training on it teaches a new
-        model to imitate the old one; it does not teach it what is actually true. Each row&rsquo;s
-        <code> labeling_source</code> records exactly which model produced the labels. A dataset that
-        says <code>human_review</code> will only be possible once reviewed labels exist.
+        <b>Two kinds of dataset live here, and the difference matters.</b> A default cut is
+        labelled by the daemon&rsquo;s own classifier — the heuristic, or whichever model was active.
+        Training on it teaches a new model to imitate the old one; it does not teach it what is
+        actually true, and it keeps its <span className="ds-label-src model">model prediction</span>{' '}
+        caution badge. A cut built from <b>reviewed flows</b> uses the label a person confirmed or
+        corrected in <a href="#/review">LIVE ▸ Review</a> and says{' '}
+        <span className="ds-label-src human">human review</span> instead (§16, issue&nbsp;#42). Each
+        row&rsquo;s <code>labeling_source</code> records exactly which, naming the model when a model
+        was involved; a mixed cut (<code>include_ignored</code>) says{' '}
+        <span className="ds-label-src mixed">
+          human review <span className="dim">+ model</span>
+        </span>
+        . Nothing here can claim <code>human_review</code> without real reviewed labels behind it.
       </div>
 
       {loadErr ? <div className="src-msg err">dataset list unavailable — {loadErr}</div> : null}
@@ -505,6 +560,37 @@ export function Datasets() {
           One row per flow, newest verdict wins, sorted by flow id so the content hash is
           reproducible.
         </div>
+
+        <label className="src-field row ds-reviewed">
+          <input
+            type="checkbox"
+            checked={draft.reviewed}
+            onChange={(e) => set('reviewed', e.target.checked)}
+          />
+          <span>
+            <b>build from human-reviewed flows</b> — the CSV <code>label</code> column carries the
+            operator&rsquo;s decision from <a href="#/review">LIVE ▸ Review</a>, not the model&rsquo;s
+            prediction, and <code>labeling_source</code> becomes <code>human_review</code>. Only{' '}
+            <code>correct</code> and <code>incorrect</code> reviews are eligible;{' '}
+            <code>unsure</code> and <code>ignored_pattern</code> are excluded. In this mode{' '}
+            <code>class</code> filters on the <i>human</i> label and <code>disagreement</code> is
+            not available.
+          </span>
+        </label>
+        {draft.reviewed ? (
+          <label className="src-field row ds-reviewed-sub">
+            <input
+              type="checkbox"
+              checked={draft.include_ignored}
+              onChange={(e) => set('include_ignored', e.target.checked)}
+            />
+            <span>
+              also include <code>ignored_pattern</code> reviews — a person muted the pattern without
+              disputing the class, so those rows are labelled by the model&rsquo;s{' '}
+              <i>unconfirmed</i> prediction and the cut is recorded as mixed
+            </span>
+          </label>
+        ) : null}
         <div className="src-grid">
           <Field label="from" hint="local time; sent as UTC">
             <input type="datetime-local" value={draft.from} onChange={(e) => set('from', e.target.value)} />

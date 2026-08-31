@@ -17,6 +17,10 @@ are taken verbatim from the Go structs in `internal/storage/storage.go`,
   or `< 1` → the endpoint default. `> max` → clamped to max.
 - **Errors** — `text/plain` body, one line, via `http.Error`. Status codes are
   listed per route.
+- **Downloads** — three routes are attachments rather than JSON documents:
+  `GET /api/v1/datasets/{ref}/download`, and the two report routes with
+  `format=html`, which return `text/html; charset=utf-8`. All three set
+  `Content-Disposition: attachment`.
 - **Not under `/api`** — `GET /` (and any unmatched path) serves the static web
   UI: the embedded `web/index.html`, or a directory when `server.web_root` /
   `SYNAPSE_WEB_ROOT` is set.
@@ -40,6 +44,7 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "classifications": 128,
     "flows_evicted": 0,
     "classifications_evicted": 0,
+    "flow_versions_dropped": 0,
     "disagreements": 3,
     "driver": "memory"
   },
@@ -90,6 +95,12 @@ at `0`), and are all `0` before the first replay. The pipeline also writes a
 throttled warning to the daemon log on the first eviction of a run and every
 1000th after it.
 
+`storage.flow_versions_dropped` counts snapshot versions dropped because one flow
+exceeded `storage.FlowHistoryCap` (64 versions per flow) — a long-lived flow
+losing its *earliest* snapshots while keeping the most recent. It is distinct from
+`flows_evicted`, which is the global ring overwriting its oldest slot. See
+[`/api/v1/flows/{id}/snapshots`](#get-apiv1flowsidsnapshots).
+
 `storage.disagreements` is the cumulative number of stored classifications whose
 ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
 not just those still in the ring (PROJECT.md §12, §24).
@@ -134,11 +145,191 @@ Recent stored flows, newest first. Query: `limit` (default `100`, max `2000`).
 ### GET /api/v1/flows/{id}
 
 One flow by numeric ID — the most recent stored version (a later snapshot or the
-close record supersedes an earlier snapshot).
+close record supersedes an earlier snapshot). Earlier versions are available from
+[`/snapshots`](#get-apiv1flowsidsnapshots) below.
 
 - `200` → a single `FlowRecord` (shape as above)
 - `400` `bad flow id` — `{id}` is not a uint64
 - `404` `flow not found` — no such ID in the ring (it may have been evicted)
+
+### GET /api/v1/flows/{id}/explain
+
+Why this flow got the verdict it did, and what each model actually received
+(PROJECT.md §19.3, issue #38,
+[ADR 0025](adr/0025-flow-inspector-explanation-and-snapshots.md)). A sibling of
+the route above rather than part of it, so `FlowRecord`'s shape is unchanged.
+
+`200`:
+
+```json
+{
+  "flow_id": 1124,
+  "snapshot_index": 0,
+  "verdict_available": true,
+  "verdict": {
+    "ts": "2026-08-31T08:43:45.195387Z",
+    "sensor": "local",
+    "class": "brute_force",
+    "class_id": 3,
+    "score": 0.9217860648129587,
+    "disagreement": false
+  },
+  "models": [
+    {
+      "model_id": "heuristic-v1",
+      "role": "primary",
+      "class": "brute_force",
+      "class_id": 3,
+      "score": 0.9217860648129587,
+      "scores": ["…7 floats, traffic-classes-v1 order…"],
+      "loaded": true,
+      "input": {
+        "kind": "raw",
+        "note": "This model reads raw flow-features-v1 values — there is no transformation to show. …"
+      },
+      "explanation": {
+        "model_id": "heuristic-v1",
+        "role": "primary",
+        "kind": "rules",
+        "rules": [
+          {
+            "rule": "brute_force.auth_port_rounds",
+            "class": "brute_force",
+            "class_id": 3,
+            "detail": "repeated short small-packet request/response rounds against an authentication port",
+            "features": [
+              { "name": "destination_port", "value": 3306, "unit": "port" },
+              { "name": "packets_forward", "value": 7, "unit": "count" },
+              { "name": "packets_backward", "value": 6, "unit": "count" },
+              { "name": "tcp_fin_count", "value": 2, "unit": "count" },
+              { "name": "tcp_rst_count", "value": 0, "unit": "count" },
+              { "name": "flow_duration", "value": 0.000861, "unit": "seconds" },
+              { "name": "packet_size_mean", "value": 76.53846153846153, "unit": "bytes" }
+            ]
+          }
+        ],
+        "class_weights": [
+          { "class": "brute_force", "class_id": 3, "weight": 4.5 },
+          { "class": "normal", "class_id": 0, "weight": 3 }
+        ],
+        "normal_prior": 3,
+        "note": "Every rule listed is an exact account of the decision: …"
+      }
+    }
+  ],
+  "anomaly": { "available": false, "note": "Not available in this build. …" },
+  "baseline": { "available": false, "note": "Not available in this build. …" }
+}
+```
+
+- `400` `bad flow id` · `404` `flow not found`
+
+**`models[]` comes from the stored verdict**, not from whatever is loaded now —
+these are the models that actually scored this flow. `verdict_available` is
+`false` (and `models` empty) when the classification has aged out of the bounded
+ring; `notes[]` then says so. A model named in the verdict but no longer in the
+runtime gets `loaded: false`, and its inputs and rationale are not reconstructed.
+
+#### `input.kind` — normalized model inputs
+
+Normalization is a **per-model** concern (§8): the pipeline scores the *raw*
+vector, the heuristic reads it raw, and a trained model applies its own bundle's
+`normalizer.json`. There is no daemon-wide normalized vector, so this is reported
+per model:
+
+| `kind` | meaning |
+|:--|:--|
+| `raw` | the model scores raw values. `features` is **absent** — there is no transformation, and an identity table would imply a step that does not happen. |
+| `normalized` | `normalizer_id` (`standard` / `minmax` / `identity`) plus `features[]` of `{index, name, unit, raw, normalized}` for all 48, resolved from the **active** registry entry's bundle. |
+| `unknown` | the normalizer could not be resolved — no registry, nothing active, the model is unloaded, or the bundle is gone. Nothing is shown and `note` says why. |
+
+Resolved normalizers are cached per `<model id>@<content hash>` for the process
+lifetime, since `model.Load` reads and hashes `model.onnx`.
+
+#### `explanation.kind` — what the panel claims
+
+| `kind` | claim |
+|:--|:--|
+| `rules` | **exact.** Those rules, on those feature values, produced `class_weights`, which were soft-maxed into `scores`. `rules` and `class_weights` come from the same evaluation that produced the verdict, so they cannot drift from it. |
+| `unavailable` | **nothing**, beyond `note`. `rules` is `[]`. |
+
+`rules: []` with `kind: "rules"` is meaningful, not a loading state: no rule
+fired, and `normal_prior` is what decided the verdict. The note spells out that
+"nothing was detected" is *not* "checked against a baseline and found normal".
+
+There is deliberately **no per-rule contribution percentage**: several rules can
+feed one class and rule→probability runs through a softmax over class weights, so
+a per-rule share would be invented. Read `class_weights` for the real arithmetic.
+
+**A trained ONNX model always reports `unavailable`.** Exact attribution needs
+gradients or SHAP, and `internal/nn` exposes no weights; no linear proxy is
+offered, because a proxy drawn in an explanation panel reads as an explanation.
+The full `scores` vector is that model's complete output.
+
+#### There is no baseline column and no anomaly score
+
+`baseline` and `anomaly` are always `{available: false, note: …}` — two keys, **no
+value field**. §19.3's example shows a "Current vs Baseline" table, but
+behavioural baselines and anomaly scoring are Phase 7 (§13), exactly as
+`/api/v1/hosts` and the reports already report. A fabricated expected range would
+turn "never checked" into "checked and clean", so there is nothing here to plot.
+
+### GET /api/v1/flows/{id}/snapshots
+
+The retained version history of one flow: the periodic `snapshot` records a
+long-lived flow emits, then its terminal record, oldest first, each paired with
+the verdict computed from it (§19.3).
+
+`200`:
+
+```json
+{
+  "flow_id": 5,
+  "retained": 3,
+  "cap": 64,
+  "truncated": false,
+  "snapshotting": true,
+  "versions": [
+    {
+      "snapshot_index": 1,
+      "close_reason": "snapshot",
+      "terminal": false,
+      "first_seen": "2026-08-31T08:41:17.657338Z",
+      "last_seen": "2026-08-31T08:42:18.225Z",
+      "duration_sec": 60.568,
+      "fwd_packets": 1934,
+      "bwd_packets": 1473,
+      "fwd_bytes": 1996456,
+      "bwd_bytes": 956500,
+      "verdict": { "class": "normal", "class_id": 0, "score": 0.9611, "disagreement": false }
+    }
+  ],
+  "notes": ["Counters are cumulative, not per-interval: …"]
+}
+```
+
+- `400` `bad flow id` · `404` `flow not found`
+
+Counters are **cumulative**, not per-interval: each version reports the flow's
+totals as of its own `last_seen`.
+
+`snapshotting: false` means the flow closed inside one `snapshot_interval` and
+produced a single record — the common case, and not a gap.
+
+`verdict: null` means that version's classification aged out of the bounded ring.
+It never means "was not classified", and the response says so in `notes[]`.
+
+History is bounded twice. Globally by the flow ring, since every retained version
+occupies exactly one ring slot. Per flow by `storage.FlowHistoryCap` (**64**
+versions, reported as `cap`), oldest dropped first and counted in
+`status.storage.flow_versions_dropped`. `truncated: true` means the per-flow cap
+dropped this flow's earliest versions — detected exactly, since a flow's first
+snapshot carries `snapshot_index` 1.
+
+Note that `flow.Table` increments `snapshot_index` on the live flow, so a long
+flow's **terminal record inherits the last snapshot's index** and the final two
+rows may share one. `notes[]` mentions it; see
+[ADR 0025](adr/0025-flow-inspector-explanation-and-snapshots.md).
 
 ### GET /api/v1/classifications
 
@@ -364,6 +555,169 @@ classifications instead — a ring per host would be unbounded.
 the Phase 7 anomaly model, and the API reports its absence rather than returning a
 fabricated zero series.
 
+### GET /api/v1/reports/host/{ip}
+
+A **downloadable host investigation report** (PROJECT.md §19.3, §19.4; issue #66,
+[ADR 0023](adr/0023-downloadable-investigation-reports.md)): one self-contained
+artefact an operator can attach to a ticket or mail to a peer team.
+
+| Param | Meaning |
+|---|---|
+| `format` | `json` (default) or `html`. Anything else → `400 bad format`. |
+| `from`, `to` | Inclusive RFC3339 window bounds. `to` before `from` → `400`. Omit both for "whatever is retained". |
+| `bucket` | Timeline resolution: `1s`, `10s` (default) or `1m`. Anything else → `400 bad bucket`. |
+| `limit` | Notable-flow cap. Default **500**, clamped at **2000**. Non-positive → `400 bad limit`. |
+| `class`, `model`, `min_confidence`, `disagreement` | Exactly the `GET /api/v1/classifications` filter dialect, applied to the verdicts the report covers. The applied predicates are echoed back in `scope.filter`. |
+
+`{ip}` is re-parsed and canonicalised with `net/netip`: a non-literal is
+`400 bad host address`, and an address the aggregation index has never observed is
+`404 host not found`. `::ffff:10.0.0.1` and `10.0.0.1` address the same report.
+
+Both formats are served as a download:
+
+```
+Content-Type: application/json                 (format=json)
+Content-Type: text/html; charset=utf-8         (format=html)
+Content-Disposition: attachment; filename="synapseids-host-10.10.10.22-20260831T131500Z.json"
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+```
+
+The filename's scope segment is reduced to `[a-z0-9._-]`, so a packet-derived
+address can neither break out of the quoted header parameter nor produce a
+traversal when the browser writes the file (§28.11).
+
+**`format=json`** is the `report.Report` struct verbatim:
+
+```json
+{
+  "schema": "investigation-report-v1",
+  "generated_at": "2026-08-31T13:15:00Z",
+  "generator": {
+    "product": "synapseids",
+    "version": "0.1.0-dev",
+    "commit": "6afcf43",
+    "built_at": "2026-08-31T12:58:04Z",
+    "dirty": false,
+    "feature_schema": "flow-features-v1",
+    "output_schema": "traffic-classes-v1"
+  },
+  "scope": { "kind": "host", "host": "10.10.10.22", "unbounded": true },
+  "coverage": {
+    "partial": true,
+    "store_driver": "memory",
+    "flows_retained": 5000, "flows_evicted": 0,
+    "classifications_retained": 5000, "classifications_evicted": 1240,
+    "scan_limit": 5000, "scan_scanned": 5000, "scan_exhausted": true,
+    "oldest_retained": "2026-08-31T13:02:11Z",
+    "range_starts_before_retention": false,
+    "hosts_tracked": 27, "host_cap": 2048, "hosts_evicted": 0,
+    "key_cap": 128, "keys_pruned": 3072,
+    "observations_dropped": 0, "timeline_late": 0,
+    "notable_flow_cap": 500, "notable_candidates": 1041,
+    "notable_flows_truncated": true, "flow_records_missing": 0,
+    "baseline_available": false,
+    "anomaly_available": false
+  },
+  "notes": [
+    { "code": "baseline_unavailable", "level": "warning",
+      "text": "Behavioural baseline and anomaly scoring are not available in this build (Phase 7, …). Absence of an anomaly finding here does NOT mean the traffic was checked against a baseline and found normal." },
+    { "code": "partial_topn_pruned", "level": "warning",
+      "text": "PARTIAL VIEW: per-host top-N lists are capped at 128 distinct ports and peers and 3072 low-count keys have been pruned. …" }
+  ],
+  "summary": {
+    "classifications": 1124, "disagreements": 0, "non_normal": 1041,
+    "distinct_flows": 1124, "distinct_hosts": 6,
+    "first_verdict": "2026-08-31T13:02:11Z", "last_verdict": "2026-08-31T13:04:52Z"
+  },
+  "host": { "…": "the insight.Profile from GET /api/v1/hosts/{ip}" },
+  "classes":   [ { "class": "scan", "class_id": 1, "count": 1035, "share": 0.9209 } ],
+  "timeline":  { "source": "retained-classifications", "bucket_sec": 10, "buckets": [], "anomaly_available": false },
+  "top_peers": [ { "ip": "10.10.10.21", "flows": 1024 } ],
+  "top_ports": [ { "port": 3306, "flows": 61 } ],
+  "protocols": [ { "proto": "tcp", "flows": 1124 } ],
+  "models":    [ { "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary" } ],
+  "notable_flows": [
+    {
+      "flow_id": 8123,
+      "reasons": ["non_normal_verdict"],
+      "ts": "2026-08-31T13:04:52Z",
+      "proto": "tcp",
+      "initiator_ip": "10.10.10.22", "initiator_port": 45122,
+      "responder_ip": "10.10.10.21", "responder_port": 3306,
+      "class": "brute_force", "class_id": 3, "score": 0.918,
+      "disagreement": false,
+      "models": [ { "model_id": "heuristic-v1", "role": "primary", "class": "brute_force", "score": 0.918 } ],
+      "record_available": true,
+      "duration_sec": 0.41, "fwd_packets": 8, "bwd_packets": 6,
+      "fwd_bytes": 612, "bwd_bytes": 430, "close_reason": "fin",
+      "features": [ { "name": "flow_duration", "value": 0.41, "unit": "seconds" } ]
+    }
+  ],
+  "feature_legend": [ { "name": "flow_duration", "unit": "seconds", "calc": "last_seen - first_seen" } ]
+}
+```
+
+**Honesty contract.** `coverage` and `notes` come *before* the findings on
+purpose — the caveats are part of the finding.
+
+- `baseline_available` and `anomaly_available` are **always `false`** in this
+  build, and the `baseline_unavailable` note is **unconditional** while they are.
+  A report never contains an empty anomaly chart that could be read as "checked
+  and clean".
+- `coverage.partial` is `true` whenever any bound bit: the record ring evicted,
+  the 5000-verdict scan budget filled, the requested `from` predates the oldest
+  retained verdict, the host map evicted, a per-host top-N list was pruned,
+  observations were dropped, verdicts missed their timeline bucket, the
+  notable-flow list truncated, or a listed verdict outlived its flow record. Each
+  gets its own `notes[]` entry naming the limit and the counters.
+- A notable flow whose `FlowRecord` has been evicted carries
+  `record_available: false` and an **empty** `features` array — never a row of
+  zeroes.
+
+**Notable-flow selection** is every in-scope verdict that either disagreed across
+models or landed on a class other than `normal`, ranked disagreements-first, then
+by descending confidence, then newest, then flow ID. `feature_legend` documents
+the fixed named subset carried per flow — the raw values this build's classifier
+reads, **not** a ranked per-flow attribution (that is Phase 7).
+
+**`format=html`** returns one standalone document: a single inline `<style>` in
+the project's dark palette with a `@media print` block, tables for the flows,
+ports and peers, and CSS/inline-SVG bars for the class mix and the timeline.
+There is **no** external stylesheet, no CDN, no `<script>`, no `<img>` and no
+webfont, so it opens correctly from `file://` with no network access. It renders
+through Go's `html/template`, whose contextual escaping is what stops a crafted
+hostname, sensor name or filter string from injecting markup into a document an
+operator opens in a browser (§21, §28.11).
+
+### GET /api/v1/reports/range
+
+The same artefact for a time window rather than one host. Identical parameters
+minus the path address; `scope.kind` is `"range"`, there is no `host` block, and
+`top_peers` / `top_ports` / `protocols` are the busiest addresses, service ports
+and protocols in the window rather than one host's profile lists.
+
+```
+GET /api/v1/reports/range?from=2026-08-31T13:00:00Z&to=2026-08-31T13:10:00Z&class=scan&format=html
+Content-Disposition: attachment; filename="synapseids-range-20260831T131500Z.html"
+```
+
+An unfiltered range report's `timeline.source` is `insight-ring` — the
+incrementally maintained ring, exact within its own (wider) window. Any
+classification filter switches it to `retained-classifications`, bucketed on
+demand from the scanned verdicts, exactly like `GET /api/v1/timeline`.
+
+### Report routes are read-only but concentrate sensitive telemetry
+
+Both routes are read-only, so unlike model activation they carry no
+explicit-action gate. But a report is a **concentrated** dump: one request yields
+every observed peer of a host, its service ports, its volume, its verdicts and
+the raw feature values behind them, packaged as a file designed to be forwarded
+and re-opened elsewhere. They inherit the daemon's loopback-only default and the
+standing requirement for an authenticating proxy on any non-loopback listener
+(PROJECT.md §21) — and unlike a live API response, a leaked artefact cannot be
+un-shared. `TODO(#58)`.
+
 ### GET /api/v1/models
 
 The model registry view plus the classifiers currently loaded in the inference
@@ -581,7 +935,9 @@ dataset version on disk. Body is JSON, unknown fields rejected, 64 KiB cap.
     "min_confidence": 0.8,
     "disagreement": false,
     "limit": 5000,
-    "scan": 200000
+    "scan": 200000,
+    "reviewed": false,
+    "include_ignored": false
   }
 }
 ```
@@ -607,6 +963,39 @@ flows. `scan` is how many recent verdicts to walk (default 200 000, capped at
 A flow contributes exactly **one row**; where it was classified more than once
 (a long flow's periodic snapshots) the newest verdict wins. Rows are sorted by
 flow id, which is what makes `content_hash` reproducible.
+
+**`selection.reviewed` — a curated, human-labelled cut** (PROJECT.md §16, issue
+#42; ADR 0021). With `"reviewed": true` the rows come from the human review store
+instead of the classification ring, and the CSV `label` column carries the
+**operator's** label rather than the model's prediction. This is the only way
+`labeling_source` can become `human_review`; there is no request field that could
+assert it directly.
+
+Eligibility by review state:
+
+| state | included | label |
+|---|---|---|
+| `correct` | yes | the prediction the human confirmed |
+| `incorrect` | yes | the human's correction |
+| `ignored_pattern` | only with `"include_ignored": true` | the model's *unconfirmed* prediction |
+| `unsure` | no | — |
+| `unreviewed` | no | — |
+
+`labeling_source` is therefore `human_review` when every row's label was asserted
+by a person, and `human_review+model_prediction:<ids>` for a mixed cut (which
+also carries a `warnings` entry naming how many rows are unconfirmed). Every
+other guarantee is unchanged: immutability, `content_hash` over the CSV bytes,
+sort by flow id, `parent_datasets` lineage, and the zero-rows / one-class /
+`min_rows` refusals.
+
+In a reviewed cut the remaining predicates read differently, because there is no
+classification to match against: `class` filters on the **human** label, `model`
+and `min_confidence` on the *captured* prediction, `from`/`to` on the flow's
+last-seen time, and `proto`/`initiator_ip`/`responder_ip` on the stored flow
+record. `scan` is ignored (reviews are not a ring). `disagreement` combined with
+`reviewed` is a `400`: a review record keeps the model's class, score and id, not
+the ensemble's disagreement flag, so there is nothing to filter on.
+`include_ignored` without `reviewed` is also a `400`.
 
 Responses:
 
@@ -738,6 +1127,205 @@ derive and delete are written to `models.directory/audit.log` with
 live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
 (see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
 
+### GET /api/v1/review/queue
+
+The flows that still need a human, ranked (PROJECT.md §16; issues #42, #64. See
+[ADR 0021](adr/0021-human-review-loop-and-curated-datasets.md)).
+
+Query parameters:
+
+| Param | Meaning |
+|---|---|
+| `sort` | `uncertainty` \| `recent` (default) \| `disagreement`. An unknown value is a `400` echoing the valid set. |
+| `limit` | Page size, default 100, max 2000. Applied **after** ranking. |
+| `class`, `model`, `min_confidence`, `disagreement` | The shared classification filters — identical meaning to `GET /api/v1/classifications`, including `min_confidence > 1` read as a percentage. |
+
+```json
+{
+  "queue": [
+    {
+      "flow_id": 15,
+      "ts": "2026-08-31T08:41:39Z",
+      "sensor": "local",
+      "proto": "TCP",
+      "initiator_ip": "10.10.10.22", "initiator_port": 36862,
+      "responder_ip": "160.79.104.10", "responder_port": 443,
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "disagreement": false,
+      "scores": [0.1580, 0.0, 0.0, 0.0, 0.0, 0.8366, 0.0053],
+      "top1": "web_attack", "top2": "normal",
+      "margin": 0.6786, "uncertainty": 0.3214, "entropy": 0.245,
+      "scores_available": true,
+      "review_state": "unreviewed"
+    }
+  ],
+  "sort": "uncertainty",
+  "scanned": 1176,
+  "vocabulary": { "states": [ … ], "classes": [ … ], "sorts": [ … ] },
+  "ranking": {
+    "uncertainty": "1 - (p_top1 - p_top2) over the authoritative model's 7-class probability vector; larger = review sooner",
+    "entropy": "normalised Shannon entropy over the 7 classes, 0 (certain) .. 1 (uniform)"
+  }
+}
+```
+
+**The ranking.** `sort=uncertainty` is the active-learning order issue #64 asks
+for: **smallest margin first**, where `margin = p_top1 - p_top2` over the
+authoritative model's 7-class vector (normalised by its sum first, so an
+unnormalised vector cannot skew it). `uncertainty` is reported as `1 - margin` so
+bigger always means "review sooner". Normalised entropy is reported alongside.
+A uniform vector gives margin 0 / entropy 1 and ranks first; a one-hot vector
+gives margin 1 / entropy 0 and ranks last; a verdict with no usable vector
+reports `scores_available: false` and is treated as maximally uncertain rather
+than hidden. `top1`/`top2` name the two classes the margin is between, so the UI
+can show *why* a row is near the top. Ties break by newest first, then flow id.
+
+`sort=disagreement` puts `disagreement` flows first and falls back to the margin
+order inside each group. `sort=recent` is newest verdict first.
+
+**Membership.** A flow leaves the queue once its review state is terminal —
+`correct`, `incorrect` or `ignored_pattern`. **`unsure` stays in the queue** by
+design: "I don't know" is a request to come back to it, not an answer, and the
+note is carried forward on the queue item so the next reviewer sees it. One entry
+per flow; the newest verdict wins.
+
+- `400` — unknown `sort`, unknown `class`, bad `min_confidence`.
+- `503` — the daemon is running without a review store.
+
+### GET /api/v1/review
+
+Every stored review decision, most recently updated first.
+
+| Param | Meaning |
+|---|---|
+| `state` | Keep only this §16 state. An unknown value is a `400`. |
+| `limit` | Default 100, max 5000. |
+
+```json
+{
+  "reviews": [
+    {
+      "flow_id": 15,
+      "state": "incorrect",
+      "human_label": "scan",
+      "effective_label": "scan",
+      "predicted_class": "web_attack",
+      "predicted_score": 0.8366529128376532,
+      "model_id": "heuristic-v1",
+      "reviewer": "local",
+      "note": "nmap probe, not a web attack",
+      "created_at": "2026-08-31T13:32:52Z",
+      "updated_at": "2026-08-31T13:33:53Z",
+      "history": [
+        { "ts": "2026-08-31T13:32:52Z", "state": "correct", "reviewer": "local" }
+      ]
+    }
+  ],
+  "stats": { … },
+  "vocabulary": { … }
+}
+```
+
+`predicted_class`, `predicted_score` and `model_id` are the model's **original**
+claim, captured when the flow was first reviewed and never overwritten
+(PROJECT.md §16). `effective_label` is derived on every read: the confirmed
+prediction for `correct`, the correction for `incorrect`, `""` otherwise.
+`history` holds the superseded decisions, oldest first.
+
+### GET /api/v1/review/stats
+
+Counts per §16 state. Every one of the five keys is always present, zero
+included, so a UI strip does not change shape.
+
+```json
+{
+  "stats": {
+    "total": 40,
+    "by_state": { "unreviewed": 0, "correct": 36, "incorrect": 2, "unsure": 1, "ignored_pattern": 1 },
+    "terminal": 39,
+    "open": 1,
+    "labelled": 38,
+    "directory": "/var/lib/synapseids/review"
+  },
+  "vocabulary": { … }
+}
+```
+
+`terminal` is `correct + incorrect + ignored_pattern` (out of the queue), `open`
+is `unreviewed + unsure` (still in it), and `labelled` is
+`correct + incorrect` — the rows a curated dataset can use.
+
+### GET /api/v1/review/{flow_id}
+
+One review record, `{"review": {…}, "vocabulary": {…}}`.
+
+- `400` — the path segment is not a positive integer.
+- `404` — the flow has never been reviewed.
+- `503` — no review store wired.
+
+### PUT /api/v1/review/{flow_id}
+
+Record a decision, or correct an earlier one. `POST` is accepted identically.
+Body is JSON, unknown fields rejected, 16 KiB cap.
+
+```json
+{ "state": "incorrect", "human_label": "scan", "note": "nmap probe, not a web attack" }
+```
+
+| Field | Meaning |
+|---|---|
+| `state` | Required. One of `unreviewed`, `correct`, `incorrect`, `unsure`, `ignored_pattern`. |
+| `human_label` | A `traffic-classes-v1` class. **Required** for `incorrect`; optional for `correct` (and then must equal the prediction); must be empty for every other state. |
+| `note` | Optional free text, 4096 bytes max. |
+
+There is deliberately **no** `predicted_class`, `predicted_score` or `model_id`
+field, and there never will be. The daemon captures the model's prediction itself
+on the first review of a flow and copies it forward untouched on every later one;
+sending one of those keys is a `400 unknown field`. This is PROJECT.md §16's
+"always retain the original model prediction separately from the human-reviewed
+label", enforced structurally — see ADR 0021.
+
+Rules, and why:
+
+- `correct` means *the prediction is the label*, so the label is derived from the
+  prediction. Supplying one that differs is a `400` pointing at `incorrect`.
+- `incorrect` requires a label, and it must **differ** from the prediction —
+  saying the model was both wrong and right is a `400` pointing at `correct`.
+- `unsure`, `ignored_pattern` and `unreviewed` assert no class, so a label is a
+  `400`. `ignored_pattern` means "stop showing me this", not "this is class X".
+- Writing `unreviewed` is how an operator un-reviews a flow: the decision is
+  cleared and the flow returns to the queue, with the previous state preserved in
+  `history`.
+
+Responses:
+
+- `201` — first review of this flow; `{"review": {…}, "vocabulary": {…}}`.
+- `200` — a correction to an existing review. The previous decision is appended
+  to `history` and `updated_at` moves; `created_at` and the three `predicted_*`
+  values do not.
+- `400` — bad body, unknown field, unknown `state`, a `human_label` that is not a
+  `traffic-classes-v1` class (the error echoes the valid set), or a state/label
+  combination that contradicts itself.
+- `404` — the flow has no stored classification: it was never classified, or its
+  verdict has already been evicted from the bounded ring, so there is no
+  prediction to review against. You cannot review a flow the store has forgotten.
+- `503` — no review store wired.
+
+### Review write routes are state-changing and unauthenticated
+
+`PUT`/`POST /api/v1/review/{flow_id}` inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same as
+the dataset, replay, capture and model-activation routes. Every write appends a
+line to `models.directory/audit.log` with `subject_type: "review"` and the flow
+id as the subject, carrying both the human label and the prediction — this is the
+"human label changes" audit §21 asks for. Each write also publishes a
+`ReviewUpdated` envelope on the live bus with
+`{flow_id, state, human_label, predicted_class}`; `ReviewUpdated` was already a
+member of the frozen `event-envelope-v1` enum, so nothing about the event schema
+changed.
+
 ### GET /api/v1/training
 
 Every training run the daemon is mirroring, newest first. `?limit` caps the list
@@ -803,6 +1391,69 @@ need a bearer token or mTLS. `TrainingStarted` / `TrainingCompleted` /
 live bus: `event-envelope-v1`'s type enum is frozen and has no such member (see
 [ADR 0019](adr/0019-external-training-runs-reported-over-http.md)); the dashboard
 updates by polling `GET /api/v1/training/{id}` instead.
+
+### GET /api/v1/audit
+
+The tail of the append-only audit log (`models.directory/audit.log`), **newest
+record first** (PROJECT.md §21; issue #36,
+[ADR 0022](adr/0022-auditable-model-activation-workflow.md)). This is where an
+operator sees who activated which model and when, plus dataset edits and training
+history.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Records to return. Default `100`, clamped to `1000` (`max_limit`). Missing, non-numeric or `< 1` → the default. |
+| `subject_type` | Exact match on the subject kind: `model`, `dataset`, `training`, or any type added later. Not validated against a fixed set, so a new subject type is filterable as soon as it is first written. |
+| `subject` | Exact match on the subject id — a `model_id`, a `<id>@<version>` dataset ref, or a training-run id. |
+| `event` | Exact match on the event name, e.g. `ModelActivated`. |
+| `from`, `to` | Inclusive RFC3339 bounds on the record timestamp. A malformed value → `400 bad from` / `400 bad to`; `to` before `from` → `400 bad range`. |
+
+```json
+{
+  "records": [
+    { "ts": "2026-08-31T13:26:25Z", "event": "ModelDeactivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "restored heuristic as primary" },
+    { "ts": "2026-08-31T13:25:56Z", "event": "ModelActivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137…" },
+    { "ts": "2026-08-31T13:25:35Z", "event": "ModelRegistered", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137… status=registered" }
+  ],
+  "count": 3,
+  "limit": 100,
+  "max_limit": 1000,
+  "scan_bytes_cap": 8388608
+}
+```
+
+`model_id` is populated on `subject_type: "model"` lines and empty on every other
+subject type; `actor` is `"local"` until RBAC (issue #58). Events written today:
+`ModelRegistered` / `ModelActivated` / `ModelDeactivated`, `DatasetCreated` /
+`DatasetDerived` / `DatasetDeleted`, `TrainingStarted` / `TrainingCompleted` /
+`TrainingFailed`. Human label changes (§21's fourth category) arrive with the
+review loop, issue #42, as a new subject type — no change to this route.
+
+**The read is bounded twice.** `limit` caps the records returned, and the reader
+seeks backwards from the end of the file and never scans further back than
+`scan_bytes_cap` (8 MiB), so the cost of a request does not grow with the log. A
+record older than that window stays on disk but is not served here. A torn
+trailing line — a crash mid-append — is skipped, not fatal, and a log file that
+does not exist yet returns `{"records": []}`.
+
+- `200` — always, including an empty log.
+- `400` — a malformed `from` / `to`, or `to` before `from`.
+- `503` — no audit logger is wired (distinct from "nothing has happened yet").
+
+### The audit log is append-only, forever
+
+`GET` is the only method routed at `/api/v1/audit`; `POST`, `PATCH` and `DELETE`
+return `404` and always will. There is deliberately no way to edit or delete a
+record through the API, because an audit trail an operator can curate after the
+fact records nothing worth reading (PROJECT.md §21). The only writers are
+`internal/audit`'s appenders, driven by a state change that actually happened.
+Rotation, if it becomes necessary, is an operator-and-filesystem concern outside
+this API and should archive rather than truncate.
+
+Note that the trail is **more** sensitive than most of this API — it is a
+timeline of every model that went live and every dataset built or deleted — and
+it inherits the same loopback-by-default, unauthenticated posture as the rest of
+`/api/v1` until issue #58. Do not expose it beyond localhost before then.
 
 ### GET /api/v1/schemas/features
 

@@ -4,8 +4,8 @@
 // object per line, appended to a single file — so it adds no dependency and
 // never meaningfully blocks the API request that triggers it.
 //
-// Every line names a subject: a SubjectType ("model", "dataset") plus the
-// subject's identifier. ModelID is kept alongside Subject for model lines so
+// Every line names a subject: a SubjectType ("model", "dataset", "training",
+// "review") plus the subject's identifier. ModelID is kept alongside Subject for model lines so
 // anything already reading the log by model_id keeps working.
 //
 // This file is the durable record. The matching ModelRegistered /
@@ -50,12 +50,21 @@ const (
 	EventTrainingFailed    = "TrainingFailed"
 )
 
+// EventReviewUpdated is the human-label audit event (PROJECT.md §16, §21:
+// "maintain an audit log for … human label changes"; §28.15). The subject is the
+// reviewed flow id. Unlike the dataset and training events this one *also* has a
+// live envelope — ReviewUpdated is already a member of the frozen
+// event-envelope-v1 enum — but the bus drops under backpressure, so this log
+// remains the durable record of who changed a label to what.
+const EventReviewUpdated = "ReviewUpdated"
+
 // Subject types. Every record names what kind of thing it is about, so one log
-// can carry model, dataset and training-run lifecycle without ambiguity.
+// can carry model, dataset, training-run and review lifecycle without ambiguity.
 const (
 	SubjectModel    = "model"
 	SubjectDataset  = "dataset"
 	SubjectTraining = "training"
+	SubjectReview   = "review"
 )
 
 // ActorLocal is the only actor value for now: the daemon has no authentication

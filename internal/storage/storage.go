@@ -70,6 +70,11 @@ type Stats struct {
 	Classifications int    `json:"classifications"`
 	FlowsEvicted    uint64 `json:"flows_evicted"`
 	ClassEvicted    uint64 `json:"classifications_evicted"`
+	// FlowVersionsDropped counts snapshot versions dropped because a single flow
+	// exceeded FlowHistoryCap — a long-lived flow losing its *earliest*
+	// snapshots while still retaining the most recent ones. Distinct from
+	// FlowsEvicted, which is the global ring overwriting its oldest slot.
+	FlowVersionsDropped uint64 `json:"flow_versions_dropped"`
 	// Disagreements is the cumulative number of stored classifications whose
 	// ensemble Result.Disagreement was set (PROJECT.md §12, §24: model
 	// disagreement is an instrumented signal). It counts every disagreeing
@@ -83,8 +88,15 @@ type Store interface {
 	PutFlow(FlowRecord)
 	PutClassification(Classification)
 	Flow(id uint64) (FlowRecord, bool)
-	RecentFlows(limit int) []FlowRecord
+	// FlowHistory returns every retained version of one flow — the periodic
+	// ReasonSnapshot records a long-lived flow emits as it runs, followed by its
+	// terminal record — oldest first. It is how the Flow Inspector shows a
+	// flow's counters and verdict evolving (PROJECT.md §19.3). A flow that never
+	// snapshotted returns exactly one element; an unknown or fully evicted flow
+	// returns nil.
+	FlowHistory(id uint64) []FlowRecord
 	RecentClassifications(limit int) []Classification
+	RecentFlows(limit int) []FlowRecord
 	Stats() Stats
 	Close() error
 }

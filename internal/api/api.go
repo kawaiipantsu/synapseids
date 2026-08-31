@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/audit"
@@ -25,6 +26,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
@@ -103,8 +105,16 @@ type Server struct {
 	sensors SensorStatusProvider
 	insight *insight.Index
 	tr      *training.Store
+	rv      *review.Store
 	hub     *wshub.Hub
 	start   time.Time
+
+	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
+	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
+	// model.onnx, so it must not run per request; a registered bundle is
+	// immutable, which makes the content hash a sound key. See flows.go.
+	normMu    sync.Mutex
+	normCache map[string]cachedNormalizer
 }
 
 // New builds a Server. reg may be nil (the /api/v1/models* routes then report an
@@ -117,13 +127,15 @@ type Server struct {
 // /api/v1/timeline an empty series — *insight.Index is nil-safe on every read);
 // tr may be nil (GET /api/v1/training then returns an empty list and the
 // trainer-facing POST routes return 503); sp may be nil (/api/v1/sensors then
-// returns an empty list and /{id} a 404).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, sp SensorStatusProvider) *Server {
+// returns an empty list and /{id} a 404); rv may be nil (every /api/v1/review*
+// route then returns 503).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index, tr *training.Store, sp SensorStatusProvider, rv *review.Store) *Server {
 	return &Server{
 		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, ds: ds, rc: rc, fs: fs, cap: cp,
 		sensors: sp,
 		insight: ix,
 		tr:      tr,
+		rv:      rv,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
 		start:   time.Now(),
 	}
@@ -135,12 +147,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/v1/flows/{id}", s.handleFlow)
+	mux.HandleFunc("GET /api/v1/flows/{id}/explain", s.handleFlowExplain)
+	mux.HandleFunc("GET /api/v1/flows/{id}/snapshots", s.handleFlowSnapshots)
 	mux.HandleFunc("GET /api/v1/classifications", s.handleClassifications)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/classifications", s.handleHostClassifications)
 	mux.HandleFunc("GET /api/v1/timeline", s.handleTimeline)
+	mux.HandleFunc("GET /api/v1/reports/host/{ip}", s.handleHostReport)
+	mux.HandleFunc("GET /api/v1/reports/range", s.handleRangeReport)
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
 	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
@@ -152,11 +168,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/datasets/{ref}", s.handleDatasetDelete)
 	mux.HandleFunc("GET /api/v1/datasets/{ref}/download", s.handleDatasetDownload)
 	mux.HandleFunc("GET /api/v1/datasets/{ref}/stats", s.handleDatasetStats)
+	mux.HandleFunc("GET /api/v1/review/queue", s.handleReviewQueue)
+	mux.HandleFunc("GET /api/v1/review/stats", s.handleReviewStats)
+	mux.HandleFunc("GET /api/v1/review", s.handleReviews)
+	mux.HandleFunc("GET /api/v1/review/{flow_id}", s.handleReview)
+	mux.HandleFunc("PUT /api/v1/review/{flow_id}", s.handleReviewWrite)
+	mux.HandleFunc("POST /api/v1/review/{flow_id}", s.handleReviewWrite)
 	mux.HandleFunc("GET /api/v1/training", s.handleTrainings)
 	mux.HandleFunc("POST /api/v1/training", s.handleTrainingCreate)
 	mux.HandleFunc("GET /api/v1/training/{id}", s.handleTraining)
 	mux.HandleFunc("POST /api/v1/training/{id}/progress", s.handleTrainingProgress)
 	mux.HandleFunc("POST /api/v1/training/{id}/fail", s.handleTrainingFail)
+	// Read-only by design: the audit log is append-only forever, so there is
+	// no DELETE or PATCH counterpart to this route (PROJECT.md §21).
+	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)

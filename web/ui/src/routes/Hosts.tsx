@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { getHosts } from '../api/client'
+import { getHosts, hostReportURL } from '../api/client'
 import type { HostProfile } from '../api/types'
 import { useStream } from '../api/stream'
 import { classColor } from '../lib/classes'
@@ -59,6 +59,25 @@ function PortList({ host }: { host: HostProfile }) {
         </span>
       ))}
     </>
+  )
+}
+
+/**
+ * Per-row report link (issue #66, ADR 0023). No range or filter here — a list
+ * row has no framed window, so the report covers whatever the daemon retains and
+ * says so in its own scope block. stopPropagation keeps the click off the row's
+ * navigate-to-investigate handler.
+ */
+function ReportCell({ ip }: { ip: string }) {
+  return (
+    <a
+      className="rep-dl-btn"
+      href={hostReportURL(ip, { format: 'html' })}
+      onClick={(e) => e.stopPropagation()}
+      title={`download a standalone HTML investigation report for ${ip}`}
+    >
+      report
+    </a>
   )
 }
 
@@ -178,6 +197,7 @@ export function Hosts() {
               <th>top ports</th>
               <th>class mix</th>
               <th className="num">disagree</th>
+              <th>report</th>
             </tr>
           </thead>
           <tbody>
@@ -204,6 +224,9 @@ export function Hosts() {
                   <ClassMix host={h} />
                 </td>
                 <td className="num">{h.disagreements > 0 ? fmtInt(h.disagreements) : '—'}</td>
+                <td>
+                  <ReportCell ip={h.ip} />
+                </td>
               </tr>
             ))}
           </tbody>

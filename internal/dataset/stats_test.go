@@ -350,7 +350,7 @@ func TestStatsManagerCachesByHash(t *testing.T) {
 			Result: storageResult(id, labels[i]),
 		})
 	}
-	m := Open(t.TempDir(), st, func(string, ...any) {})
+	m := Open(t.TempDir(), st, nil, func(string, ...any) {})
 	d, err := m.Create(Spec{ID: "lab/explore", Version: "v1"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)

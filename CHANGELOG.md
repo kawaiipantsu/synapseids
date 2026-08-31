@@ -9,6 +9,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Flow Inspector explains the verdict, and shows a flow's history** (issue
+  #38, EPIC Phase 5;
+  [ADR 0025](docs/adr/0025-flow-inspector-explanation-and-snapshots.md)). The last
+  four §19.3 items that were still labelled stubs in the drawer — normalized model
+  inputs, historical snapshots, the anomaly score, and the explanation panel —
+  are now either built or honestly labelled.
+  - **`GET /api/v1/flows/{id}/explain`** — why this flow got this verdict.
+    `models[]` is built from the **stored** classification, i.e. the models that
+    actually scored it, not whatever is loaded now; a model since swapped out is
+    reported `loaded: false` with its verdict intact and its rationale not
+    reconstructed.
+  - **The heuristic explanation is exact, not an approximation.**
+    `Heuristic.Classify` and the new `Heuristic.Explain` share one private
+    `evaluate(v, explain bool)`, so the fired-rule list is produced by the *same*
+    evaluation that produced the verdict and cannot drift from it. Each
+    `FiredRule` carries a stable id (`scan.unanswered_syn`,
+    `brute_force.auth_port_rounds`, …), a human sentence, and **the feature values
+    its condition compared**, each with its `flow-features-v1` name and unit. This
+    turns `SCAN 99.3%` into "because `tcp_syn_count=1`, `packets_backward=0`,
+    `flow_duration=0s`". `class_weights` reports the real pre-softmax weights, and
+    a test asserts they soft-max back to `Classify`'s scores bit-for-bit.
+  - **No per-feature attribution for trained models, stated plainly.**
+    `*ONNXModel` deliberately does not implement the new `inference.Explainer`:
+    exact attribution needs gradients or SHAP, `internal/nn` exposes no weights,
+    and a first-layer linear proxy rendered in a panel captioned "explanation"
+    reads as an explanation regardless of the caption. The API returns
+    `kind: "unavailable"` with the reason, pointing at the full class-probability
+    vector as that model's complete output. A test asserts `*ONNXModel` is *not*
+    an `Explainer`, so it cannot acquire a fake one by accident.
+  - **Normalized inputs are per model, from that model's own bundle** — because
+    normalization is a per-model concern and the pipeline scores the *raw* vector
+    (PROJECT.md §8). `kind: "raw"` for the heuristic says "this model reads raw
+    values" in words rather than rendering an identity table that would imply a
+    step which does not happen; `kind: "normalized"` carries raw→normalized pairs
+    for all 48 features, resolved through `registry.Active()` → `model.Load` →
+    `Bundle.Normalizer()` and cached per `<model id>@<content hash>` (a registered
+    bundle is immutable, and `model.Load` hashes `model.onnx`); `kind: "unknown"`
+    shows nothing and says why.
+  - **`GET /api/v1/flows/{id}/snapshots`** — the retained version history of one
+    flow, oldest first, each version paired with the verdict computed from it via
+    an exact `Classification.TS` ↔ `FlowRecord.LastSeen` join. A version whose
+    verdict aged out reports `verdict: null` and the response calls it a retention
+    gap, never "not classified".
+  - **`storage.Store` gains `FlowHistory(id)`, and `Mem` stops discarding
+    snapshots.** `flow.Table` has always emitted a `ReasonSnapshot` record per
+    interval for a long-lived flow and `pipeline` has always stored every one, but
+    `Mem.byID` was one entry per flow id — last write wins — so nothing could
+    address earlier versions. History is now bounded twice: globally by the flow
+    ring (each retained version owns exactly one live ring slot, so total versions
+    can never exceed `max_flows` and memory is unchanged) and per flow by
+    `storage.FlowHistoryCap` (**64**, oldest dropped first, counted in the new
+    `status.storage.flow_versions_dropped`). On a 28 MB real capture that is 1176
+    addressable flow versions where it was 1124.
+  - **No baseline column, and no anomaly number.** §19.3's example shows a
+    "Current vs Baseline" table, but behavioural baselines and anomaly scoring are
+    Phase 7 (§13). Both are reported as `{available: false, note}` — two keys and
+    **no value field** — matching how `insight` and the reports already label the
+    gap. A fabricated expected range would turn "never checked" into "checked and
+    clean". A test asserts on the raw JSON that neither object carries anything
+    else and that `anomaly_score` / `baseline_value` / `baseline_range` /
+    `training_baseline` appear nowhere in the response. The anomaly score also
+    gets its own labelled section in the drawer, which it previously lacked
+    entirely — it had been folded into the explanation stub.
+  - **SPA** — the three stubs in the Flow Inspector drawer are replaced by a
+    per-model normalized-inputs view, a snapshot timeline with a verdict per row,
+    and the explanation panel; the long tables collapse behind `<details>` since
+    the drawer was already dense, while the fired rules stay open. "No rule fired"
+    is boxed as a finding rather than left as dim text that reads like a failed
+    load. Own commented blocks at the end of `types.ts` and `styles.css`.
+
+### Fixed
+
+- **A spurious `404` from `GET /api/v1/flows/{id}` for a long-lived flow that was
+  still retained** (found while building #38). `flow.Table` increments
+  `SnapshotIndex` on the *live* entry, so a flow's terminal record inherits the
+  last snapshot's index. `storage.Mem` identified a stored version by
+  `(flow id, SnapshotIndex)` and deleted its `byID` entry when an *older*
+  duplicate-index snapshot was overwritten in the ring — dropping a flow whose
+  terminal record was still present. Versions are now keyed by an internal
+  monotonic sequence number, which cannot collide. Regression-tested.
+  - Note that `SnapshotIndex` still does not reset to `0` on close, contrary to
+    the frozen schema text for feature 47. Nothing depends on its uniqueness any
+    more and `/snapshots` surfaces the duplicate in a note, but feature 47 feeds
+    the golden vectors and every dataset CSV, so correcting it is a separate
+    reviewed change rather than a side effect of this one.
 - **Sensor modes `raw` / `flow` / `feature`, and SYNPOIP v2 record frames**
   (issue #45, EPIC Phase 6;
   [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).
@@ -90,6 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     advertises `max_version: 1` and a record-mode sensor it dials is cleanly
     rejected — and records are one per frame rather than batched. Both tracked
     for #46.
+
 
 - **The daemon-side SYNPOIP collector, and real sensor identity** (issues #43 and
   #103, EPIC Phase 6;
@@ -176,6 +262,204 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `contrib/config/synapse.annotated.md`, and PROTOCOL.md §6's "not wired yet"
     paragraph retired. Still open: sensor `flow` / `feature` modes (#45) and the
     sensor-topology view (#46).
+- **Model activation workflow + audit log** (issue #36, EPIC Phase 4;
+  [ADR 0022](docs/adr/0022-auditable-model-activation-workflow.md)). The audit
+  log was write-only and `ML ▸ Models` was a placeholder, so the one action
+  PROJECT.md §28.10 singles out as requiring a deliberate human step had no
+  operator surface and left no inspectable trail. Both are now real.
+  - **`internal/audit` gained a read path.** `Tail(n, Filter)` returns records
+    **newest first**, seeking to EOF and scanning backwards in 64 KiB chunks.
+    Bounded twice: `MaxTail` caps the result at 1000 records (`DefaultTail` 100),
+    and `MaxScanBytes` stops the scan 8 MiB back from EOF, so the whole file is
+    never read and request cost does not grow with the log. A torn trailing line
+    from a crash mid-append is skipped, not fatal; a log file that does not exist
+    yet reads as empty, not an error.
+  - `GET /api/v1/audit` — read-only, `limit` (default 100, max 1000),
+    `subject_type=`, `subject=`, `event=`, `from=`/`to=` (RFC3339, inclusive),
+    reusing the existing `limitParam` / `parseTimeRange` helpers. The response
+    echoes `limit`, `max_limit` and `scan_bytes_cap` so a client can say what it
+    is not showing.
+  - **Append-only forever.** `GET` is the only method routed at `/api/v1/audit`;
+    `POST`/`PATCH`/`DELETE` return `404` and always will. An audit trail an
+    operator can curate after the fact records nothing worth reading (§21). The
+    trail is sensitive operational history and inherits the loopback-by-default,
+    unauthenticated posture of the rest of the API until issue #58.
+  - **`Filter` is generic over subject types.** `subject_type` is compared as an
+    opaque string and never validated against an enum, so §21's fourth category
+    — human label changes, arriving as a `review` subject type with issue #42 —
+    becomes readable and filterable the moment it is first written, with no
+    change to the reader, the route or the UI's filter chips (which derive
+    themselves from the records).
+  - **SPA:** `ML ▸ Models` replaces the "Planned — Phase 2" placeholder with the
+    §19.12 field set — registry table (status pill, parameter count, artifact
+    size, short content hash, live-in-runtime), detail pane with schemas and I/O
+    sizes, a read-only architecture breakdown, training dataset ids, metrics, the
+    confusion matrix, lineage as a tree (§15), the per-model audit trail, and a
+    global audit view with a chip per subject type. `architecture` and `metrics`
+    are bundle pass-throughs and are parsed defensively — an unreported metric
+    reads as missing, never as zero.
+  - **Activation is confirmation-gated (§28.10).** **Activate** opens a
+    confirmation that names the model, states plainly that it will become the
+    primary classifier for *all live traffic*, names what it replaces, lists the
+    content hash / parameter count / artifact size / provenance, and warns that
+    the action is audited and does not survive a restart. **Deactivate** confirms
+    the heuristic will be restored. A `409` (bundle no longer loads, no longer
+    validates, or cannot be compiled) is surfaced **verbatim**. There is
+    deliberately no "auto-activate on register", no "activate newest" and no bulk
+    activate — §28.10 forbids the mechanism, so the UI offers no switch that
+    could become one.
+
+- **Human review queue and curated datasets** (issues #42 and #64, EPIC Phase 5;
+  [ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md)). The
+  `capture → classification → human review → curated dataset` half of
+  PROJECT.md §16's lifecycle now exists end to end. #64's "active-learning review
+  queue" is folded in and closed here as the queue's `uncertainty` ranking. No
+  `event-envelope-v1` change — `ReviewUpdated` was already a member of the frozen
+  enum (§28.5-6).
+  - **The §16 invariant is enforced structurally, not by convention.** "Always
+    retain the original model prediction separately from the human-reviewed
+    label" is a safety property, so the prediction lives in an *unexported*
+    `prediction` value inside `review.Review` with no exported constructor and no
+    setter, and the only mutator — `Put(flowID, state, label, note)` — has no
+    prediction parameter for a caller to fill. The store captures the verdict
+    itself, once, on a flow's first review, and copies it forward untouched
+    afterwards. On the wire, `predicted_class` / `predicted_score` / `model_id`
+    are read-only and the write body rejects them as unknown fields (`400`). A
+    correction can add information; it can never destroy the model's claim.
+  - `internal/review` — the review store. One JSON file per reviewed flow under
+    the new `review.directory` (atomic temp-file+rename, corrupt-file tolerant,
+    loaded on start), fronted by an RWMutex-guarded memory index, mirroring
+    `internal/training`. A record carries the five §16 states
+    (`unreviewed` | `correct` | `incorrect` | `unsure` | `ignored_pattern`), the
+    human label, the frozen prediction, `reviewer` (`"local"` until #58), a note,
+    timestamps and a `history` of superseded decisions so a correction is
+    traceable. Deliberately **not capped**: reviews are human-paced, and
+    hand-labelled ground truth is the most expensive data in the system.
+  - **Per-state rules,** because a state either asserts a class or it does not.
+    `correct` derives its label from the prediction (a differing `human_label` is
+    a `400` pointing at `incorrect`); `incorrect` **requires** a
+    `traffic-classes-v1` class and it must differ from the prediction;
+    `unsure`, `ignored_pattern` and `unreviewed` must carry no label —
+    `ignored_pattern` means "stop showing me this", not "this is class X".
+    Writing `unreviewed` un-reviews a flow and returns it to the queue with its
+    history intact.
+  - **Active-learning ranking (#64).** `GET /api/v1/review/queue?sort=uncertainty`
+    orders by **smallest margin** (`p_top1 - p_top2` over the authoritative
+    model's 7-class vector, normalised by its sum first), reported as
+    `uncertainty = 1 - margin` with normalised Shannon entropy and the two
+    contending class names alongside — so the flows the model is least able to
+    settle reach a human first, and the UI can say why. A uniform vector ranks
+    first (margin 0, entropy 1); a verdict with no usable vector is flagged
+    `scores_available: false` and treated as maximally uncertain rather than
+    hidden. `sort=disagreement` leads with ensemble disagreements;
+    `sort=recent` is the default. A flow leaves the queue on a terminal decision
+    (`correct` / `incorrect` / `ignored_pattern`); **`unsure` stays in**, with its
+    note carried forward.
+  - REST `internal/api/review.go`: `GET /api/v1/review/queue`,
+    `GET /api/v1/review` (filter by `state`), `GET /api/v1/review/stats` (counts
+    per state), `GET /api/v1/review/{flow_id}`, and
+    `PUT`/`POST /api/v1/review/{flow_id}` (`201` first review, `200` correction).
+    `400` on an unknown state or a non-class label — the error echoes the valid
+    set; `404` when the flow has no stored classification, because you cannot
+    review a verdict the bounded ring has already evicted. The queue reuses the
+    shared `parseClassFilters`, so `class` / `model` / `min_confidence` /
+    `disagreement` mean exactly what they mean on `/api/v1/classifications`. The
+    write routes are loopback-only and unauthenticated for now (`TODO(#58)`).
+  - **Curated datasets — the `human_review` gate is open.** `dataset.Selection`
+    gains `reviewed`: the rows come from the review store and the CSV `label`
+    column carries the **operator's** label, so `labeling_source` becomes
+    `human_review`. Only terminal, class-asserting reviews are eligible
+    (`correct` → the confirmed prediction, `incorrect` → the correction);
+    `unsure` and `ignored_pattern` are excluded, the latter opt-in-able via
+    `include_ignored`, which labels those rows with the model's *unconfirmed*
+    prediction and honestly records the cut as
+    `human_review+model_prediction:<ids>` with a warning. Both build paths share
+    one tail, so a curated cut keeps every existing guarantee: immutability, the
+    content hash over the CSV bytes, deterministic row order, `parent_datasets`
+    lineage, and the zero-rows / one-class / 20-row refusals. `disagreement`
+    combined with `reviewed` is refused rather than silently ignored.
+  - **Config:** `review.directory` (default `./data/review`), overridable with
+    `SYNAPSE_REVIEW_DIR`; an empty value is rejected at load.
+  - **Audit and events:** every write appends one
+    `{subject_type:"review", subject:"<flow id>", event:"ReviewUpdated"}` line to
+    `audit.log` — the "human label changes" record PROJECT.md §21 asks for —
+    carrying both the human label and the prediction, and publishes a
+    `ReviewUpdated` envelope on the live bus.
+  - **SPA:** a new `LIVE ▸ Review` view (`#/review`) with the sort selector, a
+    per-state stats strip, and one row per queued flow showing the tuple, the
+    model's prediction with its confidence, the margin/entropy read-out when
+    sorting by uncertainty, and controls for all five states plus a class picker
+    and a note field. The model's prediction sits **next to** the human label at
+    all times and never replaces it — the invariant made visible. A
+    "create curated dataset" action prefills the ML ▸ Datasets form with a
+    `reviewed` selection, and that form gained `reviewed` / `include_ignored`
+    checkboxes. The dataset honesty banner and the `labeling_source` badge now
+    tell the truth for all three cases, and the **Flow Inspector**'s
+    human-review section (§19.3) is live instead of a Phase-2 stub.
+    `#/detections` is untouched — it remains a "Planned — Phase 5" placeholder,
+    since nothing emits `AlertCreated` yet.
+
+- **Downloadable investigation reports** (issue #66, EPIC Phase 5;
+  [ADR 0023](docs/adr/0023-downloadable-investigation-reports.md)). An operator
+  can now hand an investigation to someone else as one self-contained artefact —
+  a ticket attachment, an e-mail to a peer team, the record next to an incident
+  write-up (PROJECT.md §19.3, §19.4).
+  - `GET /api/v1/reports/host/{ip}?format=json|html&from=&to=` — a host
+    investigation report. `{ip}` is re-parsed with `net/netip` (`400` on a
+    non-literal, `404` on an unobserved address).
+  - `GET /api/v1/reports/range?from=&to=&format=&class=…` — the same artefact for
+    a time window. Both routes reuse the `/api/v1/classifications` filter dialect
+    (`class`, `model`, `min_confidence`, `disagreement`) verbatim and echo the
+    applied predicates back in the report.
+  - Both formats are downloads: `Content-Disposition: attachment; filename=…`,
+    plus `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. The
+    filename's scope segment is reduced to `[a-z0-9._-]`, so a packet-derived
+    address can neither escape the quoted header parameter nor produce a
+    traversal when the browser writes the file.
+  - **New package `internal/report`.** Builds the artefact from live state
+    (`storage.Store`, `internal/insight`, `inference.Runtime`) and renders it.
+    Deterministic given the same state, so its content is unit-testable. It
+    carries the generation time and the exact daemon version/commit/build date,
+    the scope, the host profile, the in-scope class breakdown, the timeline, top
+    peers/ports/protocols, the active model set, and the **notable flows** —
+    every verdict that disagreed across models or was not `normal` — each with
+    its tuple, timing, volume, **per-model outputs** and the named raw
+    `flow-features-v1` values behind it, plus a legend so those values are
+    interpretable offline.
+  - **Honesty rules, enforced structurally.** `coverage` (machine-readable) and
+    `notes` (prose) come before the findings.
+    - Behavioural baselines and anomaly scores are Phase 7: the report always
+      carries an explicit "not available in this build" warning stating that the
+      absence of an anomaly finding does **not** mean the traffic was checked
+      against a baseline and found normal. No empty chart that reads as clean.
+    - `storage.Mem` evicts and `insight`'s host map and top-N lists are capped, so
+      the report reads their eviction/prune counters and says **"PARTIAL VIEW"**
+      naming the limit whenever one bit: store eviction, the 5000-verdict scan
+      budget filling, a window starting before retention, host eviction, a pruned
+      top-N, dropped observations, late timeline samples, or a verdict that
+      outlived its flow record (marked per flow, never zeroed).
+    - The notable-flow table is capped at **500** (`limit=`, max 2000) and says
+      **"TRUNCATED"** with both counts when the cap bites.
+  - **HTML output is one standalone file** rendered with `html/template`: a single
+    inline `<style>` in the project's dark palette plus a `@media print` block, no
+    external stylesheet, no CDN, no `<script>`, no `<img>`, no webfont — it opens
+    from `file://` with no network access. `html/template` is the injection
+    control, not a style choice: every value in a report is packet- or
+    request-derived and therefore untrusted (§21, §28.11). A test feeds eleven
+    hostile payloads (`<script>alert(1)</script>`,
+    `"><img src=x onerror=alert(1)>`, CSS/CRLF/`<title>` breakouts and more)
+    through the host address, peer address, protocol, sensor, close reason, model
+    ID, class name and filter echo, and asserts a tag-level scan of the output
+    finds no element or attribute outside an allowlist; a negative control renders
+    the same template through `text/template` and asserts the payload *does*
+    survive there.
+  - **SPA:** a **Download report** control (HTML / JSON) on
+    `#/investigate?host=<ip>` that carries the currently-brushed timeline range
+    and the active class/disagreement filters, and a per-row `report` link on
+    `#/hosts`. Rendering stays server-side; both are plain `<a href>`
+    navigations, so the browser's own download path is used. The client grows
+    ~0.35 KB gzip.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature
@@ -981,6 +1265,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three audit-coverage gaps in the model lifecycle** (issue #36). Each made the
+  log disagree with reality, and each was only visible once the log could be read
+  back as a sequence of state changes:
+  - Activating B while A was active demoted A in the registry but wrote no record
+    under A, so A's most recent audit line still said *activated* while it was
+    not live. `POST /api/v1/models/{id}/activate` now writes A's implicit
+    `ModelDeactivated` under A's own subject, ordered before B's activation.
+  - A model active at shutdown is reconciled to `deactivated` on restart — a real
+    state change that was never audited. `registry.Reconciled()` now reports the
+    demoted IDs and `cmd/synapsed` audits each; the reconciliation is persisted,
+    so this is written once rather than on every boot.
+  - `ModelRegistered` was appended on every boot for bundles the registry already
+    knew (`Register` is idempotent), burying real changes in duplicates. The
+    startup sweep now audits only a genuinely new registration.
+  - Smaller honesty fix: deactivating an entry that was never the live primary is
+    a legal no-op, and its record no longer claims it "restored the heuristic".
+- The stale `getModels()` client helper claimed `Promise<ModelInfo[]>` while
+  `GET /api/v1/models` returns `{models, runtime}`. It had no call sites; it is
+  now correctly typed and used by `ML ▸ Models`.
 - `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
   every 256 packets. The unpaced emit loop previously had no blocking point, so
   on a single-CPU host a long replay could monopolise the Go scheduler and delay

@@ -307,6 +307,13 @@ export interface DatasetSelection {
   disagreement?: boolean
   limit?: number
   scan?: number
+  /** Cut from the human review store, using the operator's label instead of the
+   *  model's prediction (§16, issue #42). The only way labeling_source can say
+   *  "human_review". */
+  reviewed?: boolean
+  /** With `reviewed`, also include ignored_pattern reviews — labelled with the
+   *  model's *unconfirmed* prediction, so the cut becomes honestly mixed. */
+  include_ignored?: boolean
 }
 
 /** dataset.Dataset — the §14 manifest plus where it lives on disk. */
@@ -583,4 +590,566 @@ export interface TrainingList {
   runs: TrainingRun[]
   history_cap: number
   stale_after_seconds: number
+}
+
+// ============================================================================
+// ML ▸ Model Registry, explicit activation and the audit trail
+// (PROJECT.md §19.12, §15, §21, §28.10; issue #36, ADR 0022)
+// ----------------------------------------------------------------------------
+// Mirrors internal/registry.Entry (plus the api modelView `runtime` block) and
+// internal/audit.Record. Two sibling branches also edit this file, so this
+// block is deliberately self-contained and appended at the end — add your own
+// block below rather than editing this one.
+//
+// `architecture` and `metrics` are typed `unknown` on purpose: both are
+// pass-throughs from a model bundle's own JSON (metrics is a json.RawMessage on
+// the Go side), so the view parses them defensively rather than trusting a
+// shape the daemon never validated field-by-field.
+// ============================================================================
+
+/** registry.Status. Activation never survives a restart, so `active` always
+ *  means "live in inference.Runtime right now". */
+export type ModelStatus = 'registered' | 'active' | 'deactivated'
+
+/** api.runtimeInfo — is this entry the classifier loaded in the live Runtime? */
+export interface ModelRuntimeInfo {
+  loaded: boolean
+  role?: string
+}
+
+/** registry.Entry plus its live-runtime block — the §19.12 field set. */
+export interface ModelEntry {
+  model_id: string
+  name: string
+  version: string
+  family: string
+  feature_schema: string
+  input_size: number
+  output_schema: string
+  output_size: number
+  /** schema.Architecture; parse with hiddenFromUnknown() from lib/arch. */
+  architecture?: unknown
+  training_dataset_ids?: string[] | null
+  /** the bundle's metrics.json, verbatim — shape is not guaranteed. */
+  metrics?: unknown
+  parameter_count: number
+  artifact_bytes: number
+  content_hash: string
+  created_at: string
+  trainer_version: string
+  derived_from?: string
+  status: ModelStatus
+  registered_at: string
+  activated_at?: string
+  dir: string
+  runtime?: ModelRuntimeInfo
+}
+
+/** api.runtimeModel — one classifier live in the Runtime, registered or not
+ *  (the heuristic never is). */
+export interface RuntimeModel {
+  id: string
+  family: string
+  role: string
+  registered: boolean
+}
+
+/** GET /api/v1/models */
+export interface ModelList {
+  models: ModelEntry[]
+  runtime: RuntimeModel[]
+}
+
+/** GET /api/v1/models/{id} — entry plus its lineage chain and direct children. */
+export interface ModelDetail {
+  entry: ModelEntry
+  /** derived-from chain, root first, this model last. */
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+}
+
+/** registry.TreeNode — the lineage forest (§15). */
+export interface ModelTreeNode {
+  entry: ModelEntry
+  children: ModelTreeNode[]
+}
+
+/** GET /api/v1/models/{id}/lineage */
+export interface ModelLineage {
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+  tree: ModelTreeNode[]
+}
+
+/** audit.Record — one append-only line of operator history. `subject_type` is
+ *  an open string, not an enum: "model" | "dataset" | "training" today, and
+ *  whatever the review loop (issue #42) adds next, with no change here. */
+export interface AuditRecord {
+  ts: string
+  event: string
+  actor: string
+  subject_type: string
+  subject: string
+  /** equals `subject` on model lines, "" on every other subject type. */
+  model_id: string
+  detail: string
+}
+
+/** GET /api/v1/audit — read-only; the log is append-only forever, so there is
+ *  no create/update/delete counterpart. */
+export interface AuditList {
+  records: AuditRecord[]
+  count: number
+  /** the limit actually applied after clamping. */
+  limit: number
+  max_limit: number
+  /** how far back from EOF the reader will scan, in bytes. */
+  scan_bytes_cap: number
+}
+
+/** Query filters for GET /api/v1/audit. */
+export interface AuditQuery {
+  limit?: number
+  subject_type?: string
+  subject?: string
+  event?: string
+  /** RFC3339, inclusive. */
+  from?: string
+  to?: string
+}
+
+
+// ============================================================================
+// Human review loop (PROJECT.md §16; issues #42, #64) — feature/review-queue
+// ---------------------------------------------------------------------------
+// Mirrors internal/review, served by /api/v1/review*. A sibling branch also
+// edits this file; keep additions inside this block so the merges stay clean.
+//
+// The one rule this whole block exists to make visible: `predicted_class`,
+// `predicted_score` and `model_id` are the model's ORIGINAL claim, captured when
+// the flow was first reviewed. They sit *alongside* `human_label` and are never
+// replaced by it. There is deliberately no request type here that can set them.
+// ============================================================================
+
+/** review.State — the five §16 states. */
+export type ReviewState = 'unreviewed' | 'correct' | 'incorrect' | 'unsure' | 'ignored_pattern'
+
+export const REVIEW_STATES: ReviewState[] = [
+  'unreviewed',
+  'correct',
+  'incorrect',
+  'unsure',
+  'ignored_pattern',
+]
+
+/** The states that settle a flow and remove it from the queue. `unsure` is not
+ *  one of them: "I don't know" is a request to come back, not an answer. */
+export const TERMINAL_REVIEW_STATES: ReviewState[] = ['correct', 'incorrect', 'ignored_pattern']
+
+/** review.Sort — the queue orderings. */
+export type ReviewSort = 'uncertainty' | 'recent' | 'disagreement'
+
+/** review.Change — one superseded decision. */
+export interface ReviewChange {
+  /** when this decision was replaced */
+  ts: string
+  state: ReviewState
+  human_label?: string
+  note?: string
+  reviewer: string
+}
+
+/** review.Review — one flow's decision plus the frozen model prediction. */
+export interface Review {
+  flow_id: number
+  state: ReviewState
+  /** what the operator typed; empty for `correct` (it is derived) */
+  human_label: string
+  /** the class a curated dataset would use: the confirmed prediction for
+   *  `correct`, the correction for `incorrect`, "" otherwise. Derived server-side
+   *  on every read, so it can never drift from state/human_label. */
+  effective_label: string
+  /** the model's original claim — frozen at first review, never overwritten */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  /** "local" until auth lands (issue #58) */
+  reviewer: string
+  note: string
+  created_at: string
+  updated_at: string
+  history: ReviewChange[]
+}
+
+/** review.QueueItem — one flow awaiting review, with its ranking numbers. */
+export interface ReviewQueueItem {
+  flow_id: number
+  ts: string
+  sensor: string
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  /** the *live* verdict being asked about (nothing is captured until review) */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  disagreement: boolean
+  scores: number[] // length 7, traffic-classes-v1 order
+  /** the two classes the margin is between */
+  top1: string
+  top2: string
+  /** p_top1 - p_top2, 0..1. Smaller = the model is less sure. */
+  margin: number
+  /** 1 - margin, so larger = review sooner. The `uncertainty` sort key. */
+  uncertainty: number
+  /** normalised Shannon entropy over the 7 classes, 0..1 */
+  entropy: number
+  /** false when the verdict carried no usable probability vector */
+  scores_available: boolean
+  /** 'unreviewed' or 'unsure' — the only states that reach the queue */
+  review_state: ReviewState
+  /** an earlier `unsure` note, carried forward to the next reviewer */
+  note?: string
+}
+
+/** review.Stats — the counts strip. */
+export interface ReviewStats {
+  total: number
+  /** every one of the five states is present, zero included */
+  by_state: Record<string, number>
+  /** correct + incorrect + ignored_pattern */
+  terminal: number
+  /** unreviewed + unsure — still in the queue */
+  open: number
+  /** correct + incorrect — rows a curated dataset can use */
+  labelled: number
+  directory: string
+}
+
+/** The enum block every review response carries, so nothing is hardcoded. */
+export interface ReviewVocabulary {
+  states: ReviewState[]
+  classes: string[]
+  sorts: ReviewSort[]
+}
+
+/** GET /api/v1/review/queue */
+export interface ReviewQueueResponse {
+  queue: ReviewQueueItem[]
+  sort: ReviewSort
+  /** how many stored verdicts were walked to build this page */
+  scanned: number
+  vocabulary: ReviewVocabulary
+  /** the ranking formulas, in words, served next to the ranking */
+  ranking: { uncertainty: string; entropy: string }
+}
+
+/** GET /api/v1/review */
+export interface ReviewListResponse {
+  reviews: Review[]
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/** GET /api/v1/review/stats */
+export interface ReviewStatsResponse {
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/**
+ * PUT|POST /api/v1/review/{flow_id} body.
+ *
+ * Note what is absent and always will be: predicted_class, predicted_score and
+ * model_id. The daemon captures the prediction itself and rejects a body that
+ * mentions them (400, unknown field) — PROJECT.md §16.
+ */
+export interface ReviewWriteInput {
+  state: ReviewState
+  /** required for `incorrect`; must be empty for every other state */
+  human_label?: string
+  note?: string
+}
+
+
+// ---------------------------------------------------------------------------
+// Downloadable investigation reports (issue #66, ADR 0023).
+//
+// Self-contained block, appended at the end of the file on purpose: several
+// sibling branches also edit types.ts, and keeping this addition isolated makes
+// a merge a concatenation rather than a conflict.
+//
+// The SPA never renders a report itself — rendering is server-side, and the
+// download is a plain browser navigation to the attachment URL. These types
+// exist so the query builder in api/client.ts is typed, and so a future view
+// that wants to preview a report's coverage block has something to read.
+// ---------------------------------------------------------------------------
+
+/** report.ScopeKind — what a report is about. */
+export type ReportScopeKind = 'host' | 'range'
+
+/** The two rendering formats GET /api/v1/reports/* accepts. */
+export type ReportFormat = 'json' | 'html'
+
+/** report.Scope — exactly what was asked for. */
+export interface ReportScope {
+  kind: ReportScopeKind
+  host?: string
+  from?: string
+  to?: string
+  unbounded: boolean
+  filter?: string
+}
+
+/** report.Note — one explicit statement about what the report does not know. */
+export interface ReportNote {
+  code: string
+  level: 'info' | 'warning'
+  text: string
+}
+
+/**
+ * report.Coverage — every limit that applied and every discard the daemon had
+ * already made. `partial` is the single flag a consumer can branch on.
+ */
+export interface ReportCoverage {
+  partial: boolean
+  store_driver: string
+  flows_retained: number
+  flows_evicted: number
+  classifications_retained: number
+  classifications_evicted: number
+  scan_limit: number
+  scan_scanned: number
+  scan_exhausted: boolean
+  oldest_retained?: string
+  range_starts_before_retention: boolean
+  hosts_tracked: number
+  host_cap: number
+  hosts_evicted: number
+  key_cap: number
+  keys_pruned: number
+  observations_dropped: number
+  timeline_late: number
+  notable_flow_cap: number
+  notable_candidates: number
+  notable_flows_truncated: boolean
+  flow_records_missing: number
+  /** Always false in this build — behavioural baselines are Phase 7. */
+  baseline_available: boolean
+  /** Always false in this build — anomaly scoring is Phase 7. */
+  anomaly_available: boolean
+}
+
+/** report.Report — the JSON artefact, for reference by any future consumer. */
+export interface InvestigationReport {
+  schema: string
+  generated_at: string
+  generator: {
+    product: string
+    version: string
+    commit: string
+    built_at: string
+    dirty: boolean
+    feature_schema: string
+    output_schema: string
+  }
+  scope: ReportScope
+  coverage: ReportCoverage
+  notes: ReportNote[]
+  summary: {
+    classifications: number
+    disagreements: number
+    non_normal: number
+    distinct_flows: number
+    distinct_hosts: number
+    first_verdict?: string
+    last_verdict?: string
+  }
+  [k: string]: unknown
+}
+
+// ============================================================================
+// Flow Inspector: normalized inputs, snapshot history, explanation (§19.3)
+// issue #38, ADR 0025 — feature/flow-inspector
+// ---------------------------------------------------------------------------
+// Mirrors internal/api/flows.go and internal/api/flow_snapshots.go, served by
+// GET /api/v1/flows/{id}/explain and GET /api/v1/flows/{id}/snapshots. Appended
+// as its own block on purpose: sibling branches also edit this file, so keeping
+// the addition isolated makes a merge a concatenation rather than a conflict.
+//
+// Three things this block deliberately does NOT contain, because the daemon does
+// not produce them and the drawer must not imply otherwise:
+//
+//   * a training baseline, or any "current vs baseline" pair. §19.3's example
+//     shows one, but baselines are Phase 7 — `baseline.available` is always
+//     false and there is no value field to render next to it.
+//   * an anomaly score. Also Phase 7; `anomaly.available` is always false.
+//   * a per-feature contribution number for a trained model. Exact attribution
+//     needs gradients or SHAP, so `explanation.kind` is 'unavailable' for an
+//     ONNX model and `rules` is empty. A rough proxy is not offered at all,
+//     because a proxy rendered in an explanation panel reads as an explanation.
+// ============================================================================
+
+/** inference.RuleFeature — one feature value a heuristic rule compared. */
+export interface RuleFeature {
+  name: string
+  value: number
+  unit: string
+}
+
+/**
+ * inference.FiredRule — one heuristic rule that matched, and the values it
+ * matched on. There is intentionally no per-rule contribution percentage:
+ * several rules can feed one class and the mapping to probability runs through a
+ * softmax over class weights, so any per-rule share would be invented.
+ */
+export interface FiredRule {
+  rule: string
+  class: string
+  class_id: number
+  detail: string
+  features: RuleFeature[]
+}
+
+/** inference.ClassWeight — one class's pre-softmax weight. */
+export interface ClassWeight {
+  class: string
+  class_id: number
+  weight: number
+}
+
+/**
+ * inference.Explanation — a model's account of one verdict.
+ *
+ * `kind: 'rules'` is an EXACT account: those rules, on those values, produced
+ * those weights, which were soft-maxed into the reported probabilities.
+ * `kind: 'unavailable'` claims nothing beyond `note`.
+ *
+ * An empty `rules` with `kind: 'rules'` is meaningful, not a loading state: no
+ * rule fired, and `normal_prior` is what decided the verdict.
+ */
+export interface Explanation {
+  model_id: string
+  role: string
+  kind: 'rules' | 'unavailable'
+  rules: FiredRule[]
+  class_weights?: ClassWeight[]
+  normal_prior?: number
+  note: string
+}
+
+/** internal/api.normFeature — one feature as a specific model received it. */
+export interface NormalizedFeature {
+  index: number
+  name: string
+  unit: string
+  raw: number
+  normalized: number
+}
+
+/**
+ * internal/api.modelInput — what one model actually saw.
+ *
+ * `kind: 'raw'` means the model reads raw flow-features-v1 values (the Phase-1
+ * heuristic) and `features` is absent — there is no transformation to show, and
+ * the drawer must say that rather than render an identity table.
+ * `kind: 'normalized'` carries raw→normalized pairs from that model's own
+ * bundle. `kind: 'unknown'` means the normalizer could not be resolved.
+ */
+export interface ModelInput {
+  kind: 'raw' | 'normalized' | 'unknown'
+  normalizer_id?: string
+  note: string
+  features?: NormalizedFeature[]
+}
+
+/** internal/api.explainModel — one model's inputs and rationale. */
+export interface ExplainModel {
+  model_id: string
+  role: string
+  class: string
+  class_id: number
+  score: number
+  scores: number[]
+  /** False when the model that produced this verdict is no longer loaded. */
+  loaded: boolean
+  input: ModelInput
+  explanation: Explanation
+}
+
+/** internal/api.explainVerdict — the stored verdict being explained. */
+export interface ExplainVerdict {
+  ts: string
+  sensor: string
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.stubSection — an explicitly unavailable panel. Note the absence
+ * of any value field: there is nothing to show, by design.
+ */
+export interface StubSection {
+  available: boolean
+  note: string
+}
+
+/** GET /api/v1/flows/{id}/explain */
+export interface FlowExplain {
+  flow_id: number
+  snapshot_index: number
+  /** False when no verdict for this flow is retained; `models` is then empty. */
+  verdict_available: boolean
+  verdict?: ExplainVerdict
+  models: ExplainModel[]
+  anomaly: StubSection
+  baseline: StubSection
+  notes?: string[]
+}
+
+/** internal/api.versionVerdict — the verdict computed from one flow version. */
+export interface VersionVerdict {
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.flowVersionView — one retained version of a flow.
+ *
+ * Counters are CUMULATIVE, not per-interval: each version reports the flow's
+ * totals as of its own `last_seen`. A missing `verdict` means the classification
+ * aged out of the bounded ring — never "was not classified".
+ */
+export interface FlowVersionView {
+  snapshot_index: number
+  close_reason: string
+  terminal: boolean
+  first_seen: string
+  last_seen: string
+  duration_sec: number
+  fwd_packets: number
+  bwd_packets: number
+  fwd_bytes: number
+  bwd_bytes: number
+  verdict?: VersionVerdict
+}
+
+/** GET /api/v1/flows/{id}/snapshots */
+export interface FlowSnapshots {
+  flow_id: number
+  retained: number
+  cap: number
+  /** True when the per-flow cap dropped this flow's earliest versions. */
+  truncated: boolean
+  /** False for a flow that only ever produced its terminal record. */
+  snapshotting: boolean
+  versions: FlowVersionView[]
+  notes?: string[]
 }
