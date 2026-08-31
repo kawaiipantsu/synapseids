@@ -157,6 +157,12 @@ type Manager struct {
 	src  FlowSource
 	logf Logf
 	byID map[string]*Dataset // keyed by Ref()
+
+	// statsByHash caches Stats bundles keyed by a version's immutable content
+	// hash (see stats.go). A version's CSV never changes, so a hit is always
+	// valid for the life of the process.
+	statsMu     sync.Mutex
+	statsByHash map[string]*Stats
 }
 
 // Open returns a Manager over dir, scanning it for existing versions. src is the
