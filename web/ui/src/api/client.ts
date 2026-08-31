@@ -18,6 +18,8 @@ import type {
   HostProfile,
   ModelInfo,
   TimelineSeries,
+  TrainingList,
+  TrainingRun,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -278,4 +280,16 @@ export function getTimeline(p: TimelineParams = {}): Promise<TimelineSeries> {
   if (p.host) q.set('host', p.host)
   const s = q.toString()
   return getJSON<TimelineSeries>('/api/v1/timeline' + (s ? '?' + s : ''))
+}
+
+// ---- training dashboard (§19.8, issue #35, ADR 0019) --------------------
+// Read-only from the SPA: synapse-trainer registers and reports runs over HTTP;
+// the SPA polls GET /api/v1/training/{id} while a run is active.
+
+export function getTrainingRuns(limit = 50): Promise<TrainingList> {
+  return getJSON<TrainingList>(`/api/v1/training?limit=${limit}`)
+}
+
+export function getTrainingRun(id: string): Promise<TrainingRun> {
+  return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
 }

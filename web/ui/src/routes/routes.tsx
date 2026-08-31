@@ -11,6 +11,7 @@ import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
 import { ReplayPage } from './ReplayPage'
 import { Timeline } from './Timeline'
+import { Training } from './Training'
 
 export type NavGroup = 'LIVE' | 'CAPTURE' | 'ML' | 'SYSTEM'
 
@@ -77,9 +78,9 @@ export const ROUTES: RouteDef[] = [
     group: 'ML',
     path: '/training',
     label: 'Training',
-    tag: 'P4',
-    live: false,
-    element: P(4, 'Training', 'EPIC: Phase 4 — Dataset/Training Workflow', 'Live training dashboard (§19.8): epoch/loss/accuracy/F1, per-class metrics and confusion matrix, updated over the event bus.'),
+    tag: 'live',
+    live: true,
+    element: <Training />,
   },
   // The Dataset Manager (§19.10) and the Dataset Explorer (§19.11 — feature
   // distributions, correlations, outliers, protocol/port splits, PCA
