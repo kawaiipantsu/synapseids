@@ -99,9 +99,15 @@ type Options struct {
 	MaxKeys     int
 	RecentFlows int
 	QueueSize   int
+	// MaxPairs caps the traffic matrix's tracked (initiator, responder) pairs.
+	// See matrix.go for why this is a bounded top-N rather than a full matrix.
+	MaxPairs int
 }
 
 func (o Options) withDefaults() Options {
+	if o.MaxPairs <= 0 {
+		o.MaxPairs = DefaultMaxPairs
+	}
 	if o.MaxHosts <= 0 {
 		o.MaxHosts = DefaultMaxHosts
 	}
@@ -164,6 +170,8 @@ type Index struct {
 	hostsEvicted uint64
 	keysPruned   uint64
 	rings        []*ring
+	// pairs is the bounded traffic matrix (issue #68). See matrix.go.
+	pairs *pairTable
 }
 
 // New starts an Index and its aggregator goroutine.
@@ -174,6 +182,7 @@ func New(opt Options) *Index {
 		ch:    make(chan item, opt.QueueSize),
 		quit:  make(chan struct{}),
 		hosts: make(map[string]*host),
+		pairs: newPairTable(opt.MaxPairs),
 		rings: []*ring{
 			newRing(bucket1s, ring1sLen),
 			newRing(bucket10s, ring10sLen),
@@ -203,6 +212,20 @@ func (ix *Index) Observe(fr *storage.FlowRecord, cl *storage.Classification) {
 	if ix == nil || fr == nil {
 		return
 	}
+	ob := observationOf(fr, cl)
+	select {
+	case ix.ch <- item{ob: ob}:
+	default:
+		ix.dropped.Add(1)
+	}
+}
+
+// observationOf projects a stored record and its verdict into the compact form
+// the aggregates fold. It is deliberately shared between the live path (Observe)
+// and the on-demand traffic-matrix accumulator in matrix.go, so a filtered matrix
+// and the incremental one apply identical rules. It allocates nothing: every
+// field is a scalar, a string header or a time.Time copied by value.
+func observationOf(fr *storage.FlowRecord, cl *storage.Classification) observation {
 	ob := observation{
 		flowID:        fr.ID,
 		terminal:      fr.CloseReason != "snapshot",
@@ -225,11 +248,7 @@ func (ix *Index) Observe(fr *storage.FlowRecord, cl *storage.Classification) {
 		ob.classID = cl.Result.ClassID
 		ob.disagreement = cl.Result.Disagreement
 	}
-	select {
-	case ix.ch <- item{ob: ob}:
-	default:
-		ix.dropped.Add(1)
-	}
+	return ob
 }
 
 // Sync blocks until every observation queued before the call has been applied.
@@ -288,6 +307,10 @@ func (ix *Index) apply(ob observation) {
 	if ob.responderIP != "" && ob.responderIP != ob.initiatorIP {
 		ix.hostOf(ob.responderIP).observe(ob, false, ix)
 	}
+
+	// The traffic matrix (issue #68). One map lookup plus scalar adds; the pair
+	// cap and its eviction counter live in matrix.go.
+	ix.pairs.observe(ob)
 }
 
 // hostOf returns the host state for ip, creating it and pruning the map if the
@@ -351,6 +374,13 @@ type Stats struct {
 	Dropped      uint64 `json:"dropped"`
 	QueueSize    int    `json:"queue_size"`
 	TimelineLate uint64 `json:"timeline_late"`
+
+	// Traffic-matrix counters (issue #68). PairsEvicted > 0 means the matrix is a
+	// bounded top-N of the heaviest conversations rather than a complete one, and
+	// every /api/v1/matrix response says so with partial:true.
+	Pairs        int    `json:"pairs"`
+	PairCap      int    `json:"pair_cap"`
+	PairsEvicted uint64 `json:"pairs_evicted"`
 }
 
 // Stats returns a counter snapshot.
@@ -374,6 +404,9 @@ func (ix *Index) Stats() Stats {
 		Dropped:      ix.dropped.Load(),
 		QueueSize:    ix.opt.QueueSize,
 		TimelineLate: late,
+		Pairs:        len(ix.pairs.m),
+		PairCap:      ix.pairs.max,
+		PairsEvicted: ix.pairs.evicted,
 	}
 }
 

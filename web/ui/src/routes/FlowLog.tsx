@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { getClassifications } from '../api/client'
+import { getClassifications, getSensorTopology } from '../api/client'
 import { useStream } from '../api/stream'
 import type { Classification, WsEvent } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
 import { CLASS_NAMES, LOW_CONFIDENCE, classColor, roleInitial } from '../lib/classes'
 import { endpoint, fmtClock, fmtInt, fmtPct } from '../lib/format'
+import { navigateWith, useHashQuery } from '../lib/hashRouter'
 import { usePersistedState } from '../lib/persist'
 
 const PROTOS = ['TCP', 'UDP', 'ICMP']
@@ -21,8 +22,54 @@ function key(c: Classification): string {
   return `${c.flow_id}:${c.ts}`
 }
 
+/**
+ * The sensor scope arriving from the topology view (§19.15, issue #46).
+ *
+ * `sensor=` is matched directly against the verdict's own `sensor` field. A
+ * `location=` scope has to be resolved to the sensor ids at that location, which
+ * only the daemon knows, so the topology document is fetched once and the ids
+ * cached; until it resolves the scope is `null` and nothing is filtered out —
+ * showing everything briefly is better than showing an empty log that looks like
+ * "this location is silent".
+ *
+ * Either way this filters the *live stream*, whose rows carry whatever the
+ * pipeline stamped. Raw-mode sensors are labelled "local", so scoping to one
+ * legitimately shows nothing; the Sensors view refuses to offer that link.
+ */
+function useSensorScope(): { active: boolean; label: string; allowed: Set<string> | null } {
+  const q = useHashQuery()
+  const sensor = q.get('sensor') ?? ''
+  const location = q.get('location') ?? ''
+  const [byLocation, setByLocation] = useState<Set<string> | null>(null)
+
+  useEffect(() => {
+    if (!location) {
+      setByLocation(null)
+      return
+    }
+    let alive = true
+    getSensorTopology()
+      .then((t) => {
+        if (!alive) return
+        const g = t.locations.find((l) => (l.unassigned ? 'unassigned' : l.location) === location)
+        setByLocation(new Set((g?.sensors ?? []).map((s) => s.sensor_id)))
+      })
+      .catch(() => {
+        // Leave the scope unresolved rather than inventing an empty one.
+      })
+    return () => {
+      alive = false
+    }
+  }, [location])
+
+  if (sensor) return { active: true, label: `sensor ${sensor}`, allowed: new Set([sensor]) }
+  if (location) return { active: true, label: `location ${location}`, allowed: byLocation }
+  return { active: false, label: '', allowed: null }
+}
+
 export function FlowLog() {
   const { subscribe } = useStream()
+  const scope = useSensorScope()
 
   const [rows, setRows] = useState<Classification[]>([])
   const [paused, setPaused] = useState(false)
@@ -49,8 +96,10 @@ export function FlowLog() {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  const allowed = scope.allowed
   const pass = useCallback(
     (c: Classification): boolean => {
+      if (allowed && !allowed.has(c.sensor)) return false
       if (fMinConf > 0 && c.result.score * 100 < fMinConf) return false
       if (fClass && c.result.class !== fClass) return false
       if (fProto && c.proto.toUpperCase() !== fProto) return false
@@ -61,7 +110,7 @@ export function FlowLog() {
       }
       return true
     },
-    [fMinConf, fClass, fProto, fText],
+    [allowed, fMinConf, fClass, fProto, fText],
   )
 
   const visible = useMemo(() => rows.filter(pass), [rows, pass])
@@ -223,6 +272,20 @@ export function FlowLog() {
 
   return (
     <div className={`flowlog${kiosk ? ' kiosk' : ''}`} ref={containerRef}>
+      {scope.active ? (
+        <div className="mx-scope">
+          <span className="tag">scoped</span>
+          <span>
+            <b className="mono">{scope.label}</b>
+          </span>
+          {scope.allowed === null ? <span className="dim">resolving sensors…</span> : null}
+          <button onClick={() => navigateWith('/flow-log', {})}>clear scope</button>
+          <span className="dim">
+            matches the sensor id on each verdict; raw-mode sensors are labelled{' '}
+            <code>local</code>
+          </span>
+        </div>
+      ) : null}
       <div className="flowbar">
         <button className={paused ? 'on' : ''} onClick={togglePause}>
           {paused ? 'Resume' : 'Pause'}

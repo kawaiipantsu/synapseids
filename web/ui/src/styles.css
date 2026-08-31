@@ -2112,3 +2112,269 @@ a.rep-dl-btn:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ==========================================================================
+   Traffic matrix and sensor topology (§19.15, issues #68 + #46, ADR 0026)
+   Self-contained block at the end of the file; sibling branches also edit
+   styles.css. Every colour comes from an existing custom property.
+   ========================================================================== */
+
+/* ---- shared: the "this view is scoped to X" strip ---------------------- */
+.mx-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--edge);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(53, 193, 214, 0.06);
+  font-size: 12px;
+}
+.mx-scope .tag {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: var(--accent);
+}
+.mx-scope button {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+/* ---- the partial/truncated honesty banner ------------------------------
+   Deliberately prominent: a bounded top-N drawn as a grid invites the reader
+   to believe it is the whole matrix, and this is the sentence that stops that. */
+.mx-partial {
+  margin: 0 0 12px;
+  padding: 8px 11px;
+  border: 1px solid var(--edge);
+  border-left: 3px solid var(--suspicious);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+.mx-partial b {
+  color: var(--suspicious);
+}
+
+/* ---- heat grid --------------------------------------------------------- */
+.mx-heatwrap {
+  position: relative;
+  max-width: 100%;
+  overflow: auto;
+  padding: 4px 0 2px;
+}
+.mx-heat {
+  display: block;
+  /* The canvas reads its own computed color/border-color to draw axis labels
+     and the disagreement outline, so both must be set here. */
+  color: var(--ink);
+  border-color: var(--edge);
+  cursor: pointer;
+}
+.mx-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 6px 8px;
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.mx-tip .chip {
+  margin: 2px 3px 0 0;
+}
+.mx-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.mx-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mx-legend-item > i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+/* Clickable endpoint cells in the pair list. */
+.mx-ep {
+  cursor: pointer;
+}
+.mx-ep:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* ---- sensor topology -------------------------------------------------- */
+.sn-loc {
+  margin: 0 0 12px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  background: var(--panel);
+  overflow: hidden;
+}
+/* The unassigned bucket reads as an exception, not a peer location. */
+.sn-loc.unassigned {
+  border-style: dashed;
+}
+.sn-lochead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 11px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--edge);
+  background: rgba(255, 255, 255, 0.015);
+}
+.sn-lochead:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+.sn-lochead:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+.sn-lochead h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.sn-loc.unassigned .sn-lochead h3 {
+  color: var(--dim);
+  font-style: italic;
+}
+.sn-caret {
+  color: var(--dim);
+  font-size: 10px;
+  width: 8px;
+}
+.sn-hint {
+  margin-left: 7px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: normal;
+  color: var(--dim);
+  border-bottom: 1px dotted var(--edge);
+  cursor: help;
+}
+.sn-stat {
+  font-size: 11px;
+  color: var(--dim);
+}
+.sn-stat > b {
+  color: var(--ink);
+  font-weight: 600;
+}
+.sn-drops,
+.sn-stat.sn-drops > b {
+  color: var(--dos);
+}
+.sn-modes {
+  display: inline-flex;
+  gap: 4px;
+}
+.sn-attr {
+  font-size: 10px;
+  color: var(--dim);
+  border-bottom: 1px dotted var(--edge);
+  cursor: help;
+}
+
+/* Health of a location group. */
+.sn-health {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 1px 6px;
+  border-radius: 2px;
+  border: 1px solid var(--edge);
+}
+.sn-health.ok {
+  color: var(--normal);
+  border-color: var(--normal);
+}
+.sn-health.degraded {
+  color: var(--suspicious);
+  border-color: var(--suspicious);
+}
+.sn-health.down {
+  color: var(--dos);
+  border-color: var(--dos);
+}
+
+/* Sensor mode chip. raw/flow/feature are meaningfully different postures:
+   feature mode means no packet content ever crossed the wire. */
+.sn-mode {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--edge);
+  color: var(--dim);
+}
+.sn-mode.raw {
+  color: var(--ink);
+}
+.sn-mode.flow {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sn-mode.feature {
+  color: var(--normal);
+  border-color: var(--normal);
+}
+
+.sn-table {
+  width: 100%;
+}
+.sn-addr {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--dim);
+}
+/* A sensor whose flows cannot be attributed to it. Dimmed rather than hidden:
+   it is still capturing, it just cannot be used as a flow filter. */
+.sn-unattributed > td {
+  opacity: 0.72;
+}
+
+.sn-scope {
+  display: inline-flex;
+  gap: 4px;
+}
+.sn-scope button {
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.sn-scope-off {
+  font-size: 10px;
+  color: var(--dim);
+  border-bottom: 1px dotted var(--edge);
+  cursor: help;
+}
+.sn-inline-link {
+  font-size: inherit;
+  font-family: var(--mono);
+  padding: 0 4px;
+  background: none;
+  border: none;
+  border-bottom: 1px dotted var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+}

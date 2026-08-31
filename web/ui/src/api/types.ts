@@ -1153,3 +1153,169 @@ export interface FlowSnapshots {
   versions: FlowVersionView[]
   notes?: string[]
 }
+
+// ---- traffic matrix and sensor topology (§19.15, issues #68 + #46) ----------
+// Self-contained block at the end of the file; sibling branches also edit
+// types.ts. Backed by ADR 0026.
+
+/** insight.MatrixSort — the pair list ordering. */
+export type MatrixSort = 'flows' | 'bytes' | 'last_seen'
+
+/**
+ * insight.MatrixPair — one cell of the traffic matrix: an ordered conversation.
+ *
+ * `initiator` is the side that opened the flow, so `A→B` and `B→A` are separate
+ * cells and are never merged. `threat_class` is the highest-count class that is
+ * not "normal": a cell with 400 normal and 3 brute_force verdicts is *dominated*
+ * by normal but is the one worth looking at, so the grid colours by threat.
+ */
+export interface MatrixPair {
+  initiator: string
+  responder: string
+  flows: number
+  bytes: number
+  bytes_fwd: number
+  bytes_bwd: number
+  packets: number
+  first_seen: string
+  last_seen: string
+  classifications: number
+  classes: ClassCount[]
+  dominant_class?: string
+  threat_class?: string
+  threat_count?: number
+  disagreements: number
+}
+
+/** insight.MatrixAxis — one grid axis entry with its totals over returned pairs. */
+export interface MatrixAxis {
+  ip: string
+  flows: number
+  bytes: number
+  pairs: number
+}
+
+/**
+ * GET /api/v1/matrix.
+ *
+ * This is deliberately NOT a full hosts × hosts grid — see ADR 0026. It is a
+ * bounded top-N of the heaviest conversations, and the response says so:
+ *
+ * - `partial`   — the pair cap evicted at least one pair (or the scanned window
+ *                 was itself capped). These are the heaviest pairs, not all.
+ * - `truncated` — `limit` cut the list. Independent of `partial`: a limited view
+ *                 of a complete table is truncated but not partial.
+ * - `source`    — "incremental" (the always-on bounded table) or "scan" (a
+ *                 filtered query folded from the stored window).
+ */
+export interface TrafficMatrix {
+  pairs: MatrixPair[]
+  initiators: MatrixAxis[]
+  responders: MatrixAxis[]
+  sort: MatrixSort
+  source: 'incremental' | 'scan'
+  tracked_pairs: number
+  returned_pairs: number
+  pair_cap: number
+  pairs_evicted: number
+  partial: boolean
+  truncated: boolean
+  /** Rows walked by a scan-source query; absent/0 on the incremental source. */
+  scanned?: number
+  total_flows: number
+  total_bytes: number
+  /** Heat scale: the largest values among the RETURNED pairs. */
+  max_flows: number
+  max_bytes: number
+}
+
+/** capture.SensorStatus — one row of GET /api/v1/sensors. */
+export interface SensorStatus {
+  sensor_id: string
+  location: string
+  remote_addr: string
+  link_type: number
+  filter: string
+  connected_at: string
+  packets: number
+  bytes: number
+  drops: number
+  pps: number
+  bps: number
+  last_packet: string
+  /** running | error | stopped */
+  state: string
+  agent_version?: string
+  os_arch?: string
+  session_id?: string
+  source_name: string
+  /** raw | flow | feature */
+  mode: string
+  protocol_version: number
+  payload_schema?: string
+  records: number
+  record_bytes: number
+}
+
+/**
+ * Whether this sensor's flows can be scoped (api.AttributionRecords / None).
+ *
+ * "records" — a flow/feature-mode sensor: its records arrive tagged, so
+ *             `sensor=`/`location=` really do filter its flows.
+ * "none"    — a raw-mode sensor: its packets merge into the local flow table
+ *             before a record exists, so its rows are labelled "local" and a
+ *             sensor filter would match nothing. Scope to its counters instead.
+ */
+export type FlowAttribution = 'records' | 'none'
+
+/** api.TopologySensor — a sensor row plus its attribution verdict. */
+export interface TopologySensor extends SensorStatus {
+  flow_attribution: FlowAttribution
+}
+
+/** api.TopologyLocation — one location group and its aggregates. */
+export interface TopologyLocation {
+  /** Exactly what the sensors reported, or "unassigned" for the empty bucket. */
+  location: string
+  /** True for the bucket of sensors that reported no location. */
+  unassigned: boolean
+  sensor_count: number
+  running: number
+  /** ok | degraded | down */
+  health: string
+  modes: string[]
+  packets: number
+  bytes: number
+  drops: number
+  records: number
+  record_bytes: number
+  pps: number
+  bps: number
+  last_packet?: string
+  /** How many of these sensors a location= scope can actually select. */
+  attributable_sensors: number
+  sensors: TopologySensor[]
+}
+
+/** GET /api/v1/sensors/topology */
+export interface SensorTopology {
+  locations: TopologyLocation[]
+  sensors: number
+  location_count: number
+  unassigned_sensors: number
+  attributable_sensors: number
+  packets: number
+  bytes: number
+  drops: number
+  records: number
+  record_bytes: number
+  pps: number
+  bps: number
+  /** False when no SYNPOIP collector is wired — distinct from "none connected". */
+  collector: boolean
+  scope_sensor_param: string
+  scope_location_param: string
+  /** The sensor label locally-built rows carry, i.e. "local". */
+  local_sensor_label: string
+  scope_note: string
+}

@@ -107,8 +107,9 @@ not just those still in the ring (PROJECT.md §12, §24).
 
 ### GET /api/v1/flows
 
-Recent stored flows, newest first. Query: `limit` (default `100`, max `2000`).
-`200` → JSON array of `FlowRecord`:
+Recent stored flows, newest first. Query: `limit` (default `100`, max `2000`),
+plus the optional [`sensor=` / `location=` scope](#the-sensor-and-location-scope)
+(issue #46). `200` → JSON array of `FlowRecord`:
 
 ```json
 [
@@ -469,11 +470,17 @@ Resource bounds are reported on `GET /api/v1/status` under `insight`:
 
 ```json
 "insight": {
-  "hosts": 84, "host_cap": 2048, "hosts_evicted": 0,
-  "key_cap": 128, "keys_pruned": 0,
-  "observed": 1176, "dropped": 0, "queue_size": 8192, "timeline_late": 0
+  "hosts": 85, "host_cap": 2048, "hosts_evicted": 0,
+  "key_cap": 128, "keys_pruned": 32,
+  "observed": 1358, "dropped": 0, "queue_size": 8192, "timeline_late": 0,
+  "pairs": 91, "pair_cap": 4096, "pairs_evicted": 0
 }
 ```
+
+`pairs` / `pair_cap` / `pairs_evicted` are the traffic matrix's bound (issue #68):
+at most 4096 `(initiator, responder)` pairs are tracked, and on overflow the
+lighter half by `(flows, bytes)` is discarded and counted. A non-zero
+`pairs_evicted` is why `GET /api/v1/matrix` reports `partial: true`.
 
 At most 2048 hosts are tracked; on overflow the least-recently-active quarter is
 dropped and counted in `hosts_evicted`. `dropped` counts observations the
@@ -1761,6 +1768,295 @@ the connection drops.
 One sensor by `sensor_id` (or by `source_name`, for a sensor that announced no
 id). Same object as above. `404` `sensor not found` if the id is unknown or no
 collector is configured.
+
+> A sensor whose id is literally `topology` is shadowed by the route below —
+> Go's `ServeMux` prefers the more specific literal pattern. Read it from
+> `GET /api/v1/sensors` instead.
+
+### GET /api/v1/sensors/topology
+
+The same sensors, **grouped by the location each one reported** (PROJECT.md
+§19.15, issue #46;
+[ADR 0026](adr/0026-traffic-matrix-and-sensor-topology.md)). No params. Always
+`200`: with no collector wired it returns an empty grouping with
+`"collector": false`, which is deliberately distinguishable from a collector that
+simply has nobody connected.
+
+This is a sibling of `GET /api/v1/sensors`, not a replacement — that route is a
+flat list several views consume, and grouping is a different question asked of the
+same facts. Each sensor row is the **entire** `/api/v1/sensors` object plus one
+extra field, `flow_attribution`.
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/sensors/topology
+```
+
+```json
+{
+  "locations": [
+    {
+      "location": "dmz",
+      "unassigned": false,
+      "sensor_count": 1,
+      "running": 1,
+      "health": "ok",
+      "modes": ["raw"],
+      "packets": 904156,
+      "bytes": 425463469,
+      "drops": 0,
+      "records": 0,
+      "record_bytes": 0,
+      "pps": 145730.58,
+      "bps": 69424771.67,
+      "last_packet": "2026-08-31T15:20:07.613208863Z",
+      "attributable_sensors": 0,
+      "sensors": [
+        {
+          "sensor_id": "edge-dmz-1",
+          "location": "dmz",
+          "mode": "raw",
+          "state": "running",
+          "flow_attribution": "none",
+          "…": "every other GET /api/v1/sensors field"
+        }
+      ]
+    },
+    {
+      "location": "wan",
+      "unassigned": false,
+      "sensor_count": 1,
+      "running": 1,
+      "health": "degraded",
+      "modes": ["flow"],
+      "packets": 0,
+      "drops": 390655,
+      "records": 19,
+      "record_bytes": 5510,
+      "attributable_sensors": 1,
+      "sensors": [
+        {
+          "sensor_id": "edge-wan-1",
+          "location": "wan",
+          "mode": "flow",
+          "state": "running",
+          "flow_attribution": "records",
+          "…": "…"
+        }
+      ]
+    }
+  ],
+  "sensors": 2,
+  "location_count": 2,
+  "unassigned_sensors": 0,
+  "attributable_sensors": 1,
+  "packets": 904156,
+  "drops": 390655,
+  "records": 19,
+  "collector": true,
+  "scope_sensor_param": "sensor",
+  "scope_location_param": "location",
+  "local_sensor_label": "local",
+  "scope_note": "sensor= and location= match the sensor id stored on a classification. …"
+}
+```
+
+Per location:
+
+- `location` — **exactly what the sensors reported**, trimmed, or `"unassigned"`
+  for the empty bucket. This is the string to send back as `location=`, so a
+  client never guesses a spelling. Two locations differing only in case stay
+  distinct groups: merging them would mean choosing a spelling no sensor sent.
+- `unassigned` — `true` for the bucket holding sensors that reported no location.
+  The sensors in it keep their own empty `location`; **no location is invented for
+  them**. Named groups come first (sensor count, then name); this bucket is always
+  last.
+- `sensor_count` / `running` — how many sensors are here, and how many are in
+  `state: "running"`.
+- `health` — `down` when nothing is running, `degraded` when some sensor is not
+  running **or any sensor is dropping**, `ok` otherwise. Drops count because a
+  running sensor that is shedding packets is not healthy (§19.14).
+- `modes` — the distinct sensor modes in use here, sorted.
+- `packets` / `bytes` / `drops` / `records` / `record_bytes` / `pps` / `bps` — sums
+  across the group. Remember that a `flow`/`feature`-mode sensor transfers no
+  packets, so a group of them reports `0` packets and non-zero `records`.
+- `last_packet` — the newest across the group; absent when nothing has arrived.
+- `attributable_sensors` — how many of these sensors a `location=` scope can
+  actually select. **When this is `0`, `location=<this group>` matches nothing.**
+
+#### `flow_attribution` — read this before offering a scope
+
+The whole point of §19.15 is that clicking a sensor or location scopes the other
+views. Whether that is possible depends on the sensor's mode:
+
+| value | meaning |
+|---|---|
+| `records` | A `flow`- or `feature`-mode sensor. The collector tags its records with the sensor id and the pipeline stores it, so `sensor=`/`location=` really do filter its flows and classifications. |
+| `none` | A `raw`-mode sensor. Its packets merge into the daemon's single packet channel and one flow table before a flow record exists, so its rows are labelled `"local"` — indistinguishable from a local NIC or a PCAP replay. A `sensor=` scope would match **nothing**. |
+
+Fixing the `none` case means putting sensor identity on the packet path *and* in
+`flow.Key` (otherwise two sensors' identical 5-tuples merge into one flow), which
+is a data-plane change and is deferred — see ADR 0026. Until then the API states
+the limitation instead of hiding it, and the SPA offers a `counters only`
+affordance for those sensors rather than a filter that returns an empty list.
+
+### The `sensor=` and `location=` scope
+
+Two additions to the shared filter vocabulary (issue #46), accepted anywhere the
+`class` / `model` / `min_confidence` / `disagreement` dialect is accepted —
+`/api/v1/classifications`, `/api/v1/flows`, `/api/v1/hosts/{ip}/flows`,
+`/api/v1/hosts/{ip}/classifications`, `/api/v1/review/queue`,
+`/api/v1/reports/*` and `/api/v1/matrix`.
+
+- **`sensor=<id>`** — matches `Classification.Sensor` verbatim. Not validated
+  against the connected set, on purpose: a sensor that has disconnected still owns
+  its stored rows, and **`sensor=local` is a legitimate scope** covering every
+  locally-built row (local NIC, PCAP replay, and every raw-mode sensor).
+- **`location=<name>`** — resolved through the *currently connected* sensors,
+  because a location lives on the live SYNPOIP session and is not stored on a row.
+  Matched exactly as `GET /api/v1/sensors/topology` spelled it.
+  **A location no connected sensor reports is a `400`**, not an empty `200` — an
+  empty result would be indistinguishable from "that location is quiet".
+- Given both, they **intersect**: `sensor=` narrows within `location=`.
+
+```bash
+# real scoping — a flow-mode sensor's own traffic
+curl -sS 'http://127.0.0.1:8080/api/v1/matrix?sensor=edge-wan-1'
+curl -sS 'http://127.0.0.1:8080/api/v1/flows?limit=500&location=wan'
+# every locally-captured row, including raw-mode sensors
+curl -sS 'http://127.0.0.1:8080/api/v1/classifications?sensor=local&class=brute_force'
+# 400 unknown location: no connected sensor reports it
+curl -sS 'http://127.0.0.1:8080/api/v1/matrix?location=atlantis'
+```
+
+`GET /api/v1/flows` applies the scope by joining each flow to its verdict from the
+newest 5000 classifications, because `storage.FlowRecord` carries no sensor id of
+its own. A flow whose verdict has aged out of that window therefore drops out of a
+*scoped* list; an unscoped `GET /api/v1/flows` is unchanged.
+
+### GET /api/v1/matrix
+
+The **traffic matrix**: who talks to whom over the observed hosts (issue #68,
+PROJECT.md §19.4-5; [ADR 0026](adr/0026-traffic-matrix-and-sensor-topology.md)).
+One entry per ordered `(initiator, responder)` pair, with its flow count, byte
+volume and class mix.
+
+> **This is not a full hosts × hosts grid, and it never claims to be.** The host
+> map is capped at 2048, which permits ~4.2 million pairs; the daemon tracks at
+> most **4096**, discarding the lighter half by `(flows, bytes)` when it overflows.
+> What you get is a bounded top-N of the heaviest conversations. `partial`,
+> `truncated` and `pairs_evicted` tell you when that bound has bitten.
+
+```bash
+curl -sS 'http://127.0.0.1:8080/api/v1/matrix?limit=5&sort=flows'
+```
+
+```json
+{
+  "pairs": [
+    {
+      "initiator": "10.10.10.22",
+      "responder": "10.10.10.21",
+      "flows": 426,
+      "bytes": 9868837,
+      "bytes_fwd": 3409192,
+      "bytes_bwd": 6459645,
+      "packets": 43191,
+      "first_seen": "2026-08-31T08:41:11.068824Z",
+      "last_seen": "2026-08-31T08:43:45.850959Z",
+      "classifications": 455,
+      "classes": [
+        { "class": "brute_force", "class_id": 3, "count": 304 },
+        { "class": "normal", "class_id": 0, "count": 151 }
+      ],
+      "dominant_class": "brute_force",
+      "threat_class": "brute_force",
+      "threat_count": 304,
+      "disagreements": 0
+    }
+  ],
+  "initiators": [{ "ip": "10.10.10.22", "flows": 659, "bytes": 10184458, "pairs": 7 }],
+  "responders": [{ "ip": "10.10.10.21", "flows": 426, "bytes": 9868837, "pairs": 1 }],
+  "sort": "flows",
+  "source": "incremental",
+  "tracked_pairs": 90,
+  "returned_pairs": 5,
+  "pair_cap": 4096,
+  "pairs_evicted": 0,
+  "partial": false,
+  "truncated": true,
+  "total_flows": 1124,
+  "total_bytes": 26137565,
+  "max_flows": 426,
+  "max_bytes": 9868837
+}
+```
+
+#### Query parameters
+
+| param | meaning |
+|---|---|
+| `limit` | Maximum pairs returned. Default `100`, clamped to `2000`. A bad or absent value falls back to the default; there is no "all". |
+| `sort` | `flows` (default) \| `bytes` \| `last_seen`. Case-sensitive; anything else is a `400`. Every ordering breaks ties on `(flows, bytes, addresses)`, so repeated reads of unchanged state are identical. |
+| `from`, `to` | RFC3339 inclusive bounds on the flow's `last_seen`. Either one forces the scan source. `to` before `from` is a `400`. |
+| `class` | One `traffic-classes-v1` class. Unknown name → `400`. |
+| `model` | A model id that scored the flow. |
+| `min_confidence` | `0..1`, or `0..100` as a percentage. Negative or unparseable → `400`. |
+| `disagreement` | `true` for model-disagreement pairs only. |
+| `sensor`, `location` | The sensor scope above. |
+
+#### Per pair
+
+- `initiator` / `responder` — the ordered pair. `flow.Key` is direction-normalized,
+  so the initiator is the side that **opened** the conversation, and `A→B` and
+  `B→A` are **separate cells that are never merged**.
+- `flows` / `bytes` / `bytes_fwd` / `bytes_bwd` / `packets` — volume, from
+  **terminal records only**. A long flow's periodic snapshots carry cumulative
+  counters, so adding them would double-count the same bytes (the rule host
+  profiles follow, ADR 0016).
+- `classifications` / `classes` / `disagreements` — from **every** record,
+  snapshot verdicts included, which keeps the mix consistent with
+  `GET /api/v1/classifications`. `classes` is ordered by count.
+- `dominant_class` — the highest-count class on the pair.
+- `threat_class` / `threat_count` — the highest-count class that is **not**
+  `normal`, and its count. This is the field to colour a grid by: a pair with 400
+  `normal` and 3 `brute_force` verdicts is *dominated* by `normal` but is the cell
+  an operator wants to see. Absent when the pair is benign-only.
+- A cell is a **host pair, not a host:port pair.** Traffic to `:3306` and `:443`
+  between the same two hosts is one cell with a mixed `classes` bar. Use
+  `GET /api/v1/hosts/{ip}` or the flow list for the port dimension.
+
+#### Axes and totals
+
+- `initiators` / `responders` — the grid axes, covering **exactly the returned
+  pairs** (so a rendered grid has no all-zero row or column), each with its own
+  totals within that selection and ordered by them.
+- `total_flows` / `total_bytes` — across **every tracked pair**, not just the
+  returned ones, so a client can state what share the visible cells cover.
+- `max_flows` / `max_bytes` — the largest values among the **returned** pairs: the
+  heat scale.
+
+#### Honesty flags — render these
+
+- `source` — `incremental` when the query was unfiltered and answered from the
+  bounded table `internal/insight` maintains off the packet path (O(1) per record,
+  exact for every pair it still holds). `scan` when any filter was given, in which
+  case the matrix is folded on demand from the newest window of stored records —
+  the same split `GET /api/v1/timeline` makes, because a table per filter
+  combination would be unbounded.
+- `scanned` — rows walked by a `scan` query. Absent on `incremental`.
+- `partial` — **the answer is incomplete.** Either the pair cap evicted pairs
+  (`pairs_evicted > 0`) or a `scan` walked its full 5000-record window, so older
+  traffic is not covered. `false` means these pairs are everything in scope.
+- `truncated` — `limit=` cut the list. **Independent of `partial`:** a limited view
+  of a complete table is truncated but not partial.
+- `tracked_pairs` / `returned_pairs` / `pair_cap` / `pairs_evicted` — the raw
+  numbers behind those flags. `pairs`, `pair_cap` and `pairs_evicted` also appear
+  on `GET /api/v1/status` under `insight`.
+
+A pair evicted by the cap and later seen again **restarts from zero**, so a light
+pair's counters can undercount. Heavy hitters are never evicted while they stay
+heavy, and the flow log and host profiles remain the systems of record for
+anything this derived view drops.
 
 ### Enabling the collector
 
