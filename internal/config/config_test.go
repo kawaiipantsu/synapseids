@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -94,6 +95,56 @@ func TestCaptureSourcesLoadAndValidate(t *testing.T) {
 		mustWrite(t, p, []byte(body))
 		if _, err := Load(p); err == nil {
 			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestCaptureSourceTcpdumpAndSSH(t *testing.T) {
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "good.json")
+	mustWrite(t, good, []byte(`{"capture":{"sources":[
+		{"name":"span","kind":"tcpdump","interface":"eth0","filter":"tcp port 80 or udp","snaplen":65535},
+		{"name":"edge","kind":"ssh","destination":"sensor@10.0.0.9","interface":"eth1","filter":"not port 22","authorized":true,"known_hosts":"accept-new","identity_file":"/keys/id"}
+	]}}`))
+	c, err := Load(good)
+	if err != nil {
+		t.Fatalf("Load good tcpdump/ssh sources: %v", err)
+	}
+	if c.Capture.Sources[0].Kind != "tcpdump" || c.Capture.Sources[0].Filter != "tcp port 80 or udp" {
+		t.Fatalf("tcpdump source not parsed: %+v", c.Capture.Sources[0])
+	}
+	if s := c.Capture.Sources[1]; s.Destination != "sensor@10.0.0.9" || !s.Authorized || s.KnownHosts != "accept-new" {
+		t.Fatalf("ssh source not parsed: %+v", s)
+	}
+
+	for name, body := range map[string]string{
+		"tcpdump-no-interface": `{"capture":{"sources":[{"name":"a","kind":"tcpdump","filter":"ip"}]}}`,
+		"ssh-no-destination":   `{"capture":{"sources":[{"name":"a","kind":"ssh","interface":"eth0","authorized":true}]}}`,
+		"ssh-no-interface":     `{"capture":{"sources":[{"name":"a","kind":"ssh","destination":"h","authorized":true}]}}`,
+		"ssh-not-authorized":   `{"capture":{"sources":[{"name":"a","kind":"ssh","destination":"h","interface":"eth0"}]}}`,
+		"ssh-authorized-false": `{"capture":{"sources":[{"name":"a","kind":"ssh","destination":"h","interface":"eth0","authorized":false}]}}`,
+		"ssh-bad-known-hosts":  `{"capture":{"sources":[{"name":"a","kind":"ssh","destination":"h","interface":"eth0","authorized":true,"known_hosts":"no"}]}}`,
+	} {
+		p := filepath.Join(dir, name+".json")
+		mustWrite(t, p, []byte(body))
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
+func TestCaptureSSHAuthorizationMessage(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	mustWrite(t, p, []byte(`{"capture":{"sources":[{"name":"edge","kind":"ssh","destination":"sensor@host","interface":"eth0"}]}}`))
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("unauthorized ssh source must be rejected")
+	}
+	for _, want := range []string{`"authorized": true`, "authorised to monitor sensor@host", "§28.18"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err.Error(), want)
 		}
 	}
 }

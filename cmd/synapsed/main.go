@@ -146,12 +146,7 @@ func run(args []string) int {
 	capMgr := capture.NewManager()
 	live := 0
 	for _, cs := range cfg.Capture.Sources {
-		src, err := capture.NewAFPacket(capture.AFPacketConfig{
-			Interface:   cs.Interface,
-			Promiscuous: cs.Promiscuous,
-			Snaplen:     cs.Snaplen,
-			Filter:      cs.Filter,
-		})
+		src, target, err := newCaptureSource(cs)
 		if err != nil {
 			log.Printf("capture: source %q disabled: %v", cs.Name, err)
 			continue
@@ -167,10 +162,11 @@ func run(args []string) int {
 		}
 		live++
 		bus.Publish(events.CaptureSourceConnected, map[string]any{
-			"name": cs.Name, "kind": cs.Kind, "interface": cs.Interface, "filter": cs.Filter,
+			"name": cs.Name, "kind": cs.Kind, "interface": cs.Interface,
+			"destination": cs.Destination, "filter": cs.Filter,
 		})
-		log.Printf("capture: source %q live on %s (promiscuous=%t snaplen=%d filter=%q)",
-			cs.Name, cs.Interface, cs.Promiscuous, cs.Snaplen, cs.Filter)
+		log.Printf("capture: source %q (%s) live on %s (snaplen=%d filter=%q)",
+			cs.Name, cs.Kind, target, cs.Snaplen, cs.Filter)
 	}
 	if len(cfg.Capture.Sources) > 0 && live == 0 {
 		log.Printf("capture: no live source could start — continuing API-only (degraded)")
@@ -215,6 +211,59 @@ func run(args []string) int {
 	time.Sleep(50 * time.Millisecond)
 	log.Printf("synapsed stopped")
 	return 0
+}
+
+// newCaptureSource builds the capture.Source for one configured entry and a
+// short human label for the startup log. config.validate has already checked
+// the per-kind required fields; the constructors here do the real environment
+// checks (interface exists, capability present, binary on PATH) and a failure
+// is logged and skipped so the daemon still serves the API (PROJECT.md §21).
+func newCaptureSource(cs config.CaptureSource) (capture.Source, string, error) {
+	switch cs.Kind {
+	case "nic":
+		src, err := capture.NewAFPacket(capture.AFPacketConfig{
+			Interface:   cs.Interface,
+			Promiscuous: cs.Promiscuous,
+			Snaplen:     cs.Snaplen,
+			Filter:      cs.Filter,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Interface, nil
+	case "tcpdump":
+		src, err := capture.NewTcpdumpStream(capture.TcpdumpConfig{
+			Binary:    cs.Binary,
+			Interface: cs.Interface,
+			Filter:    cs.Filter,
+			Snaplen:   cs.Snaplen,
+			ExtraArgs: cs.ExtraArgs,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Interface, nil
+	case "ssh":
+		src, err := capture.NewSSHTcpdump(capture.SSHConfig{
+			SSHBinary:      cs.Binary,
+			Destination:    cs.Destination,
+			Port:           cs.Port,
+			IdentityFile:   cs.IdentityFile,
+			RemoteBinary:   cs.RemoteBinary,
+			Interface:      cs.Interface,
+			Filter:         cs.Filter,
+			Snaplen:        cs.Snaplen,
+			ExtraSSHArgs:   cs.ExtraSSHArgs,
+			KnownHostsMode: cs.KnownHosts,
+			Authorized:     cs.Authorized,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Destination + " " + cs.Interface, nil
+	default:
+		return nil, "", fmt.Errorf("unknown kind %q", cs.Kind)
+	}
 }
 
 // hasNICInterface reports whether srcs already contains a "nic" source bound to

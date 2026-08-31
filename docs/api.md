@@ -357,16 +357,24 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 ]
 ```
 
+- `kind` — `nic` (local AF_PACKET interface), `tcpdump` (a local
+  `tcpdump -U -w -` subprocess), or `ssh` (an authorized remote
+  `ssh <host> tcpdump -U -w -`).
 - `state` — `running`, `error` (see `error` for the message; other sources keep
-  running), or `stopped` (the source was exhausted or removed).
+  running), or `stopped` (the source was exhausted or removed). A `tcpdump` /
+  `ssh` source whose subprocess exits non-zero goes to `error` with
+  `"<tool>: exit <code>: <stderr tail>"`; it is not restarted automatically.
 - `pps` / `bps` — rolling packets- and bytes-per-second, sampled by the Manager
   once a second off the packet path.
 - `drops` — kernel packet drops (`AF_PACKET` `PACKET_STATISTICS` `tp_drops`),
   accumulated. A non-zero, growing value means the sensor cannot keep up
-  (PROJECT.md §22, §24).
-- `filter` — the source's current capture filter; `(all)` = everything.
-- `connection_latency_ms` — 0 for a local NIC; meaningful only for remote
-  sources (SSH/PCAP-over-IP, later).
+  (PROJECT.md §22, §24). `tcpdump` / `ssh` sources leave it 0 (tcpdump reports
+  drops only on stderr at exit).
+- `filter` — the source's current capture filter; `(all)` = everything. For
+  `nic` it is a built-in cBPF preset name (`ip`, `ip6`, `ip-any`, `not-arp`);
+  for `tcpdump` / `ssh` it is the raw tcpdump filter expression.
+- `connection_latency_ms` — 0 for a local NIC or a local tcpdump; the SSH dial
+  time for an `ssh` source is a follow-up (currently 0).
 
 ### GET /api/v1/captures/{name}
 

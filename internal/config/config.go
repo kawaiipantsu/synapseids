@@ -81,15 +81,35 @@ type Capture struct {
 }
 
 // CaptureSource declares one live capture input. Phase 3 supports kind "nic"
-// (a local AF_PACKET interface); tcpdump/SSH/PCAP-over-IP kinds are tracked
-// separately (PROJECT.md §6).
+// (a local AF_PACKET interface), "tcpdump" (a local `tcpdump -w -` subprocess)
+// and "ssh" (an authorized remote `ssh <host> tcpdump -w -`). PCAP-over-IP is
+// tracked separately (PROJECT.md §6).
 type CaptureSource struct {
 	Name        string `json:"name"`        // unique label, shown in /api/v1/captures
-	Kind        string `json:"kind"`        // "nic"
-	Interface   string `json:"interface"`   // NIC name for kind "nic" (e.g. "eth0", "lo")
-	Promiscuous bool   `json:"promiscuous"` // needs CAP_NET_ADMIN
-	Snaplen     int    `json:"snaplen"`     // per-frame bytes; 0 = default (262144)
-	Filter      string `json:"filter"`      // "" or a capture.BuiltinFilters name
+	Kind        string `json:"kind"`        // "nic" | "tcpdump" | "ssh"
+	Interface   string `json:"interface"`   // local NIC for "nic"/"tcpdump"; the remote NIC for "ssh"
+	Promiscuous bool   `json:"promiscuous"` // kind "nic" only; needs CAP_NET_ADMIN
+	Snaplen     int    `json:"snaplen"`     // per-frame bytes; 0 = default
+	// Filter's meaning is per-kind: for "nic" it is "" or a capture.BuiltinFilters
+	// preset name (a cBPF program); for "tcpdump"/"ssh" it is a raw tcpdump
+	// filter expression, tokenised on whitespace and passed as trailing argv
+	// elements — never shell-interpolated (§28.18).
+	Filter string `json:"filter"`
+
+	// tcpdump / ssh:
+	Binary    string   `json:"binary"`     // "tcpdump" binary (kind "tcpdump") or "ssh" binary (kind "ssh"); "" = the obvious default
+	ExtraArgs []string `json:"extra_args"` // kind "tcpdump": extra tcpdump args before the filter tokens
+
+	// ssh only:
+	Destination  string   `json:"destination"`    // "user@host" or an ssh_config alias
+	Port         int      `json:"port"`           // SSH port; 0 = ssh default
+	IdentityFile string   `json:"identity_file"`  // ssh -i private-key path
+	RemoteBinary string   `json:"remote_binary"`  // remote tcpdump binary; "" = "tcpdump"
+	KnownHosts   string   `json:"known_hosts"`    // "strict" (default) | "accept-new"
+	ExtraSSHArgs []string `json:"extra_ssh_args"` // extra ssh args before the destination
+	// Authorized must be true for kind "ssh": the operator asserts they are
+	// authorised to monitor Destination (§28.18, PROJECT.md §21).
+	Authorized bool `json:"authorized"`
 }
 
 // Models points at the model directory and names the primary model.
@@ -226,21 +246,55 @@ func (c Config) validate() error {
 	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {
-		switch {
-		case s.Name == "":
+		if s.Name == "" {
 			return fmt.Errorf("config: capture.sources[%d].name is empty", i)
-		case seen[s.Name]:
+		}
+		if seen[s.Name] {
 			return fmt.Errorf("config: capture.sources[%d]: duplicate name %q", i, s.Name)
-		case s.Kind != "nic":
-			return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (only \"nic\" is supported in Phase 3)", i, s.Name, s.Kind)
-		case s.Interface == "":
-			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
-		case s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen:
+		}
+		if s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen {
 			return fmt.Errorf("config: capture.sources[%d] (%s): snaplen %d out of range [0,%d]", i, s.Name, s.Snaplen, maxCaptureSnaplen)
-		case !captureFilterKnown(s.Filter):
-			return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+		}
+		if err := validateCaptureKind(i, s); err != nil {
+			return err
 		}
 		seen[s.Name] = true
+	}
+	return nil
+}
+
+// validateCaptureKind enforces the per-kind required fields (PROJECT.md §6,
+// §28.18).
+func validateCaptureKind(i int, s CaptureSource) error {
+	switch s.Kind {
+	case "nic":
+		if s.Interface == "" {
+			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
+		}
+		if !captureFilterKnown(s.Filter) {
+			return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+		}
+	case "tcpdump":
+		if s.Interface == "" {
+			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"tcpdump\"", i, s.Name)
+		}
+	case "ssh":
+		if s.Destination == "" {
+			return fmt.Errorf("config: capture.sources[%d] (%s): destination is required for kind \"ssh\"", i, s.Name)
+		}
+		if s.Interface == "" {
+			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"ssh\"", i, s.Name)
+		}
+		if !s.Authorized {
+			return fmt.Errorf("config: capture.sources[%d] (%s): remote capture requires \"authorized\": true — you must be authorised to monitor %s (PROJECT.md §28.18)", i, s.Name, s.Destination)
+		}
+		switch s.KnownHosts {
+		case "", "strict", "accept-new":
+		default:
+			return fmt.Errorf("config: capture.sources[%d] (%s): known_hosts %q must be \"strict\" or \"accept-new\"", i, s.Name, s.KnownHosts)
+		}
+	default:
+		return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (want \"nic\", \"tcpdump\" or \"ssh\")", i, s.Name, s.Kind)
 	}
 	return nil
 }

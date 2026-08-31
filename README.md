@@ -248,6 +248,23 @@ curl -s 'http://127.0.0.1:8080/api/v1/classifications?limit=50' | jq .
 
 Live capture (Phase 3): `synapsed --capture eth0` opens an `AF_PACKET` raw socket and runs the interface through the same pipeline a replay uses; `GET /api/v1/captures` then shows it counting packets, bytes, pps/bps and kernel drops. Equivalent JSON config: `capture.sources: [{ "name": "eth0", "kind": "nic", "interface": "eth0", "promiscuous": true, "filter": "" }]` (`filter` is `""` or a built-in cBPF preset — `ip`, `ip6`, `ip-any`, `not-arp`); or set `SYNAPSE_CAPTURE_IFACE`. Needs `CAP_NET_RAW` (and `CAP_NET_ADMIN` for promiscuous mode) — not root; the `contrib/systemd` unit grants both. A source that cannot open is logged and skipped, and the API keeps serving.
 
+`capture.sources[]` also takes `kind: "tcpdump"` and `kind: "ssh"` (issues #29/#30). For these two, `filter` is a **raw tcpdump filter expression** (e.g. `"tcp port 80 or udp"`), tokenised and passed as arguments — never through a shell.
+
+```jsonc
+"capture": { "sources": [
+  { "name": "span0", "kind": "tcpdump", "interface": "eth0",
+    "filter": "tcp or udp", "snaplen": 65535 },
+
+  { "name": "edge-fw", "kind": "ssh", "destination": "sensor@10.0.0.9",
+    "interface": "eth1", "filter": "not port 22",
+    "identity_file": "/etc/synapseids/id_ed25519",
+    "known_hosts": "accept-new",
+    "authorized": true }
+] }
+```
+
+`synapsed` manages the `tcpdump -U -w -` subprocess (locally, or over `ssh … tcpdump -U -w -` for `kind: "ssh"`) — no temporary capture files. `ssh` runs with `BatchMode=yes` (never prompts — use a key) and `StrictHostKeyChecking` = `known_hosts` (`"strict"` default, or `"accept-new"`). **A `kind: "ssh"` source must set `"authorized": true`** — an explicit assertion that you are authorised to monitor that host (PROJECT.md §21, §28.18); without it the config is rejected. A subprocess that exits is reported as `state: "error"` on `GET /api/v1/captures` and is not restarted automatically.
+
 **`synapse`** talks to a running `synapsed` and holds no logic of its own:
 
 | Command | Does |
