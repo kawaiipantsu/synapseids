@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/api/v1/status` `live` object now also reports `ws_clients`,
+  `ws_client_drops` and `ws_frames_batched` — the last being the count of
+  batched WebSocket frames produced by the pump (one per flush, independent of
+  the connected-client count). The existing `clients`, `frames_out` and
+  `client_drops` keys are unchanged (issue #70).
+
 ## [0.1.0] - 2026-08-31
 
 First tagged release: the Phase 1 vertical slice plus the full build, packaging

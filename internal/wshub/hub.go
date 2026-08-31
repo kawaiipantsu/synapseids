@@ -14,9 +14,25 @@ type Hub struct {
 	mu      sync.RWMutex
 	clients map[*client]struct{}
 
-	framesOut atomic.Uint64
-	drops     atomic.Uint64
-	accepted  atomic.Uint64
+	framesOut     atomic.Uint64
+	framesBatched atomic.Uint64
+	drops         atomic.Uint64
+	accepted      atomic.Uint64
+}
+
+// Stats is a snapshot of the hub's live counters (PROJECT.md §24).
+type Stats struct {
+	// Clients is the number of connections currently registered.
+	Clients int
+	// Accepted is the total number of connections ever registered.
+	Accepted uint64
+	// FramesOut is the total number of frames written to individual clients.
+	FramesOut uint64
+	// FramesBatched is the total number of batched payloads handed to
+	// Broadcast — one per pump flush, independent of the client count.
+	FramesBatched uint64
+	// Drops is the total number of clients dropped for a full send queue.
+	Drops uint64
 }
 
 type client struct {
@@ -61,8 +77,12 @@ func (h *Hub) Add(conn *Conn) {
 	}
 }
 
-// Broadcast queues payload for every client. Slow clients are dropped.
+// Broadcast queues payload for every client as one batched frame. Slow clients
+// are dropped. The batched-frame counter advances once per call, whether or not
+// a client is connected.
 func (h *Hub) Broadcast(payload []byte) {
+	h.framesBatched.Add(1)
+
 	h.mu.RLock()
 	victims := make([]*client, 0)
 	for cl := range h.clients {
@@ -80,10 +100,16 @@ func (h *Hub) Broadcast(payload []byte) {
 	}
 }
 
-// Stats reports live counters.
-func (h *Hub) Stats() (clients int, accepted, framesOut, drops uint64) {
+// Stats reports a snapshot of the live counters.
+func (h *Hub) Stats() Stats {
 	h.mu.RLock()
 	n := len(h.clients)
 	h.mu.RUnlock()
-	return n, h.accepted.Load(), h.framesOut.Load(), h.drops.Load()
+	return Stats{
+		Clients:       n,
+		Accepted:      h.accepted.Load(),
+		FramesOut:     h.framesOut.Load(),
+		FramesBatched: h.framesBatched.Load(),
+		Drops:         h.drops.Load(),
+	}
 }
