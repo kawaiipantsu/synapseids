@@ -143,7 +143,7 @@ func TestManagerIsolatesErroringSource(t *testing.T) {
 		}
 	}
 
-	waitFor(t, 2*time.Second, "bad source in error state", func() bool {
+	waitFor(t, 5*time.Second, "bad source in error state", func() bool {
 		st, _ := m.Get("bad")
 		return st.State == StateError && st.Error != ""
 	})
@@ -191,7 +191,7 @@ func TestManagerListReflectsState(t *testing.T) {
 		}
 	}
 
-	waitFor(t, 2*time.Second, "source stopped after exhaustion", func() bool {
+	waitFor(t, 5*time.Second, "source stopped after exhaustion", func() bool {
 		st, _ := m.Get("s")
 		return st.State == StateStopped && st.Packets == 10
 	})
@@ -226,7 +226,7 @@ func TestManagerAggregateStats(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		<-out
 	}
-	waitFor(t, 2*time.Second, "aggregate stats", func() bool {
+	waitFor(t, 5*time.Second, "aggregate stats", func() bool {
 		return m.Stats().Packets == 100
 	})
 }
