@@ -143,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/datasets/{ref}", s.handleDataset)
 	mux.HandleFunc("DELETE /api/v1/datasets/{ref}", s.handleDatasetDelete)
 	mux.HandleFunc("GET /api/v1/datasets/{ref}/download", s.handleDatasetDownload)
+	mux.HandleFunc("GET /api/v1/datasets/{ref}/stats", s.handleDatasetStats)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)

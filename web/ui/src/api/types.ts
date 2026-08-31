@@ -361,3 +361,134 @@ export interface DatasetCreateInput {
   derive_from?: string
   selection: DatasetSelection
 }
+
+// =======================================================================
+// Dataset Explorer (PROJECT.md §19.11; issues #37, #67) — feature/dataset-explorer
+// -----------------------------------------------------------------------
+// Mirrors internal/dataset/stats.go, served by GET /api/v1/datasets/{ref}/stats.
+// This block is owned by the dataset-explorer branch; keep sibling additions to
+// their own clearly-marked blocks so the merges stay clean.
+// =======================================================================
+
+/** One feature's distribution over a materialised dataset's rows. */
+export interface DatasetFeatureStats {
+  index: number
+  name: string
+  unit: string
+  norm: string
+  min: number
+  max: number
+  mean: number
+  stddev: number
+  p25: number
+  p50: number
+  p75: number
+  /** every row holds the same value (min === max); the histogram is empty */
+  degenerate: boolean
+  /** histogram edges are log1p-spaced (norm hint "log1p", all values >= 0) */
+  log_scale: boolean
+  /** length 25, or null when degenerate */
+  bin_edges: number[] | null
+  /** length 24, or null when degenerate */
+  bin_counts: number[] | null
+}
+
+/** Row counts per traffic-classes-v1 class, in frozen schema order. */
+export interface DatasetLabelDistribution {
+  classes: string[]
+  counts: number[]
+  fractions: number[]
+  total: number
+  /** labels in the CSV that are not traffic-classes-v1 classes */
+  unknown?: Record<string, number>
+  /** the CSV's per-class counts disagree with the manifest's label_counts */
+  manifest_mismatch: boolean
+}
+
+/** The 48×48 Pearson matrix, row-major: matrix[i*size + j] = corr(i, j). */
+export interface DatasetCorrelation {
+  names: string[]
+  size: number
+  matrix: number[]
+}
+
+export interface DatasetPortCount {
+  port: number
+  count: number
+}
+
+export interface DatasetPortStats {
+  top_destination: DatasetPortCount[]
+  top_source: DatasetPortCount[]
+  distinct_destination: number
+  distinct_source: number
+}
+
+export interface DatasetProtocolStats {
+  tcp: number
+  udp: number
+  icmp: number
+  other: number
+}
+
+export interface DatasetOutlierFeature {
+  index: number
+  name: string
+  value: number
+  z: number
+}
+
+/** A flagged row. `row` is its 0-based index into dataset.csv (no flow-id
+ *  column exists), which is ordered by flow id. */
+export interface DatasetOutlier {
+  row: number
+  label: string
+  max_z: number
+  features: DatasetOutlierFeature[]
+}
+
+export interface DatasetOutlierReport {
+  rule: string
+  threshold: number
+  count: number
+  cap: number
+  rows: DatasetOutlier[]
+}
+
+export interface DatasetPCAPoint {
+  pc1: number
+  pc2: number
+  pc3: number
+  label: string
+  row: number
+}
+
+export interface DatasetPCA {
+  components: number
+  /** loadings[k] is the k-th eigenvector in standardised space, length 48 */
+  loadings: number[][]
+  /** eigenvalue_k / trace, the variance share on component k */
+  explained_variance: number[]
+  eigenvalues_total: number
+  jacobi_sweeps: number
+  projection: DatasetPCAPoint[]
+  projection_sampled: boolean
+  projection_cap: number
+}
+
+/** GET /api/v1/datasets/{ref}/stats */
+export interface DatasetStats {
+  ref: string
+  content_hash: string
+  feature_schema: string
+  output_schema: string
+  row_count: number
+  feature_count: number
+  feature_stats: DatasetFeatureStats[]
+  label_distribution: DatasetLabelDistribution
+  correlation: DatasetCorrelation
+  ports: DatasetPortStats
+  protocols: DatasetProtocolStats
+  outliers: DatasetOutlierReport
+  pca: DatasetPCA
+}
