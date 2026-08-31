@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `internal/features/interarrival_test.go` — regression tests that pin the
+  `interarrival_*` missing-value sentinels (flow-features-v1 indices 15–20)
+  through `features.Extract`: a 1-packet flow reads `0` for mean/min/max/stddev,
+  a 2-packet flow reports the single gap with stddev still `0`, a 3-packet flow
+  with unequal gaps has a non-zero stddev, and `forward_interarrival_mean` stays
+  `0` until a direction has two packets (#72).
+
+### Changed
+
+- `docs/features-v1.md` now spells out the inter-arrival missing-value contract:
+  a flow with fewer than two packets in the relevant direction has no defined
+  inter-arrival distribution, so `0` is the deliberate `default_missing`
+  sentinel, not a measured value. Documentation only — matches the
+  already-frozen `schemas/features/flow-features-v1.json`; no schema or code
+  change.
+
 ### Fixed
 
 - `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
