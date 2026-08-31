@@ -98,8 +98,6 @@ func (h *Heuristic) evaluate(v features.Vector, explain bool) (map[int]float64, 
 	isTCP := g("protocol_tcp") == 1
 	isUDP := g("protocol_udp") == 1
 	dirRatio := g("packet_direction_ratio")
-	bytesFwd := g("bytes_forward")
-	bytesBwd := g("bytes_backward")
 
 	// Raw signal weights, later soft-maxed into a distribution. "normal" holds a
 	// firm baseline so a flow that trips no rule reads as confidently benign.
@@ -173,16 +171,30 @@ func (h *Heuristic) evaluate(v features.Vector, explain bool) (map[int]float64, 
 			"tcp_fin_count", "tcp_rst_count", "flow_duration", "packet_size_mean")
 	}
 
-	// WEB ATTACK: HTTP/HTTPS destination with a lopsided large request and a
-	// small response.
-	if isTCP && (dport == 80 || dport == 8080 || dport == 443 || dport == 8443) {
-		if bytesFwd > 4000 && bytesBwd > 0 && bytesFwd > 6*bytesBwd {
-			w[classWeb] = 4.0
-			fired("web_attack.lopsided_request", classWeb,
-				"a large request to an HTTP/HTTPS port answered by a much smaller response",
-				"destination_port", "bytes_forward", "bytes_backward")
-		}
-	}
+	// WEB ATTACK: deliberately NOT produced by this heuristic.
+	//
+	// There used to be a rule here: TCP to 80/8080/443/8443 with
+	// bytesFwd > 4000 && bytesFwd > 6*bytesBwd, weight 4.0, described as "a large
+	// request answered by a much smaller response". On a live WAN edge it fired 61
+	// times at severity HIGH, and every instance was an ordinary upload. The one
+	// inspected in detail:
+	//
+	//     bytes_forward 113368, bytes_backward 6478, destination_port 443
+	//
+	// which is a file upload, a git push or a backup — not an attack. The rule's
+	// premise is also backwards for most of the class it claims: injection,
+	// traversal and XSS payloads are SMALL requests, not large ones. There is no
+	// threshold on byte counts that separates "uploaded a photo" from "posted a
+	// deserialization payload", because the distinguishing evidence is in the
+	// bytes we deliberately do not inspect.
+	//
+	// So this heuristic reports no web_attack at all. `web_attack` stays in the
+	// frozen traffic-classes-v1 output vector — a trained model with subtler
+	// feature combinations may well learn it, and removing a class would break the
+	// contract (§9). But a transparent rule engine should not manufacture a HIGH
+	// severity verdict it cannot support: a labelled gap beats a confident wrong
+	// answer (§16), and 61 false highs is how an operator learns to ignore the
+	// tool. Tracked as an issue with the measurement.
 
 	// BOTNET C2: long-lived low-rate beacon-like flow to a non-standard port,
 	// regular inter-arrival, small symmetric packets.
