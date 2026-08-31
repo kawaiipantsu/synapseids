@@ -77,7 +77,9 @@ func run(args []string) int {
 	var flowID atomic.Uint64
 	rc := newReplayController(bus, store, rt, flowOpt, "local", &flowID)
 
-	srv := api.New(cfg, bus, store, rt, rc)
+	// rc also implements api.FlowStatsProvider: it owns the running pipeline and
+	// therefore its live flow-table counters (PROJECT.md §22, §24).
+	srv := api.New(cfg, bus, store, rt, rc, rc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

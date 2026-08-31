@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
+  `started`, `closed`, `snapshots` and `evicted` counters plus the configured
+  `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
+  pressure is observable without attaching to the packet path (PROJECT.md §22,
+  §24). It is sourced from the running replay pipeline's flow table via a new
+  `pipeline.Options.OnStats` hook that fires on the flow-table tick cadence,
+  never per packet.
+- The pipeline logs a throttled warning (the first eviction of a run, then every
+  1000th) when the flow table is full and starts evicting, pointing at
+  `capture.max_flows`.
 - `internal/capture` now reads **minimal pcapng** as well as classic pcap
   (GitHub issue #73). The hand-rolled reader handles a single Section Header
   Block (either byte order), Interface Description Blocks (link type, snap

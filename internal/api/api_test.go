@@ -18,8 +18,12 @@ func newTestServer() http.Handler {
 	bus := events.New()
 	store := storage.NewMem(100, 100)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	return New(cfg, bus, store, rt, nil).Handler()
+	return New(cfg, bus, store, rt, nil, nil).Handler()
 }
+
+type stubFlowStats struct{ fs FlowStats }
+
+func (s stubFlowStats) FlowStats() FlowStats { return s.fs }
 
 func TestStatusEndpoint(t *testing.T) {
 	h := newTestServer()
@@ -38,6 +42,7 @@ func TestStatusEndpoint(t *testing.T) {
 	if body["loopback"] != true {
 		t.Fatalf("default config should report loopback=true")
 	}
+
 	live, ok := body["live"].(map[string]any)
 	if !ok {
 		t.Fatalf("status payload has no live object: %v", body["live"])
@@ -46,6 +51,45 @@ func TestStatusEndpoint(t *testing.T) {
 		if _, present := live[k]; !present {
 			t.Fatalf("live.%s missing from status payload: %v", k, live)
 		}
+	}
+
+	// The flow object is always present; with no provider it reports zeroes and
+	// the configured cap (PROJECT.md §22, §24).
+	fl, ok := body["flow"].(map[string]any)
+	if !ok {
+		t.Fatalf("status has no flow object: %v", body["flow"])
+	}
+	for _, k := range []string{"active", "started", "closed", "snapshots", "evicted", "max"} {
+		if _, present := fl[k]; !present {
+			t.Fatalf("flow object missing %q: %v", k, fl)
+		}
+	}
+	if fl["max"].(float64) != float64(config.Default().Capture.MaxFlows) {
+		t.Fatalf("flow.max = %v, want %d", fl["max"], config.Default().Capture.MaxFlows)
+	}
+}
+
+func TestStatusFlowObjectFromProvider(t *testing.T) {
+	cfg := config.Default()
+	bus := events.New()
+	store := storage.NewMem(100, 100)
+	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
+	want := FlowStats{Active: 7, Started: 20, Closed: 13, Snapshots: 2, Evicted: 5, Max: 3}
+	h := New(cfg, bus, store, rt, nil, stubFlowStats{want}).Handler()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/status", nil))
+	if rr.Code != 200 {
+		t.Fatalf("status code %d", rr.Code)
+	}
+	var body struct {
+		Flow FlowStats `json:"flow"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("status not JSON: %v", err)
+	}
+	if body.Flow != want {
+		t.Fatalf("flow = %+v, want %+v", body.Flow, want)
 	}
 }
 
