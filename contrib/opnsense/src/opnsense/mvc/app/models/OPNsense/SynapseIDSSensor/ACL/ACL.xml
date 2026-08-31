@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!--
+    ACL/ACL.xml - privilege definition for the SynapseIDS sensor plugin.
+
+    Copyright (C) 2026 SynapseIDS contributors
+    All rights reserved. Redistribution and use in source and binary forms,
+    with or without modification, are permitted provided that the conditions of
+    the BSD 2-Clause license are met. See Sensor.php for the full text.
+
+    One privilege guards both the UI page and every API endpoint of the plugin:
+    the settings contain a bearer token and TLS key material, so read access to
+    the API is as sensitive as write access.
+-->
+<acl>
+    <page-services-synapseidssensor>
+        <name>Services: SynapseIDS Sensor</name>
+        <patterns>
+            <pattern>ui/synapseidssensor/*</pattern>
+            <pattern>api/synapseidssensor/*</pattern>
+        </patterns>
+    </page-services-synapseidssensor>
+</acl>
