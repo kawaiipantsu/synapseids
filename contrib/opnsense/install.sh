@@ -97,7 +97,23 @@ done
 	|| err "must run as root to install a package. Re-run as root, e.g. 'su -' then 'sh install.sh'"
 have pkg || err "pkg(8) not found"
 
-CORE_VERSION="$(cat /usr/local/opnsense/version/core 2>/dev/null || echo unknown)"
+# /usr/local/opnsense/version/core is a bare version string on some builds and a
+# JSON object on others (OPNsense 25.10 and the Business edition), so cat'ing it
+# printed the whole blob into the banner. Take product_version / CORE_VERSION when
+# it is JSON, the trimmed first line when it is not.
+CORE_VERSION="$(
+	sed -n 's/.*"product_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		/usr/local/opnsense/version/core 2>/dev/null | head -1
+)"
+[ -n "$CORE_VERSION" ] || CORE_VERSION="$(
+	sed -n 's/.*"CORE_VERSION"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		/usr/local/opnsense/version/core 2>/dev/null | head -1
+)"
+[ -n "$CORE_VERSION" ] || CORE_VERSION="$(
+	head -1 /usr/local/opnsense/version/core 2>/dev/null \
+		| tr -d '[:space:]' | grep -v '[{}]' || true
+)"
+[ -n "$CORE_VERSION" ] || CORE_VERSION="unknown"
 
 # ---------------------------------------------------------------- uninstall
 
@@ -152,15 +168,40 @@ say "OPNsense $CORE_VERSION, pkg ABI $ABI -> package arch $GOARCH"
 
 # ---------------------------------------------------------------- download
 
+# Every network call is bounded. fetch(1) and curl(1) both wait forever by
+# default, and with fetch's -q that wait is completely silent: a firewall that
+# cannot reach api.github.com hung the installer with no output and no clue.
+# CONNECT_TIMEOUT catches a blackholed host; TIMEOUT catches a stalled transfer.
+CONNECT_TIMEOUT=15
+TIMEOUT=120
+
 if have fetch; then
-	dl() { fetch -qo - "$1"; }
-	dlo() { fetch -qo "$2" "$1"; }
+	dl() { fetch -qo - -T "$CONNECT_TIMEOUT" "$1"; }
+	dlo() { fetch -qo "$2" -T "$TIMEOUT" "$1"; }
 elif have curl; then
-	dl() { curl -fsSL "$1"; }
-	dlo() { curl -fsSL -o "$2" "$1"; }
+	dl() { curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" "$1"; }
+	dlo() { curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" -o "$2" "$1"; }
 else
 	err "need fetch or curl"
 fi
+
+# redirect_tag prints the tag that /releases/latest redirects to, or nothing.
+redirect_tag() {
+	_loc=""
+	if have fetch; then
+		# fetch prints the resolved URL to stderr with -v; simpler and portable:
+		# ask for headers only via curl when present, else parse fetch -v.
+		_loc="$(fetch -v -o /dev/null -T "$CONNECT_TIMEOUT" \
+			"https://github.com/$REPO/releases/latest" 2>&1 \
+			| sed -n 's|.*releases/tag/\([^ ]*\).*|\1|p' | head -1)"
+	fi
+	if [ -z "$_loc" ] && have curl; then
+		_loc="$(curl -sI --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" \
+			"https://github.com/$REPO/releases/latest" \
+			| sed -n 's/^[Ll]ocation:.*releases\/tag\/\([^[:space:]]*\).*/\1/p' | head -1)"
+	fi
+	printf '%s' "$_loc"
+}
 
 # Resolving the version.
 #
@@ -186,9 +227,21 @@ Pass it explicitly, e.g. --url $BASE_URL --version v0.2.0"
 fi
 
 if [ -z "$VERSION" ]; then
-	VERSION="$(dl "https://api.github.com/repos/$REPO/releases/latest" \
-		| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
-	[ -n "$VERSION" ] || err "could not resolve the latest release (pass --version)"
+	# github.com/<repo>/releases/latest redirects to the tag. Reading the
+	# redirect avoids api.github.com entirely: that host is rate-limited
+	# unauthenticated, and is blocked on plenty of firewalls that can still
+	# reach github.com — which is exactly how this hung on a real gateway.
+	VERSION="$(redirect_tag)"
+	if [ -z "$VERSION" ]; then
+		# Fall back to the API, still bounded, before giving up.
+		VERSION="$(dl "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+			| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+	fi
+	[ -n "$VERSION" ] || err "could not resolve the latest release of $REPO.
+Pass it explicitly:  --version v0.2.0
+(both https://github.com/$REPO/releases/latest and api.github.com were unreachable
+or gave nothing; a firewall that blocks them will need --version, or --url
+pointing at a local mirror)"
 fi
 VER="${VERSION#v}"
 

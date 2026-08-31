@@ -27,17 +27,20 @@ case "$(uname -m)" in
 esac
 
 if have curl; then
-	dl() { curl -fsSL "$1"; }
-	dlo() { curl -fsSL -o "$2" "$1"; }
+	dl() { curl -fsSL --connect-timeout 15 --max-time 120 "$1"; }
+	dlo() { curl -fsSL --connect-timeout 15 --max-time 120 -o "$2" "$1"; }
 elif have wget; then
-	dl() { wget -qO- "$1"; }
-	dlo() { wget -qO "$2" "$1"; }
+	dl() { wget -qO- --connect-timeout=15 --timeout=120 "$1"; }
+	dlo() { wget -qO "$2" --connect-timeout=15 --timeout=120 "$1"; }
 else
 	err "need curl or wget"
 fi
 
 VERSION="${SYNAPSEIDS_VERSION:-}"
 if [ -z "$VERSION" ]; then
+	# Bounded, and a blocked api.github.com now fails fast with advice rather
+	# than hanging: see contrib/opnsense/install.sh, where an unbounded fetch on
+	# this exact host hung a real gateway with no output at all.
 	VERSION="$(dl "https://api.github.com/repos/$REPO/releases/latest" \
 		| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
 	[ -n "$VERSION" ] || err "could not resolve the latest release"
