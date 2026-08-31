@@ -1,0 +1,88 @@
+synapse-trainer examples
+========================
+
+recipe.json
+-----------
+A complete training-recipe.json. Fields other than `datasets` all have
+defaults (see synapse_trainer/recipe.py DEFAULTS); `datasets[].weight` must
+sum to ~1.0 and `split` must sum to ~1.0.
+
+  python -m synapse_trainer inspect-arch --recipe recipe.json
+  python -m synapse_trainer train --recipe recipe.json --data ./data --out ./bundle
+
+`inspect-arch` needs only numpy. `train` needs PyTorch.
+
+
+recipe.multi-dataset.json  +  data/
+-----------------------------------
+The PROJECT.md §14 mixture — 70% Copenhagen baseline, 20% lab attack corpus,
+10% reviewed local detections — against the `data/` fixture tree below.
+
+  python -m synapse_trainer inspect-recipe \
+      --recipe recipe.multi-dataset.json --data data
+  python -m synapse_trainer train \
+      --recipe recipe.multi-dataset.json --data data --out ./bundle --dry-run
+
+Both are torch-free: they resolve every dataset, split each one, apply the
+weights and print the plan (per-dataset rows, effective weights, split sizes,
+label distribution, imbalance warnings). Drop `--dry-run` to actually train.
+
+`data/` deliberately exercises all three layouts the resolver understands:
+
+  data/
+    hq-copenhagen/
+      baseline-2026-08/            <- versioned: v10 wins over v9 (numeric sort)
+        v9/{dataset.csv,manifest.json}
+        v10/{dataset.csv,manifest.json}
+      reviewed-anomalies-2026-09/  <- canonical: <id>/dataset.csv
+        {dataset.csv,manifest.json}
+    thugs/
+      lab-attacks-2026-08.csv      <- flat: <id>.csv
+      lab-attacks-2026-08.manifest.json
+
+Resolution order for a recipe entry {"id": "<id>"} under `--data ROOT`:
+
+  1. the entry's explicit "path" (absolute, else relative to ROOT, else to cwd)
+  2. ROOT/<id>.csv
+  3. ROOT/<id>/dataset.csv
+  4. ROOT/<id>/<latest version dir>/dataset.csv   (numeric-aware: v10 > v9)
+  5. any single ROOT/<id>/*.csv
+
+Nothing found is an error listing every path tried. A manifest.json (or
+dataset.json) next to the CSV — or ROOT/<id>.manifest.json for the flat layout —
+supplies the §14 dataset metadata; its `content_hash` is recorded in the bundle's
+training-recipe.json so a model is traceable to the exact data version. The
+manifest never overrides the CSV: it is metadata, not data.
+
+These fixtures are synthetic and tiny — enough to demonstrate resolution,
+weighting and the split, far too small to train anything useful.
+
+
+Dataset CSV
+-----------
+`--data` is the dataset root the recipe's ids resolve under; a single CSV file
+(or a directory containing `dataset.csv`, or the first *.csv found) still works
+when the recipe names exactly one dataset. Each header must contain the 48
+flow-features-v1 columns
+(named by their frozen schema name; order in the file does not matter) plus a
+`label` column. Extra columns are ignored; a missing feature column is an error.
+
+Header (48 features, in frozen index order, + label):
+
+flow_duration,packets_forward,packets_backward,bytes_forward,bytes_backward,packet_size_mean,packet_size_min,packet_size_max,packet_size_stddev,forward_packet_size_mean,backward_packet_size_mean,packets_per_second,bytes_per_second,forward_packets_per_second,backward_packets_per_second,interarrival_mean,interarrival_min,interarrival_max,interarrival_stddev,forward_interarrival_mean,backward_interarrival_mean,source_port,destination_port,protocol_tcp,protocol_udp,protocol_icmp,tcp_syn_count,tcp_ack_count,tcp_fin_count,tcp_rst_count,tcp_psh_count,tcp_urg_count,syn_ack_ratio,packet_direction_ratio,byte_direction_ratio,initial_tcp_window,average_tcp_window,down_up_bytes_ratio,small_packet_ratio,large_packet_ratio,average_payload_length,bidirectional_flag,internal_to_internal,internal_to_external,external_to_internal,external_to_external,dest_port_is_wellknown,snapshot_index,label
+
+Notes:
+  - `label` is a traffic-classes-v1 class NAME (normal, scan, dos_ddos,
+    brute_force, botnet_c2, web_attack, suspicious) or its integer id 0..6.
+  - Feature values are the RAW flow-features-v1 numbers. Do NOT pre-normalize:
+    the trainer fits a normalizer on the training split and writes it to
+    normalizer.json so the Go daemon can reproduce the transform.
+  - Each row is one flow record: a closed flow, or a periodic snapshot of a
+    long-lived flow (feature 47, `snapshot_index`, > 0).
+  - An optional `id` column names the row. It is never a feature; it is used
+    for the recorded per-split row identities (`<dataset id>#<row id>`) that
+    make the "no test row ever reaches training" guarantee checkable. Without
+    it the loader falls back to `<file stem>:<line number>`.
+
+`dataset.sample.csv` in this directory is a tiny synthetic example with the
+correct header. It is illustrative only — far too small to train anything.

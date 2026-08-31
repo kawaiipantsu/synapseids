@@ -1,0 +1,30 @@
+{
+  "name": "synapseids-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SynapseIDS operator SPA (TypeScript + React + Vite). Built output is committed to ../dist and embedded by web/web.go so the Go build never needs Node.",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "uplot": "^1.6.31"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "engines": {
+    "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+  }
+}

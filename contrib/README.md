@@ -99,6 +99,8 @@ until Phase 6.
 |---|---|---|
 | `synapse.json` | `/etc/synapseids/synapse.json` | Complete, valid production config — every key from `internal/config/config.go` set explicitly. |
 | `synapse.annotated.md` | (documentation, not installed) | Per-key reference: type, default, meaning, validation rules. Cross-references PROJECT.md §23. |
+| `synapse.pcap-over-ip.json` | (example, not installed) | The daemon **dialling** a listening sensor: one `kind: "pcap-over-ip"` source. See `pcap-over-ip.md`. |
+| `synapse.collector.json` | (example, not installed) | The daemon **accepting** sensors that dial in: a `capture.collector` block, one capture source per connected peer, `GET /api/v1/sensors`. Needs a server cert (`synapse-sensor gen-cert`) and `"authorized": true`. See `docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md`. |
 
 ```sh
 sudo install -D -m 0640 -o root -g synapse contrib/config/synapse.json /etc/synapseids/synapse.json

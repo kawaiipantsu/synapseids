@@ -1,0 +1,516 @@
+package capture
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/kawaiipantsu/synapseids/internal/packet"
+)
+
+// Source lifecycle states reported in SourceStatus.State.
+const (
+	StateRunning = "running"
+	StateError   = "error"
+	StateStopped = "stopped"
+)
+
+// SourceMeta is descriptive metadata the Manager keeps beside a Source for the
+// capture-sources view. It never influences packet handling.
+type SourceMeta struct {
+	Kind   string // "nic", "replay", ...
+	Filter string // human-readable current filter ("" or "(all)" = everything)
+	Origin string // "config" (opened at startup) | "api" (POST /api/v1/captures) | "" unknown
+	// Mode is the sensor mode a remote SYNPOIP peer negotiated: "raw", "flow" or
+	// "feature" (issue #45, PROJECT.md §5.3). "" for a local source, which is
+	// always equivalent to "raw".
+	Mode string
+}
+
+// SourceStatus is one row of GET /api/v1/captures (PROJECT.md §19.14).
+type SourceStatus struct {
+	Name          string    `json:"name"`
+	Kind          string    `json:"kind"`
+	State         string    `json:"state"` // running | error | stopped
+	Packets       uint64    `json:"packets"`
+	Decoded       uint64    `json:"decoded"`
+	DecodeErrors  uint64    `json:"decode_errors"`
+	Bytes         uint64    `json:"bytes"`
+	Drops         uint64    `json:"drops"`
+	PPS           float64   `json:"pps"`
+	BPS           float64   `json:"bps"`
+	LastPacket    time.Time `json:"last_packet"`
+	Filter        string    `json:"filter"`
+	Error         string    `json:"error"`
+	ConnLatencyMS int64     `json:"connection_latency_ms"` // 0 / not-applicable for a local NIC
+	Origin        string    `json:"origin"`                // "config" | "api" | "" — where the source was added from
+	// Mode is the sensor mode: "raw" (or "" for a local source), "flow" or
+	// "feature". In flow/feature mode no packets cross the wire, so packets,
+	// bytes, pps and bps are 0 by construction and records / record_bytes carry
+	// the throughput (issue #45).
+	Mode        string `json:"mode,omitempty"`
+	Records     uint64 `json:"records,omitempty"`
+	RecordBytes uint64 `json:"record_bytes,omitempty"`
+
+	// SensorID / Location are the observation point this source speaks for, when
+	// it speaks for one: the identity a SYNPOIP peer reported. Empty for a local
+	// NIC or a replay, whose flows are attributed to the daemon's own configured
+	// sensor name. SensorID is exactly the value stamped on every packet this
+	// source yields and therefore the value `sensor=` matches (issue #126).
+	SensorID string `json:"sensor_id,omitempty"`
+	Location string `json:"location,omitempty"`
+}
+
+type managedSource struct {
+	name string
+	src  Source
+	meta SourceMeta
+	// sensor / location are resolved once at registration from the source's
+	// SensorIdentity, if it reports one. sensor is stamped on every packet the
+	// forwarder moves, which is what carries flow attribution into the flow table
+	// (issue #126, docs/adr/0030). Both are immutable for the life of the source,
+	// so the packet path reads them without synchronisation.
+	sensor   string
+	location string
+
+	mu       sync.Mutex
+	state    string
+	errText  string
+	pps, bps float64
+	cancel   context.CancelFunc
+	done     chan struct{} // closed when this source's forwarder goroutine exits
+	// rate sampling baseline
+	lastSample time.Time
+	lastPkts   uint64
+	lastBytes  uint64
+}
+
+// Manager runs N capture Sources concurrently and merges their packets into one
+// channel. The pipeline consumes that single channel, so the single-goroutine
+// flow.Table downstream is still fed from exactly one place (PROJECT.md §22,
+// CLAUDE.md). A Source that errors is isolated: its status flips to "error",
+// it stops contributing packets, and every other source and the pipeline keep
+// running.
+//
+// Manager itself satisfies Source, so pipeline.Run consumes it directly.
+type Manager struct {
+	sampleEvery time.Duration
+
+	mu      sync.Mutex
+	order   []string
+	srcs    map[string]*managedSource
+	out     chan packet.Packet
+	started bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+
+	fwg sync.WaitGroup // per-source forwarder goroutines
+}
+
+// NewManager returns an idle Manager. Add sources, then hand it to pipeline.Run
+// (which calls Packets). Rates are sampled once a second.
+func NewManager() *Manager { return newManager(1024, time.Second) }
+
+func newManager(buf int, sample time.Duration) *Manager {
+	return &Manager{
+		sampleEvery: sample,
+		srcs:        make(map[string]*managedSource),
+		out:         make(chan packet.Packet, buf),
+	}
+}
+
+// Add registers src under name. It may be called before Packets (the common
+// case, startup config sources) or after it (the dynamic fan-in path: the
+// forwarder is spun up immediately against the already-running merged output
+// and the rate sampler, without disturbing the other sources or the single
+// pipeline goroutine that drains m.out — PROJECT.md §22). The runtime
+// POST /api/v1/captures handler uses the after-start path (issue #32).
+func (m *Manager) Add(name string, src Source, meta SourceMeta) error {
+	if name == "" {
+		return errors.New("capture: source name is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, dup := m.srcs[name]; dup {
+		return fmt.Errorf("capture: source %q already registered", name)
+	}
+	ms := &managedSource{name: name, src: src, meta: meta, state: StateStopped, lastSample: time.Now()}
+	// Resolve the observation point once, here, rather than per packet: both
+	// SYNPOIP postures know their peer's identity before the first frame arrives
+	// (the collector parsed it out of the accept, the dialled client configured
+	// it), so nothing about it can change while packets are flowing.
+	if sr, ok := src.(sensorReporter); ok {
+		ms.sensor, ms.location = sr.SensorIdentity()
+	}
+	m.srcs[name] = ms
+	m.order = append(m.order, name)
+	if m.started {
+		m.launch(ms)
+	}
+	return nil
+}
+
+// Remove stops and deregisters a source: it cancels the source, closes it, and
+// waits for its forwarder goroutine to exit so nothing outlives the call. The
+// row is dropped immediately — a following GET /api/v1/captures/{name} is a 404,
+// not a lingering "stopped" entry. Returns false if the name is unknown. Used by
+// DELETE /api/v1/captures/{name} (issue #32).
+func (m *Manager) Remove(name string) bool {
+	m.mu.Lock()
+	ms, ok := m.srcs[name]
+	if ok {
+		delete(m.srcs, name)
+		for i, n := range m.order {
+			if n == name {
+				m.order = append(m.order[:i], m.order[i+1:]...)
+				break
+			}
+		}
+	}
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	ms.mu.Lock()
+	cancel := ms.cancel
+	done := ms.done
+	ms.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	_ = ms.src.Close()
+	if done != nil {
+		// Wait for the forwarder to drain and return. The bound is a safety
+		// valve for a wedged source; the normal path closes in microseconds
+		// once the source's packet channel closes.
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	m.setState(ms, StateStopped, "")
+	return true
+}
+
+// Packets starts every registered source and returns the merged stream. The
+// error channel is the aggregate terminal channel: a single source's failure is
+// recorded in its SourceStatus, never forwarded here, so it never terminates the
+// pipeline. The channel closes only on full shutdown (ctx cancelled).
+func (m *Manager) Packets(ctx context.Context) (<-chan packet.Packet, <-chan error) {
+	errc := make(chan error, 1)
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return m.out, errc
+	}
+	m.started = true
+	m.ctx, m.cancel = context.WithCancel(ctx)
+	for _, name := range m.order {
+		m.launch(m.srcs[name])
+	}
+	m.mu.Unlock()
+
+	go m.sampleLoop(errc)
+	return m.out, errc
+}
+
+// launch spawns the forwarder for one source. Caller holds m.mu (or the source
+// is freshly created and unpublished).
+func (m *Manager) launch(ms *managedSource) {
+	sctx, scancel := context.WithCancel(m.ctx)
+	done := make(chan struct{})
+
+	ms.mu.Lock()
+	ms.cancel = scancel
+	ms.done = done
+	ms.state = StateRunning
+	ms.errText = ""
+	ms.lastSample = time.Now()
+	ms.lastPkts, ms.lastBytes = 0, 0
+	ms.mu.Unlock()
+
+	m.fwg.Add(1)
+	go func() {
+		defer m.fwg.Done()
+		defer close(done)
+		defer scancel()
+
+		pkts, errs := ms.src.Packets(sctx)
+		drain := func() {
+			for range pkts { //nolint:revive // intentional drain until the source closes its channel
+			}
+		}
+
+		for {
+			select {
+			case <-m.ctx.Done():
+				m.setState(ms, StateStopped, "")
+				scancel()
+				drain()
+				return
+
+			case err := <-errs:
+				if err == nil || isCancel(err) {
+					continue
+				}
+				m.setState(ms, StateError, err.Error())
+				scancel()
+				drain()
+				return
+
+			case p, ok := <-pkts:
+				if !ok {
+					m.pendingErr(ms, errs)
+					return
+				}
+				// Stamp the observation point on the way into the merged stream,
+				// for a source that reports an identity but does not stamp its
+				// own packets. The two SYNPOIP sources do stamp them, at decode
+				// time, where the identity is known first hand — so this is the
+				// backstop, not the mechanism, and it never overwrites what a
+				// source asserted about its own traffic.
+				//
+				// The whole packet-path cost of flow attribution is this branch
+				// and, at most, one string-header copy: no allocation, nothing
+				// shared, nothing locked (PROJECT.md §22, issue #126).
+				if p.Sensor == "" && ms.sensor != "" {
+					p.Sensor = ms.sensor
+				}
+				select {
+				case m.out <- p:
+				case <-m.ctx.Done():
+					m.setState(ms, StateStopped, "")
+					scancel()
+					drain()
+					return
+				}
+			}
+		}
+	}()
+}
+
+// pendingErr records a terminal error the source left on errs as it closed its
+// packet channel, or marks the source cleanly stopped if there was none.
+func (m *Manager) pendingErr(ms *managedSource, errs <-chan error) {
+	select {
+	case err := <-errs:
+		if err != nil && !isCancel(err) {
+			m.setState(ms, StateError, err.Error())
+			return
+		}
+	default:
+	}
+	m.setStateIfRunning(ms, StateStopped, "")
+}
+
+func (m *Manager) setState(ms *managedSource, state, errText string) {
+	ms.mu.Lock()
+	ms.state = state
+	if errText != "" {
+		ms.errText = errText
+	}
+	ms.mu.Unlock()
+}
+
+func (m *Manager) setStateIfRunning(ms *managedSource, state, errText string) {
+	ms.mu.Lock()
+	if ms.state == StateRunning {
+		ms.state = state
+		ms.errText = errText
+	}
+	ms.mu.Unlock()
+}
+
+// sampleLoop refreshes per-source PPS/BPS off the packet path, then closes the
+// merged channel once every forwarder has exited (ctx shutdown).
+func (m *Manager) sampleLoop(errc chan error) {
+	t := time.NewTicker(m.sampleEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			m.fwg.Wait()
+			close(m.out)
+			close(errc)
+			return
+		case now := <-t.C:
+			m.sample(now)
+		}
+	}
+}
+
+func (m *Manager) sample(now time.Time) {
+	for _, ms := range m.snapshotSources() {
+		st := ms.src.Stats()
+		ms.mu.Lock()
+		if dt := now.Sub(ms.lastSample).Seconds(); dt > 0 {
+			if st.Packets >= ms.lastPkts {
+				ms.pps = float64(st.Packets-ms.lastPkts) / dt
+			}
+			if st.Bytes >= ms.lastBytes {
+				ms.bps = float64(st.Bytes-ms.lastBytes) / dt
+			}
+		}
+		ms.lastSample = now
+		ms.lastPkts = st.Packets
+		ms.lastBytes = st.Bytes
+		ms.mu.Unlock()
+	}
+}
+
+func (m *Manager) snapshotSources() []*managedSource {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*managedSource, 0, len(m.order))
+	for _, name := range m.order {
+		out = append(out, m.srcs[name])
+	}
+	return out
+}
+
+// List returns the status of every source in registration order.
+func (m *Manager) List() []SourceStatus {
+	srcs := m.snapshotSources()
+	out := make([]SourceStatus, 0, len(srcs))
+	for _, ms := range srcs {
+		out = append(out, ms.status())
+	}
+	return out
+}
+
+// Get returns one source's status.
+func (m *Manager) Get(name string) (SourceStatus, bool) {
+	m.mu.Lock()
+	ms, ok := m.srcs[name]
+	m.mu.Unlock()
+	if !ok {
+		return SourceStatus{}, false
+	}
+	return ms.status(), true
+}
+
+// latencyReporter is implemented by sources whose connection setup has a
+// measurable cost (a TLS dial for pcap-over-ip); a local NIC does not implement
+// it and connection_latency_ms stays 0.
+type latencyReporter interface{ ConnLatencyMS() int64 }
+
+// filterReporter is implemented by sources that only learn their effective
+// filter after connecting (the sensor advertises it in the handshake).
+type filterReporter interface{ DynamicFilter() (string, bool) }
+
+// modeReporter is implemented by sources that only learn their sensor mode after
+// connecting (the sensor declares it in the SYNPOIP v2 accept).
+type modeReporter interface{ SensorMode() (string, bool) }
+
+// sensorReporter is implemented by sources that speak for a named observation
+// point — the two SYNPOIP postures. Unlike the reporters above it does not only
+// feed status: the id also reaches the packet path, where it lets the flow table
+// keep one sensor's flows apart from another's (issue #126).
+//
+// The SYNPOIP sources stamp packet.Packet.Sensor themselves as they decode, so
+// their attribution holds even when something other than a Manager drives them;
+// what the Manager does with this is publish it on the source's status row and
+// stamp any source that reports an identity without applying it. A source that
+// returns "" is anonymous and its flows are attributed to the daemon's own
+// configured sensor name.
+//
+// It is answered once, at Add time, so it must not depend on state that changes
+// mid-session.
+type sensorReporter interface {
+	SensorIdentity() (sensorID, location string)
+}
+
+func (ms *managedSource) status() SourceStatus {
+	st := ms.src.Stats()
+	ms.mu.Lock()
+	ss := SourceStatus{
+		Name:         ms.name,
+		Kind:         ms.meta.Kind,
+		State:        ms.state,
+		Packets:      st.Packets,
+		Decoded:      st.Decoded,
+		DecodeErrors: st.DecodeErr,
+		Bytes:        st.Bytes,
+		Drops:        st.Drops,
+		PPS:          ms.pps,
+		BPS:          ms.bps,
+		LastPacket:   st.LastTS,
+		Filter:       ms.meta.Filter,
+		Error:        ms.errText,
+		Origin:       ms.meta.Origin,
+		Mode:         ms.meta.Mode,
+		Records:      st.Records,
+		RecordBytes:  st.RecordBytes,
+		SensorID:     ms.sensor,
+		Location:     ms.location,
+	}
+	ms.mu.Unlock()
+
+	if lr, ok := ms.src.(latencyReporter); ok {
+		ss.ConnLatencyMS = lr.ConnLatencyMS()
+	}
+	if fr, ok := ms.src.(filterReporter); ok {
+		if f, known := fr.DynamicFilter(); known && f != "" {
+			ss.Filter = f
+		}
+	}
+	if mr, ok := ms.src.(modeReporter); ok {
+		if m, known := mr.SensorMode(); known && m != "" {
+			ss.Mode = m
+		}
+	}
+	return ss
+}
+
+// Stats reports the aggregate counters across every source, so Manager can stand
+// in for a single Source (PROJECT.md §24).
+func (m *Manager) Stats() Stats {
+	var agg Stats
+	for _, ms := range m.snapshotSources() {
+		st := ms.src.Stats()
+		agg.Packets += st.Packets
+		agg.Decoded += st.Decoded
+		agg.DecodeErr += st.DecodeErr
+		agg.Bytes += st.Bytes
+		agg.Drops += st.Drops
+		agg.Records += st.Records
+		agg.RecordBytes += st.RecordBytes
+		if st.LastTS.After(agg.LastTS) {
+			agg.LastTS = st.LastTS
+		}
+	}
+	return agg
+}
+
+// Close cancels every source and waits for the forwarders to drain. Safe to call
+// even if Packets was never called.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	cancel := m.cancel
+	started := m.started
+	srcs := make([]*managedSource, 0, len(m.order))
+	for _, name := range m.order {
+		srcs = append(srcs, m.srcs[name])
+	}
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	var firstErr error
+	for _, ms := range srcs {
+		if err := ms.src.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if started {
+		m.fwg.Wait()
+	}
+	return firstErr
+}
+
+func isCancel(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}

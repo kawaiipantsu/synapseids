@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync/atomic"
-	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/packet"
 )
 
-// Classic-pcap magic numbers. pcapng is intentionally not handled here (tracked);
-// use `editcap -F pcap` to downconvert.
+// Classic-pcap magic numbers. A file that starts with the pcapng Section Header
+// Block type instead is handled by the minimal reader in pcapng.go.
 const (
 	magicMicroLE = 0xa1b2c3d4
 	magicMicroBE = 0xd4c3b2a1
@@ -25,17 +23,17 @@ const (
 	maxSnapLen = 262144 // refuse absurd per-record lengths from a crafted file
 )
 
-// ErrNotPCAP is returned when the file does not start with a classic-pcap header.
-var ErrNotPCAP = errors.New("capture: not a classic pcap file (pcapng is not supported — try: editcap -F pcap in.pcapng out.pcap)")
+// ErrNotPCAP is returned when the file is neither a classic pcap nor a pcapng
+// capture (both are read; see pcapng.go for the pcapng features that still need
+// `editcap -F pcap` first).
+var ErrNotPCAP = errors.New("capture: not a pcap file (need a classic pcap or pcapng capture)")
 
-// PCAPFile is a Source that reads a classic .pcap file from disk.
+// PCAPFile is a Source that reads a classic .pcap or a minimal .pcapng file.
+// streamStats stays first so its uint64s are 8-byte aligned for atomics on 386.
 type PCAPFile struct {
-	path  string
-	link  packet.LinkType
-	stats struct {
-		packets, decoded, decodeErr, bytes uint64
-		lastUnixNano                       int64
-	}
+	st   streamStats
+	path string
+	link packet.LinkType
 }
 
 // OpenPCAPFile opens path and validates its global header without reading packets.
@@ -45,6 +43,24 @@ func OpenPCAPFile(path string) (*PCAPFile, error) {
 		return nil, fmt.Errorf("capture: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return nil, ErrNotPCAP
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("capture: %w", err)
+	}
+	if binary.BigEndian.Uint32(magic[:]) == ngBlockSHB {
+		z, err := newPCAPNGReader(bufio.NewReaderSize(f, 1<<16))
+		if err != nil {
+			return nil, err
+		}
+		if err := z.primeInterfaces(); err != nil {
+			return nil, err
+		}
+		return &PCAPFile{path: path, link: z.ifaces[0].link}, nil
+	}
 
 	var hdr [24]byte
 	if _, err := io.ReadFull(f, hdr[:]); err != nil {
@@ -70,7 +86,9 @@ func OpenPCAPFile(path string) (*PCAPFile, error) {
 // LinkType reports the capture's link layer.
 func (p *PCAPFile) LinkType() packet.LinkType { return p.link }
 
-// Packets streams decoded packets from the file.
+// Packets streams decoded packets from the file. The classic/pcapng decode is
+// the shared decodePCAPStream engine (also used by the tcpdump/ssh subprocess
+// sources), so Stats() semantics are identical across every pcap-stream input.
 func (p *PCAPFile) Packets(ctx context.Context) (<-chan packet.Packet, <-chan error) {
 	out := make(chan packet.Packet, 256)
 	errc := make(chan error, 1)
@@ -86,100 +104,14 @@ func (p *PCAPFile) Packets(ctx context.Context) (<-chan packet.Packet, <-chan er
 		}
 		defer func() { _ = f.Close() }()
 
-		r := bufio.NewReaderSize(f, 1<<16)
-		var g [24]byte
-		if _, err := io.ReadFull(r, g[:]); err != nil {
-			errc <- ErrNotPCAP
-			return
-		}
-		magic := binary.LittleEndian.Uint32(g[0:4])
-		var bo binary.ByteOrder = binary.LittleEndian
-		nano := false
-		switch magic {
-		case magicMicroLE:
-		case magicNanoLE:
-			nano = true
-		case magicMicroBE:
-			bo = binary.BigEndian
-		case magicNanoBE:
-			bo, nano = binary.BigEndian, true
-		default:
-			errc <- ErrNotPCAP
-			return
-		}
-
-		var rec [16]byte
-		buf := make([]byte, 0, 2048)
-		for {
-			if ctx.Err() != nil {
-				errc <- ctx.Err()
-				return
-			}
-			if _, err := io.ReadFull(r, rec[:]); err != nil {
-				if err == io.EOF || err == io.ErrUnexpectedEOF {
-					return // clean end of capture
-				}
-				errc <- fmt.Errorf("capture: reading record header: %w", err)
-				return
-			}
-			tsSec := bo.Uint32(rec[0:4])
-			tsFrac := bo.Uint32(rec[4:8])
-			inclLen := bo.Uint32(rec[8:12])
-			if inclLen == 0 || inclLen > maxSnapLen {
-				errc <- fmt.Errorf("capture: record length %d out of range", inclLen)
-				return
-			}
-			if cap(buf) < int(inclLen) {
-				buf = make([]byte, inclLen)
-			}
-			buf = buf[:inclLen]
-			if _, err := io.ReadFull(r, buf); err != nil {
-				errc <- fmt.Errorf("capture: short packet body: %w", err)
-				return
-			}
-			atomic.AddUint64(&p.stats.packets, 1)
-			atomic.AddUint64(&p.stats.bytes, uint64(inclLen))
-
-			nsec := int64(tsFrac) * 1000
-			if nano {
-				nsec = int64(tsFrac)
-			}
-			ts := time.Unix(int64(tsSec), nsec).UTC()
-			atomic.StoreInt64(&p.stats.lastUnixNano, ts.UnixNano())
-
-			pk, derr := packet.Decode(p.link, ts, buf)
-			if derr != nil {
-				atomic.AddUint64(&p.stats.decodeErr, 1)
-				continue
-			}
-			atomic.AddUint64(&p.stats.decoded, 1)
-			select {
-			case out <- pk:
-			case <-ctx.Done():
-				errc <- ctx.Err()
-				return
-			}
-		}
+		decodePCAPStream(ctx, bufio.NewReaderSize(f, 1<<16), out, errc, &p.st)
 	}()
 
 	return out, errc
 }
 
 // Stats returns a counter snapshot.
-func (p *PCAPFile) Stats() Stats {
-	last := atomic.LoadInt64(&p.stats.lastUnixNano)
-	var lt time.Time
-	if last != 0 {
-		lt = time.Unix(0, last).UTC()
-	}
-	return Stats{
-		Packets:   atomic.LoadUint64(&p.stats.packets),
-		Decoded:   atomic.LoadUint64(&p.stats.decoded),
-		DecodeErr: atomic.LoadUint64(&p.stats.decodeErr),
-		Bytes:     atomic.LoadUint64(&p.stats.bytes),
-		LastTS:    lt,
-	}
-}
+func (p *PCAPFile) Stats() Stats { return p.st.snapshot() }
 
 // Close is a no-op; the file handle lives only for the duration of Packets.
 func (p *PCAPFile) Close() error { return nil }

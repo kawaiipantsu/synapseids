@@ -23,8 +23,24 @@ GO    ?= go
 DIST  := dist
 COVER := coverage.out
 
-# Linux-only release matrix: intel + arm, 32 + 64 bit.
+# Linux release matrix: intel + arm, 32 + 64 bit. Non-negotiable (PROJECT.md
+# §27, §28.16) — do not change this line.
 LINUX_ARCHES := amd64 386 arm64 arm
+
+# FreeBSD matrix, added for the OPNsense sensor (ADR 0014). An OPNsense
+# firewall is a FreeBSD host: amd64 covers appliances and VMs, arm64 covers
+# Netgate / PC Engines-class hardware. Only synapse-sensor *must* build here;
+# synapsed and synapse happen to cross-compile cleanly too, so they ride along
+# in the tarball. This matrix is additive — the four Linux targets above are
+# built by exactly the same rules they always were.
+FREEBSD_ARCHES   := amd64 arm64
+FREEBSD_BINARIES := synapse-sensor synapsed synapse
+
+# The pkg(8) ABI the OPNsense plugin package is built for. OPNsense 24.x and
+# 25.x are FreeBSD 14. Override for a future base: `make opnsense-pkg
+# FREEBSD_VERSION=15`, or set ABIS to a full explicit list.
+FREEBSD_VERSION ?= 14
+OPNSENSE_ABIS   ?= $(foreach a,$(FREEBSD_ARCHES),FreeBSD:$(FREEBSD_VERSION):$(a))
 
 .DEFAULT_GOAL := help
 
@@ -41,17 +57,25 @@ help: ## Show available targets
 	@echo "  bench / coverage   Benchmarks / HTML coverage report"
 	@echo "  generate           Regenerate PCAP fixtures (testdata/gen)"
 	@echo ""
+	@echo "Web UI (Node; never invoked by the Go build):"
+	@echo "  web                Build the React SPA into web/dist (commit the result)"
+	@echo "  web-dev            Vite dev server with /api proxy to :8080"
+	@echo "  web-check          Type-check the SPA (tsc --noEmit)"
+	@echo "  web-test           Run the SPA unit tests (node --test)"
+	@echo ""
 	@echo "Build:"
 	@echo "  build              Build all three host binaries"
 	@echo "  build-linux        Build every binary for all four Linux arches"
-	@echo "  build-all          Alias for build-linux"
+	@echo "  build-freebsd      Build the sensor for FreeBSD amd64 + arm64 (OPNsense)"
+	@echo "  build-all          Linux + FreeBSD"
 	@echo "  install            go install all three into GOPATH/bin"
 	@echo "  clean              Remove generated files"
 	@echo ""
 	@echo "Release:"
 	@echo "  man                Gzip the man pages into dist/"
-	@echo "  dist               tar.gz per arch (all binaries) + SHA256SUMS"
+	@echo "  dist               tar.gz per arch + OPNsense .pkg + SHA256SUMS"
 	@echo "  deb                Four .deb packages (amd64, i386, arm64, armhf)"
+	@echo "  opnsense-pkg       OPNsense plugin package (.pkg) per FreeBSD ABI"
 	@echo "  snapshot           dist + deb with a snapshot version"
 	@echo "  release-check      Verify the tree is ready to tag"
 	@echo "  security           govulncheck when installed"
@@ -113,6 +137,31 @@ generate: ## Regenerate the committed PCAP fixtures
 run: ## Run synapsed (ARGS=... to pass arguments)
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/synapsed $(ARGS)
 
+## ---------------------------------------------------------------- web ui
+
+WEB_UI := web/ui
+
+# The Go build never runs any of these: web/dist/ is committed and embedded by
+# web/web.go (//go:embed all:dist). Run `make web` and commit web/dist/ after
+# touching anything under web/ui/. Requires Node 18 + npm (see web/ui/package.json).
+.PHONY: web
+web: ## Build the React SPA into web/dist (run + commit after editing web/ui/)
+	cd $(WEB_UI) && npm ci && npm run build
+
+.PHONY: web-dev
+web-dev: ## Vite dev server, proxying /api + /api/v1/stream to 127.0.0.1:8080
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm run dev
+
+.PHONY: web-check
+web-check: ## Type-check the SPA (tsc --noEmit)
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm run typecheck
+
+# SPA unit tests: node's built-in runner over the framework-free modules
+# (web/ui/test/, see web/ui/tsconfig.test.json). No test framework is installed.
+.PHONY: web-test
+web-test: ## Run the SPA unit tests (node --test)
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm test
+
 ## ---------------------------------------------------------------- build
 
 .PHONY: build
@@ -138,8 +187,24 @@ endef
 build-linux: ## Build every binary for all four Linux arches
 	$(foreach a,$(LINUX_ARCHES),$(call build_linux_arch,$(a)))
 
+# $(1) = GOARCH
+define build_freebsd_arch
+	@echo "building freebsd/$(1)"
+	@mkdir -p $(DIST)/synapseids_$(VERSION)_freebsd_$(1)
+	@for b in $(FREEBSD_BINARIES); do \
+		CGO_ENABLED=0 GOOS=freebsd GOARCH=$(1) \
+			$(GO) build -trimpath -ldflags "$(LDFLAGS)" \
+			-o $(DIST)/synapseids_$(VERSION)_freebsd_$(1)/$$b ./cmd/$$b || exit 1; \
+	done
+
+endef
+
+.PHONY: build-freebsd
+build-freebsd: ## Build the sensor (and friends) for FreeBSD amd64 + arm64
+	$(foreach a,$(FREEBSD_ARCHES),$(call build_freebsd_arch,$(a)))
+
 .PHONY: build-all
-build-all: build-linux ## Alias for build-linux
+build-all: build-linux build-freebsd ## Every release target: 4 Linux arches + 2 FreeBSD arches
 
 .PHONY: install
 install: ## go install all three into GOPATH/bin
@@ -148,8 +213,9 @@ install: ## go install all three into GOPATH/bin
 	done
 
 .PHONY: clean
-clean: ## Remove generated files
+clean: ## Remove generated files (keeps the committed web/dist/ bundle)
 	rm -rf $(DIST) $(BINARIES) $(COVER) coverage.html
+	rm -rf $(WEB_UI)/node_modules $(WEB_UI)/.vite $(WEB_UI)/*.tsbuildinfo
 	$(GO) clean -cache -testcache >/dev/null 2>&1 || true
 
 .PHONY: security
@@ -167,9 +233,16 @@ man: ## Gzip the man pages into dist/
 	done
 	@echo "wrote $(DIST)/*.1.gz"
 
+.PHONY: opnsense-pkg
+opnsense-pkg: build-freebsd ## Build the OPNsense plugin package (.pkg) per FreeBSD ABI
+	@VERSION=$(VERSION) DIST=$(DIST) ABIS="$(OPNSENSE_ABIS)" scripts/package-opnsense.sh
+
 .PHONY: dist
-dist: build-linux man ## tar.gz per arch (all binaries) + SHA256SUMS
+dist: build-linux build-freebsd man ## tar.gz per arch + OPNsense .pkg + SHA256SUMS
 	@VERSION=$(VERSION) DIST=$(DIST) BINARIES="$(BINARIES)" scripts/package.sh
+	@VERSION=$(VERSION) DIST=$(DIST) ABIS="$(OPNSENSE_ABIS)" \
+		FREEBSD_ARCHES="$(FREEBSD_ARCHES)" FREEBSD_BINARIES="$(FREEBSD_BINARIES)" \
+		scripts/package-opnsense.sh
 
 .PHONY: deb
 deb: build-linux man ## Four .deb packages (amd64, i386, arm64, armhf)

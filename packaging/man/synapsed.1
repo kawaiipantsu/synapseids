@@ -5,6 +5,7 @@ synapsed \- SynapseIDS capture, flow, feature and inference daemon
 .B synapsed
 [\fB\-\-config\fR \fIfile\fR]
 [\fB\-\-listen\fR \fIhost:port\fR]
+[\fB\-\-capture\fR \fIiface\fR]
 .br
 .B synapsed \-\-version
 .SH DESCRIPTION
@@ -16,9 +17,11 @@ vector for each flow, scores it with one or more inference models, persists the
 results, and exposes a versioned REST API together with a single live WebSocket
 channel.
 .PP
-This build wires PCAP replay end to end: a replayed capture runs through exactly
-the same flow, feature and classification pipeline as live traffic, so the UI
-behaves identically. Live capture backends and trained ONNX models arrive in
+A replayed capture runs through exactly the same flow, feature and
+classification pipeline as live traffic, so the UI behaves identically. Live
+local\-interface capture is wired via
+.BR \-\-capture ;
+tcpdump\-stream, SSH and PCAP\-over\-IP backends and trained ONNX models arrive in
 later releases.
 .PP
 The management API binds to
@@ -39,6 +42,20 @@ Override
 .B server.listen
 from the command line.
 .TP
+.BI \-\-capture " iface"
+Capture live traffic from a local network interface via
+.BR AF_PACKET .
+Repeatable. Adds a promiscuous NIC source equivalent to a
+.B capture.sources
+entry; the environment variable
+.B SYNAPSE_CAPTURE_IFACE
+does the same. Requires
+.B CAP_NET_RAW
+(and
+.B CAP_NET_ADMIN
+for promiscuous mode); running as root is not required. A source that cannot
+open is logged and skipped, and the API keeps serving.
+.TP
 .B \-\-version
 Print build metadata and exit.
 .SH ENDPOINTS
@@ -51,6 +68,9 @@ Recent flow records; one flow with its raw feature vector.
 .TP
 .B GET /api/v1/classifications
 Recent ensemble verdicts (the rolling log feed).
+.TP
+.B GET /api/v1/captures \fR/\fB /api/v1/captures/{name}
+Live capture sources: state, packets/sec, bytes/sec, kernel drops, filter.
 .TP
 .B GET /api/v1/schemas/features \fR/\fB /api/v1/schemas/classes
 The frozen feature and output contracts.

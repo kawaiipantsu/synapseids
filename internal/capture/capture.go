@@ -18,6 +18,21 @@ type Stats struct {
 	DecodeErr uint64
 	Bytes     uint64
 	LastTS    time.Time
+	// Drops counts packets the kernel discarded before this process could read
+	// them (AF_PACKET PACKET_STATISTICS tp_drops). It is a live-capture concern:
+	// file-backed sources leave it 0 (PROJECT.md §22, §24).
+	Drops uint64
+
+	// Records and RecordBytes belong to a `flow`- or `feature`-mode sensor
+	// (issue #45): the number of flow / feature records received and the encoded
+	// payload bytes they arrived as.
+	//
+	// They are deliberately *separate* counters rather than a reinterpretation of
+	// Packets and Bytes. A record-mode sensor ships no frames at all, so Packets,
+	// Bytes and the rates derived from them stay 0 — that is the truth, not a
+	// missing measurement, and SourceStatus.Mode says why.
+	Records     uint64
+	RecordBytes uint64
 }
 
 // Source is a packet producer. Packets runs until the context is cancelled or the

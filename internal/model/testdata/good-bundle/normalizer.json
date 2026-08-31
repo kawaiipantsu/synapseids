@@ -1,0 +1,294 @@
+{
+  "feature_schema": "flow-features-v1",
+  "method": "standard",
+  "per_feature": [
+    {
+      "index": 0,
+      "mean": 0,
+      "name": "flow_duration",
+      "std": 1
+    },
+    {
+      "index": 1,
+      "mean": 1,
+      "name": "packets_forward",
+      "std": 1.5
+    },
+    {
+      "index": 2,
+      "mean": 2,
+      "name": "packets_backward",
+      "std": 2
+    },
+    {
+      "index": 3,
+      "mean": 3,
+      "name": "bytes_forward",
+      "std": 2.5
+    },
+    {
+      "index": 4,
+      "mean": 4,
+      "name": "bytes_backward",
+      "std": 3
+    },
+    {
+      "index": 5,
+      "mean": 5,
+      "name": "packet_size_mean",
+      "std": 3.5
+    },
+    {
+      "index": 6,
+      "mean": 6,
+      "name": "packet_size_min",
+      "std": 4
+    },
+    {
+      "index": 7,
+      "mean": 7,
+      "name": "packet_size_max",
+      "std": 4.5
+    },
+    {
+      "index": 8,
+      "mean": 8,
+      "name": "packet_size_stddev",
+      "std": 5
+    },
+    {
+      "index": 9,
+      "mean": 9,
+      "name": "forward_packet_size_mean",
+      "std": 5.5
+    },
+    {
+      "index": 10,
+      "mean": 10,
+      "name": "backward_packet_size_mean",
+      "std": 6
+    },
+    {
+      "index": 11,
+      "mean": 11,
+      "name": "packets_per_second",
+      "std": 6.5
+    },
+    {
+      "index": 12,
+      "mean": 12,
+      "name": "bytes_per_second",
+      "std": 7
+    },
+    {
+      "index": 13,
+      "mean": 13,
+      "name": "forward_packets_per_second",
+      "std": 7.5
+    },
+    {
+      "index": 14,
+      "mean": 14,
+      "name": "backward_packets_per_second",
+      "std": 8
+    },
+    {
+      "index": 15,
+      "mean": 15,
+      "name": "interarrival_mean",
+      "std": 8.5
+    },
+    {
+      "index": 16,
+      "mean": 16,
+      "name": "interarrival_min",
+      "std": 9
+    },
+    {
+      "index": 17,
+      "mean": 17,
+      "name": "interarrival_max",
+      "std": 9.5
+    },
+    {
+      "index": 18,
+      "mean": 18,
+      "name": "interarrival_stddev",
+      "std": 10
+    },
+    {
+      "index": 19,
+      "mean": 19,
+      "name": "forward_interarrival_mean",
+      "std": 10.5
+    },
+    {
+      "index": 20,
+      "mean": 20,
+      "name": "backward_interarrival_mean",
+      "std": 11
+    },
+    {
+      "index": 21,
+      "mean": 21,
+      "name": "source_port",
+      "std": 11.5
+    },
+    {
+      "index": 22,
+      "mean": 22,
+      "name": "destination_port",
+      "std": 12
+    },
+    {
+      "index": 23,
+      "mean": 23,
+      "name": "protocol_tcp",
+      "std": 12.5
+    },
+    {
+      "index": 24,
+      "mean": 24,
+      "name": "protocol_udp",
+      "std": 13
+    },
+    {
+      "index": 25,
+      "mean": 25,
+      "name": "protocol_icmp",
+      "std": 13.5
+    },
+    {
+      "index": 26,
+      "mean": 26,
+      "name": "tcp_syn_count",
+      "std": 14
+    },
+    {
+      "index": 27,
+      "mean": 27,
+      "name": "tcp_ack_count",
+      "std": 14.5
+    },
+    {
+      "index": 28,
+      "mean": 28,
+      "name": "tcp_fin_count",
+      "std": 15
+    },
+    {
+      "index": 29,
+      "mean": 29,
+      "name": "tcp_rst_count",
+      "std": 15.5
+    },
+    {
+      "index": 30,
+      "mean": 30,
+      "name": "tcp_psh_count",
+      "std": 16
+    },
+    {
+      "index": 31,
+      "mean": 31,
+      "name": "tcp_urg_count",
+      "std": 16.5
+    },
+    {
+      "index": 32,
+      "mean": 32,
+      "name": "syn_ack_ratio",
+      "std": 17
+    },
+    {
+      "index": 33,
+      "mean": 33,
+      "name": "packet_direction_ratio",
+      "std": 17.5
+    },
+    {
+      "index": 34,
+      "mean": 34,
+      "name": "byte_direction_ratio",
+      "std": 18
+    },
+    {
+      "index": 35,
+      "mean": 35,
+      "name": "initial_tcp_window",
+      "std": 18.5
+    },
+    {
+      "index": 36,
+      "mean": 36,
+      "name": "average_tcp_window",
+      "std": 19
+    },
+    {
+      "index": 37,
+      "mean": 37,
+      "name": "down_up_bytes_ratio",
+      "std": 19.5
+    },
+    {
+      "index": 38,
+      "mean": 38,
+      "name": "small_packet_ratio",
+      "std": 20
+    },
+    {
+      "index": 39,
+      "mean": 39,
+      "name": "large_packet_ratio",
+      "std": 20.5
+    },
+    {
+      "index": 40,
+      "mean": 40,
+      "name": "average_payload_length",
+      "std": 21
+    },
+    {
+      "index": 41,
+      "mean": 41,
+      "name": "bidirectional_flag",
+      "std": 21.5
+    },
+    {
+      "index": 42,
+      "mean": 42,
+      "name": "internal_to_internal",
+      "std": 22
+    },
+    {
+      "index": 43,
+      "mean": 43,
+      "name": "internal_to_external",
+      "std": 22.5
+    },
+    {
+      "index": 44,
+      "mean": 44,
+      "name": "external_to_internal",
+      "std": 23
+    },
+    {
+      "index": 45,
+      "mean": 45,
+      "name": "external_to_external",
+      "std": 23.5
+    },
+    {
+      "index": 46,
+      "mean": 46,
+      "name": "dest_port_is_wellknown",
+      "std": 24
+    },
+    {
+      "index": 47,
+      "mean": 47,
+      "name": "snapshot_index",
+      "std": 24.5
+    }
+  ]
+}

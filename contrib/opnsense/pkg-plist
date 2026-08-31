@@ -1,0 +1,31 @@
+# Files installed under ${PREFIX} (/usr/local) by os-synapseids-sensor.
+#
+# Both packaging paths consume this list: the FreeBSD port Makefile here, and
+# scripts/package-opnsense.sh, which builds the .pkg from a Linux host and
+# FAILS THE BUILD if this list and the staged tree disagree. Add a file to
+# src/ and you must add it here.
+#
+# Blank lines and # comments are ignored. Paths are relative to ${PREFIX}.
+
+bin/synapse-sensor
+etc/rc.d/synapseids_sensor
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/Api/ServiceController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/Api/SettingsController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/SettingsController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/forms/dialogInstance.xml
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/forms/dialogSensor.xml
+opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/ACL/ACL.xml
+opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Menu/Menu.xml
+opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Migrations/M1_0_1.php
+opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.php
+opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml
+opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/index.volt
+opnsense/scripts/OPNsense/SynapseIDSSensor/fixperms.sh
+opnsense/service/conf/actions.d/actions_synapseidssensor.conf
+opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-ca.pem
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-cert.pem
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-instance.conf
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-key.pem
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.conf
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.token

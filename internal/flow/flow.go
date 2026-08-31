@@ -12,21 +12,45 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/packet"
 )
 
-// Key is the direction-normalized 5-tuple that identifies a bidirectional flow.
-// The lower (ip, port) endpoint is always stored first so both directions of a
-// conversation map to the same Key.
+// Key is the direction-normalized 5-tuple that identifies a bidirectional flow,
+// scoped to the observation point that saw it. The lower (ip, port) endpoint is
+// always stored first so both directions of a conversation map to the same Key.
+//
+// Sensor is that scope: the id of the sensor whose packets built this flow, or
+// "" for traffic the daemon captured itself. It is part of the key because a
+// flow is an observation, not a fact about the network — two sensors watching
+// two segments of the same routed conversation each see the whole 5-tuple, and
+// folding them into one flow would double every packet and byte count and
+// corrupt every feature derived from them. Keying on the observation point keeps
+// them as two honest flows (docs/adr/0030, issue #126).
 type Key struct {
-	A, B  netip.Addr
-	PortA uint16
-	PortB uint16
-	Proto packet.Proto
+	A, B   netip.Addr
+	PortA  uint16
+	PortB  uint16
+	Proto  packet.Proto
+	Sensor string
 }
 
-// KeyOf normalizes a packet's endpoints into a Key and reports whether the packet
-// travels from A to B (forwardFromA).
+// KeyOf normalizes a packet's endpoints into a Key, scoped to the packet's
+// observation point, and reports whether the packet travels from A to B
+// (forwardFromA).
 func KeyOf(p packet.Packet) (k Key, forwardFromA bool) {
-	sa, sb := p.SrcIP, p.DstIP
-	pa, pb := p.SrcPort, p.DstPort
+	k, forwardFromA = KeyOfEndpoints(p.SrcIP, p.SrcPort, p.DstIP, p.DstPort, p.Proto)
+	k.Sensor = p.Sensor
+	return k, forwardFromA
+}
+
+// KeyOfEndpoints normalizes one directed endpoint pair into a Key and reports
+// whether (sa,pa) is the A side. It is the single place the normalization rule
+// lives, so a Key rebuilt from a record's initiator/responder endpoints — for
+// example a flow record received from a remote sensor — is byte-identical to the
+// Key the local table would have derived from the same packets.
+//
+// The returned Key has an empty Sensor scope: the 5-tuple is all the endpoints
+// can say. Callers that know the observation point set Key.Sensor themselves
+// (KeyOf does it from the packet; Record.WithDerivedKey preserves whatever the
+// record already carried).
+func KeyOfEndpoints(sa netip.Addr, pa uint16, sb netip.Addr, pb uint16, proto packet.Proto) (k Key, forwardFromA bool) {
 	// Order by IP bytes, then port.
 	less := false
 	switch sa.Compare(sb) {
@@ -38,9 +62,9 @@ func KeyOf(p packet.Packet) (k Key, forwardFromA bool) {
 		less = pa <= pb
 	}
 	if less {
-		return Key{A: sa, B: sb, PortA: pa, PortB: pb, Proto: p.Proto}, true
+		return Key{A: sa, B: sb, PortA: pa, PortB: pb, Proto: proto}, true
 	}
-	return Key{A: sb, B: sa, PortA: pb, PortB: pa, Proto: p.Proto}, false
+	return Key{A: sb, B: sa, PortA: pb, PortB: pa, Proto: proto}, false
 }
 
 // CloseReason explains why a flow record was emitted.

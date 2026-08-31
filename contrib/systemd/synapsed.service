@@ -16,9 +16,10 @@
 # below also create the dirs, so a package that runs neither still starts clean.
 #
 # PROJECT.md §21: do not run the whole daemon as root. This unit runs as an
-# unprivileged user and grants only the two capabilities live capture will need.
-# Phase 1 is PCAP replay only and needs NO capabilities — comment out
-# AmbientCapabilities= and CapabilityBoundingSet= for a replay-only host.
+# unprivileged user and grants only the two capabilities live NIC capture needs:
+# CAP_NET_RAW to open the AF_PACKET socket, CAP_NET_ADMIN for promiscuous mode.
+# A replay-only host (no `--capture` / `capture.sources`) needs NO capabilities —
+# comment out AmbientCapabilities= and CapabilityBoundingSet= there.
 #
 # There is no config hot-reload: `systemctl restart synapsed` to apply changes.
 
@@ -50,7 +51,7 @@ ReadWritePaths=/var/lib/synapseids
 WorkingDirectory=/var/lib/synapseids
 # LogsDirectory=synapseids   # only if you redirect output to files; default is journald
 
-# --- capabilities: future live capture only (AF_PACKET, promisc, BPF) ------
+# --- capabilities: live NIC capture only (AF_PACKET, promisc, cBPF) --------
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 

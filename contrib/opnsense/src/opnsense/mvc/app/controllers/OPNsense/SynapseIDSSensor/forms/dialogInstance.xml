@@ -1,0 +1,142 @@
+<?xml version="1.0"?>
+<!--
+    forms/dialogInstance.xml - the per-sensor dialog behind the instances grid.
+
+    Copyright (C) 2026 SynapseIDS contributors
+    All rights reserved. BSD 2-Clause; see Sensor.php for the full text.
+
+    Field ids are relative to the dialog's own prefix ("instance"), which is what
+    ApiMutableModelControllerBase's getBase/setBase wrappers use for a repeating
+    item. Sensor::performValidation reports per-instance problems against
+    instances.instance.<uuid>.<field>, and the base class rewrites that to
+    instance.<field> before the dialog sees it, so a validation message lands on
+    the right box.
+
+    The order is the order the operator reads: which segment, where it goes, what
+    to capture, and finally the assertion that they are allowed to capture it.
+-->
+<form>
+    <field>
+        <id>instance.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help>Run a synapse-sensor process for this interface. The plugin-wide switch must also be on.</help>
+    </field>
+    <field>
+        <id>instance.name</id>
+        <label>Name</label>
+        <type>text</type>
+        <help>
+            Letters, digits and underscores, unique on this firewall. It names the service profile
+            (service synapseids_sensor restart &lt;name&gt;), the rendered configuration
+            /usr/local/etc/synapseids/instances/&lt;name&gt;.conf, the pidfile and the log directory
+            /var/log/synapseids/&lt;name&gt;/, and it is the column the selftest prints beside every check.
+            Naming it after the interface (wan, dmz, iot, mgmt) is the least surprising choice.
+        </help>
+    </field>
+    <field>
+        <id>instance.interface</id>
+        <label>Interface</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>
+            The single interface this sensor captures from. One process captures one device: to monitor four
+            segments, create four instances. Two instances may not share an interface.
+        </help>
+    </field>
+    <field>
+        <id>instance.sensor_id</id>
+        <label>Sensor ID</label>
+        <type>text</type>
+        <help>
+            Identifier this instance reports to the daemon (--sensor-id), shown in the SynapseIDS
+            capture-sources view. It must differ from every other instance's: a packet routed between two
+            monitored segments is legitimately seen twice, and the sensor ID is the only thing that tells the
+            two observations apart.
+        </help>
+    </field>
+    <field>
+        <id>instance.location</id>
+        <label>Location</label>
+        <type>text</type>
+        <help>Free-form location label reported to the daemon (--location), e.g. "hq-rack-2".</help>
+    </field>
+    <field>
+        <id>instance.listen_address</id>
+        <label>Listen address</label>
+        <type>text</type>
+        <help>
+            Listen mode only: host:port this instance binds (--listen). Every instance is a separate process,
+            so each needs its own port - 0.0.0.0:4789, 0.0.0.0:4790 and so on. Restrict these to the
+            management interface address and add a firewall rule; do not expose them to the internet.
+            Ignored in connect mode.
+        </help>
+    </field>
+
+    <field>
+        <id>instance.filter</id>
+        <label>Capture filter</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>Built-in filter preset (--filter). Leave on "All traffic" to capture every frame this interface sees.</help>
+    </field>
+    <field>
+        <id>instance.direction</id>
+        <label>Direction</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>Which direction of traffic to hand to the BPF device (--direction).</help>
+    </field>
+    <field>
+        <id>instance.send_mode</id>
+        <label>Send</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>
+            How much of the analysis runs here on the firewall for this interface, and therefore how much
+            crosses the link (--mode). "Raw packets" streams every frame. "Flow records" aggregates flows here
+            and sends one record per flow — around 1.5% of the raw bandwidth on ordinary traffic. "Feature
+            vectors only" also computes the 48 features here and sends nothing else, so &lt;b&gt;no packet
+            content from this segment ever leaves the firewall&lt;/b&gt; — around 1.9% of the raw bandwidth.
+            The classifications are identical in all three modes. Set per instance, so a sensitive internal
+            segment can be feature-only while the WAN stays raw. The two record modes need a SynapseIDS daemon
+            that speaks SYNPOIP v2; an older one refuses the connection rather than silently falling back to
+            sending packets.
+        </help>
+    </field>
+    <field>
+        <id>instance.promiscuous</id>
+        <label>Promiscuous mode</label>
+        <type>checkbox</type>
+        <help>
+            Also capture frames not addressed to this firewall (--promisc). Required when the interface is fed
+            from a SPAN/mirror port.
+        </help>
+    </field>
+    <field>
+        <id>instance.snaplen</id>
+        <label>Snap length</label>
+        <type>text</type>
+        <help>Bytes captured per frame (--snaplen). 262144 keeps whole frames; lower it only to save bandwidth.</help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>instance.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help>Free text, shown in the grid.</help>
+    </field>
+
+    <field>
+        <id>instance.authorized</id>
+        <label>I am authorised to monitor this interface</label>
+        <type>checkbox</type>
+        <help>
+            Required before this instance can be enabled, and asked separately for every instance.
+            synapse-sensor refuses live capture without --authorized (PROJECT.md 28.18), and being authorised
+            to monitor one segment is not being authorised to monitor another - so this is never copied from
+            another instance and is never set by the grid's enable toggle. Only monitor networks you own or
+            have written permission to monitor.
+        </help>
+    </field>
+</form>

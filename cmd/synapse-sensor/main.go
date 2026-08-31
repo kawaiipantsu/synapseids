@@ -1,8 +1,13 @@
-// Command synapse-sensor is a placeholder for the distributed lightweight capture
-// agent described in PROJECT.md §5.3. Distributed sensors — authenticated,
-// encrypted transport with raw / flow / feature modes — arrive in Phase 6. Until
-// then this binary only reports its version so packaging and release tooling can
-// treat all three commands uniformly.
+// Command synapse-sensor is the distributed lightweight capture agent described
+// in PROJECT.md §5.3. It captures on a local NIC (or replays a file) and streams
+// raw records to a central synapsed over the framed, authenticated SYNPOIP
+// transport (internal/capture/pcapoverip).
+//
+// Two transport postures: `--listen` (the daemon dials the sensor) and
+// `--connect` (the sensor dials the daemon's collector — for a sensor behind
+// NAT, e.g. an OPNsense firewall on a WAN edge). Sensor identity — id and
+// location — travels in the handshake either way. Raw records only for now;
+// `flow` / `feature` modes are #45.
 package main
 
 import (
@@ -14,15 +19,26 @@ import (
 
 func main() {
 	args := os.Args[1:]
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-V") {
-		fmt.Println(version.String("synapse-sensor"))
-		return
+	if len(args) >= 1 {
+		switch args[0] {
+		case "pcap-over-ip":
+			os.Exit(runPCAPOverIP(args[1:]))
+		case "gen-cert":
+			os.Exit(runGenCert(args[1:]))
+		case "doctor", "selftest":
+			os.Exit(runDoctor(args[1:]))
+		case "version", "--version", "-V":
+			fmt.Println(version.String("synapse-sensor"))
+			return
+		}
 	}
-	fmt.Fprintln(os.Stderr, "synapse-sensor: not implemented yet.")
-	fmt.Fprintln(os.Stderr, "Distributed remote capture (raw / flow / feature modes over an")
-	fmt.Fprintln(os.Stderr, "authenticated, encrypted transport) is Phase 6 — see PROJECT.md §5.3")
-	fmt.Fprintln(os.Stderr, "and https://github.com/kawaiipantsu/synapseids/issues (EPIC: Phase 6).")
-	fmt.Fprintln(os.Stderr, "\nFor now, capture on the daemon host or feed synapsed a PCAP:")
-	fmt.Fprintln(os.Stderr, "  synapse replay ./capture.pcap --speed 2")
-	os.Exit(1)
+	// No subcommand: print the build stamp (issue #43) and a one-line pointer at
+	// the transports, then exit 0.
+	fmt.Println(version.String("synapse-sensor"))
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --token-file tok --sensor-id edge-1 --location wan --iface em0 --authorized")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --listen :4789 --from capture.pcap")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor gen-cert --host ids.example --cert collector.crt --key collector.key")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor doctor          # selftest a deployed sensor (OPNsense: service synapseids_sensor selftest)")
+	fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --help")
 }

@@ -1,0 +1,1432 @@
+// TypeScript mirrors of the Go DTOs served by /api/v1. These follow the JSON
+// tags in internal/storage, internal/inference and internal/events on
+// origin/develop. Only fields this SPA actually reads are typed exhaustively;
+// unknown extra keys from concurrently-evolving endpoints are tolerated.
+
+/** inference.ModelOutput — one model's verdict for one flow. */
+export interface ModelOutput {
+  model_id: string
+  role: string
+  class: string
+  class_id: number
+  score: number
+  scores: number[] // length 7, traffic-classes-v1 order
+}
+
+/** inference.Result — the ensemble verdict for one flow. */
+export interface Result {
+  flow_id: number
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+  models: ModelOutput[]
+}
+
+/** storage.Classification — a denormalized rolling-log row. */
+export interface Classification {
+  flow_id: number
+  ts: string
+  sensor: string
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  result: Result
+}
+
+/** features.Vector — one flow-features-v1 sample. */
+export interface FeatureVector {
+  flow_id: number
+  schema: string
+  values: number[] // length 48, flow-features-v1 order
+}
+
+/** storage.FlowRecord — a stored flow plus its raw feature vector. */
+export interface FlowRecord {
+  id: number
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  first_seen: string
+  last_seen: string
+  duration_sec: number
+  fwd_packets: number
+  bwd_packets: number
+  fwd_bytes: number
+  bwd_bytes: number
+  close_reason: string
+  snapshot_index: number
+  features: FeatureVector
+}
+
+export interface ModelInfo {
+  id: string
+  family: string
+  role: string
+}
+
+/** capture.SourceStatus — one row of GET /api/v1/captures (PROJECT.md §19.14). */
+export interface CaptureSourceStatus {
+  name: string
+  kind: string
+  /** running | error | stopped */
+  state: string
+  packets: number
+  decoded: number
+  decode_errors: number
+  bytes: number
+  drops: number
+  pps: number
+  bps: number
+  last_packet: string
+  filter: string
+  error: string
+  connection_latency_ms: number
+  /** "config" (opened at startup) | "api" (added at runtime) | "" */
+  origin: string
+}
+
+export type CaptureKind = 'nic' | 'tcpdump' | 'ssh' | 'pcap-over-ip'
+
+/**
+ * config.CaptureSource — the POST /api/v1/captures body. Only the fields the
+ * add-source form sends are listed; everything is optional on the wire and the
+ * server runs the same per-kind validation the config file gets. An inline
+ * `token` is deliberately absent: the UI offers `token_file` only (§23).
+ */
+export interface CaptureSourceInput {
+  name: string
+  kind: CaptureKind
+  interface?: string
+  promiscuous?: boolean
+  snaplen?: number
+  filter?: string
+  binary?: string
+  destination?: string
+  port?: number
+  identity_file?: string
+  remote_binary?: string
+  known_hosts?: string
+  addr?: string
+  token_file?: string
+  server_name?: string
+  ca_file?: string
+  client_cert_file?: string
+  client_key_file?: string
+  insecure_tls?: boolean
+  authorized?: boolean
+}
+
+/** api.ReplayStatus */
+export interface ReplayStatus {
+  running: boolean
+  id?: string
+  source?: string
+  speed?: string
+  started?: string
+  packets: number
+  flows: number
+  last_error?: string
+}
+
+/** The `flow` block of GET /api/v1/status — the live flow table (§7). `active`
+ *  is the current table size, the rest are cumulative since daemon start. Every
+ *  field is optional because a daemon older than the block simply omits it, and
+ *  a missing count must render as "unknown", not as 0. */
+export interface FlowTableStatus {
+  active?: number
+  started?: number
+  closed?: number
+  snapshots?: number
+  evicted?: number
+  max?: number
+}
+
+/**
+ * The subset of GET /api/v1/status this SPA depends on. Sibling branches are
+ * concurrently reshaping handleStatus, so every access is defensive.
+ */
+export interface DaemonStatus {
+  storage?: { flows?: number; classifications?: number; driver?: string }
+  live?: { clients?: number }
+  flow?: FlowTableStatus
+  events?: { published?: number; dropped?: number; subscribers?: number }
+  replay?: ReplayStatus
+  models?: ModelInfo[]
+  version?: string
+  commit?: string
+  uptime_sec?: number
+  listen?: string
+  loopback?: boolean
+  // anything else the daemon adds later
+  [k: string]: unknown
+}
+
+export interface FeatureSchemaEntry {
+  index: number
+  name: string
+  type: string
+  unit: string
+  calc: string
+  missing: string
+  norm: string
+}
+
+export interface FeatureSchema {
+  schema: string
+  version: number
+  frozen: boolean
+  description: string
+  input_size: number
+  default_missing: number
+  features: FeatureSchemaEntry[]
+}
+
+export interface ClassSchemaEntry {
+  index: number
+  name: string
+  description: string
+}
+
+export interface ClassSchema {
+  schema: string
+  version: number
+  frozen: boolean
+  description: string
+  output_size: number
+  classes: ClassSchemaEntry[]
+}
+
+/** events.Event — the envelope every WebSocket batch element uses. */
+export interface WsEvent<T = unknown> {
+  type: string
+  ts: string
+  seq: number
+  data: T
+}
+
+// ---- investigation: host profiles and the classification timeline -----------
+// insight.Profile / insight.Series (PROJECT.md §19.4-6, issues #39/#40/#41).
+//
+// Every address here is a packet-derived string decoded from the wire. Render it
+// as text; never feed it to dangerouslySetInnerHTML or build markup from it.
+
+export interface ProtoCount {
+  proto: string
+  flows: number
+}
+
+export interface PortCount {
+  port: number
+  flows: number
+}
+
+export interface PeerCount {
+  ip: string
+  flows: number
+}
+
+export interface ClassCount {
+  class: string
+  class_id: number
+  count: number
+}
+
+/** A pointer back into the flow store; resolve the record with getFlow(). */
+export interface HostFlowRef {
+  flow_id: number
+  ts: string
+  proto: string
+  peer: string
+  port: number
+  bytes: number
+  class?: string
+}
+
+export interface HostProfile {
+  ip: string
+  first_seen: string
+  last_seen: string
+  flows: number
+  flows_initiated: number
+  flows_responded: number
+  packets_in: number
+  packets_out: number
+  bytes_in: number
+  bytes_out: number
+  protocols: ProtoCount[]
+  top_ports: PortCount[]
+  /** Detail view only. */
+  top_peers?: PeerCount[]
+  classifications: number
+  classes: ClassCount[]
+  disagreements: number
+  /** Detail view only. */
+  recent_flows?: HostFlowRef[]
+  /** Always false in this build — behavioural baselines are issues #47 / #63. */
+  baseline_available: boolean
+  /** Always false in this build — anomaly scoring is issue #47. */
+  anomaly_available: boolean
+}
+
+export interface TimelineBucket {
+  ts: string
+  total: number
+  by_class: Record<string, number>
+  disagreements: number
+}
+
+export interface TimelineSeries {
+  bucket_sec: number
+  buckets: TimelineBucket[]
+  /** Always false in this build — there is no anomaly series to plot yet (#47). */
+  anomaly_available: boolean
+}
+
+/** Filters shared by /api/v1/classifications and the per-host collections. */
+export interface ClassFilterParams {
+  class?: string
+  model?: string
+  min_confidence?: number
+  disagreement?: boolean
+  from?: string
+  to?: string
+  limit?: number
+}
+
+// ---- datasets (PROJECT.md §14, §19.10; issue #33) ------------------------
+
+/** dataset.TimeRange — RFC3339 UTC, "" when the dataset is empty of times. */
+export interface DatasetTimeRange {
+  from: string
+  to: string
+}
+
+/** dataset.Selection — the predicates that picked a dataset's rows. The four
+ *  that also exist on GET /api/v1/classifications (class, model,
+ *  min_confidence, disagreement) mean exactly the same thing there. */
+export interface DatasetSelection {
+  from?: string
+  to?: string
+  class?: string
+  model?: string
+  proto?: string
+  initiator_ip?: string
+  responder_ip?: string
+  min_confidence?: number
+  disagreement?: boolean
+  limit?: number
+  scan?: number
+  /** Cut from the human review store, using the operator's label instead of the
+   *  model's prediction (§16, issue #42). The only way labeling_source can say
+   *  "human_review". */
+  reviewed?: boolean
+  /** With `reviewed`, also include ignored_pattern reviews — labelled with the
+   *  model's *unconfirmed* prediction, so the cut becomes honestly mixed. */
+  include_ignored?: boolean
+}
+
+/** dataset.Dataset — the §14 manifest plus where it lives on disk. */
+export interface Dataset {
+  id: string
+  version: string
+  name: string
+  description: string
+  location: string
+  tags: string[]
+  created_at: string
+  source_capture_ids: string[]
+  time_range: DatasetTimeRange
+  feature_schema: string
+  output_schema: string
+  flow_count: number
+  label_counts: Record<string, number>
+  /** "model_prediction:<model ids>" today. "human_review" becomes possible
+   *  when the review loop (issue #42) lands — see the banner on the page. */
+  labeling_source: string
+  parent_datasets: string[]
+  /** "sha256:<lowercase hex>" over the schema identity + the CSV bytes. */
+  content_hash: string
+  selection: DatasetSelection
+  warnings?: string[]
+  csv_file: string
+  csv_bytes: number
+  feature_count: number
+  columns: string[]
+  dir: string
+}
+
+/** GET /api/v1/datasets */
+export interface DatasetList {
+  datasets: Dataset[]
+  /** the 48 feature column names + "label", in frozen schema order */
+  columns: string[]
+  label_column: string
+  min_rows: number
+}
+
+/** POST /api/v1/datasets body. */
+export interface DatasetCreateInput {
+  id: string
+  version?: string
+  name?: string
+  description?: string
+  location?: string
+  tags?: string[]
+  source_capture_ids?: string[]
+  /** "<id>@<version>" — records that dataset in parent_datasets. */
+  derive_from?: string
+  selection: DatasetSelection
+}
+
+// =======================================================================
+// Dataset Explorer (PROJECT.md §19.11; issues #37, #67) — feature/dataset-explorer
+// -----------------------------------------------------------------------
+// Mirrors internal/dataset/stats.go, served by GET /api/v1/datasets/{ref}/stats.
+// This block is owned by the dataset-explorer branch; keep sibling additions to
+// their own clearly-marked blocks so the merges stay clean.
+// =======================================================================
+
+/** One feature's distribution over a materialised dataset's rows. */
+export interface DatasetFeatureStats {
+  index: number
+  name: string
+  unit: string
+  norm: string
+  min: number
+  max: number
+  mean: number
+  stddev: number
+  p25: number
+  p50: number
+  p75: number
+  /** every row holds the same value (min === max); the histogram is empty */
+  degenerate: boolean
+  /** histogram edges are log1p-spaced (norm hint "log1p", all values >= 0) */
+  log_scale: boolean
+  /** length 25, or null when degenerate */
+  bin_edges: number[] | null
+  /** length 24, or null when degenerate */
+  bin_counts: number[] | null
+}
+
+/** Row counts per traffic-classes-v1 class, in frozen schema order. */
+export interface DatasetLabelDistribution {
+  classes: string[]
+  counts: number[]
+  fractions: number[]
+  total: number
+  /** labels in the CSV that are not traffic-classes-v1 classes */
+  unknown?: Record<string, number>
+  /** the CSV's per-class counts disagree with the manifest's label_counts */
+  manifest_mismatch: boolean
+}
+
+/** The 48×48 Pearson matrix, row-major: matrix[i*size + j] = corr(i, j). */
+export interface DatasetCorrelation {
+  names: string[]
+  size: number
+  matrix: number[]
+}
+
+export interface DatasetPortCount {
+  port: number
+  count: number
+}
+
+export interface DatasetPortStats {
+  top_destination: DatasetPortCount[]
+  top_source: DatasetPortCount[]
+  distinct_destination: number
+  distinct_source: number
+}
+
+export interface DatasetProtocolStats {
+  tcp: number
+  udp: number
+  icmp: number
+  other: number
+}
+
+export interface DatasetOutlierFeature {
+  index: number
+  name: string
+  value: number
+  z: number
+}
+
+/** A flagged row. `row` is its 0-based index into dataset.csv (no flow-id
+ *  column exists), which is ordered by flow id. */
+export interface DatasetOutlier {
+  row: number
+  label: string
+  max_z: number
+  features: DatasetOutlierFeature[]
+}
+
+export interface DatasetOutlierReport {
+  rule: string
+  threshold: number
+  count: number
+  cap: number
+  rows: DatasetOutlier[]
+}
+
+export interface DatasetPCAPoint {
+  pc1: number
+  pc2: number
+  pc3: number
+  label: string
+  row: number
+}
+
+export interface DatasetPCA {
+  components: number
+  /** loadings[k] is the k-th eigenvector in standardised space, length 48 */
+  loadings: number[][]
+  /** eigenvalue_k / trace, the variance share on component k */
+  explained_variance: number[]
+  eigenvalues_total: number
+  jacobi_sweeps: number
+  projection: DatasetPCAPoint[]
+  projection_sampled: boolean
+  projection_cap: number
+}
+
+/** GET /api/v1/datasets/{ref}/stats */
+export interface DatasetStats {
+  ref: string
+  content_hash: string
+  feature_schema: string
+  output_schema: string
+  row_count: number
+  feature_count: number
+  feature_stats: DatasetFeatureStats[]
+  label_distribution: DatasetLabelDistribution
+  correlation: DatasetCorrelation
+  ports: DatasetPortStats
+  protocols: DatasetProtocolStats
+  outliers: DatasetOutlierReport
+  pca: DatasetPCA
+}
+
+
+// ============================================================================
+// Training dashboard (§19.8, issue #35, ADR 0019)
+// -------------------------------------------------
+// A training run is an external synapse-trainer process that reports progress
+// to the daemon over HTTP. The SPA polls GET /api/v1/training/{id}. This block
+// is self-contained — a sibling branch also edits this file; keep additions here.
+// ============================================================================
+
+export type TrainingStatus = 'running' | 'completed' | 'failed' | 'stale'
+
+/** One per-epoch progress dict, stored and served verbatim by the daemon.
+ *  Every field is optional: the trainer owns this shape and may add to it. */
+export interface TrainingEpoch {
+  event?: string
+  status?: string
+  epoch?: number
+  epochs?: number
+  batches?: number
+  batches_total?: number
+  train_loss?: number
+  val_loss?: number
+  accuracy?: number
+  val_accuracy?: number
+  val_macro_precision?: number
+  val_macro_recall?: number
+  val_macro_f1?: number
+  lr?: number
+  elapsed_s?: number
+  device?: string
+  [k: string]: unknown
+}
+
+export interface TrainingPerClass {
+  class: string
+  precision: number
+  recall: number
+  f1: number
+  support: number
+}
+
+/** The terminal "done" metrics block (pass-through). */
+export interface TrainingFinal {
+  accuracy?: number
+  macro_precision?: number
+  macro_recall?: number
+  macro_f1?: number
+  train_loss?: number
+  val_loss?: number
+  test_loss?: number
+  epochs_run?: number
+  parameter_count?: number
+  elapsed_s?: number
+  device?: string
+  per_class?: TrainingPerClass[]
+  confusion?: number[][]
+  test?: {
+    accuracy?: number
+    macro_precision?: number
+    macro_recall?: number
+    macro_f1?: number
+    loss?: number
+    per_class?: TrainingPerClass[]
+    confusion?: number[][]
+  }
+  [k: string]: unknown
+}
+
+/** training.Run — GET /api/v1/training/{id}. */
+export interface TrainingRun {
+  id: string
+  name: string
+  status: TrainingStatus
+  recipe?: unknown
+  started_at: string
+  updated_at: string
+  finished_at?: string
+  trainer_version?: string
+  epochs_total: number
+  epoch: number
+  history: TrainingEpoch[]
+  final?: TrainingFinal
+  fail_reason?: string
+}
+
+/** GET /api/v1/training */
+export interface TrainingList {
+  runs: TrainingRun[]
+  history_cap: number
+  stale_after_seconds: number
+}
+
+// ============================================================================
+// ML ▸ Model Registry, explicit activation and the audit trail
+// (PROJECT.md §19.12, §15, §21, §28.10; issue #36, ADR 0022)
+// ----------------------------------------------------------------------------
+// Mirrors internal/registry.Entry (plus the api modelView `runtime` block) and
+// internal/audit.Record. Two sibling branches also edit this file, so this
+// block is deliberately self-contained and appended at the end — add your own
+// block below rather than editing this one.
+//
+// `architecture` and `metrics` are typed `unknown` on purpose: both are
+// pass-throughs from a model bundle's own JSON (metrics is a json.RawMessage on
+// the Go side), so the view parses them defensively rather than trusting a
+// shape the daemon never validated field-by-field.
+// ============================================================================
+
+/** registry.Status. Activation never survives a restart, so `active` always
+ *  means "live in inference.Runtime right now". */
+export type ModelStatus = 'registered' | 'active' | 'deactivated'
+
+/** api.runtimeInfo — is this entry the classifier loaded in the live Runtime? */
+export interface ModelRuntimeInfo {
+  loaded: boolean
+  role?: string
+}
+
+/** registry.Entry plus its live-runtime block — the §19.12 field set. */
+export interface ModelEntry {
+  model_id: string
+  name: string
+  version: string
+  family: string
+  feature_schema: string
+  input_size: number
+  output_schema: string
+  output_size: number
+  /** schema.Architecture; parse with hiddenFromUnknown() from lib/arch. */
+  architecture?: unknown
+  training_dataset_ids?: string[] | null
+  /** the bundle's metrics.json, verbatim — shape is not guaranteed. */
+  metrics?: unknown
+  parameter_count: number
+  artifact_bytes: number
+  content_hash: string
+  created_at: string
+  trainer_version: string
+  derived_from?: string
+  status: ModelStatus
+  registered_at: string
+  activated_at?: string
+  dir: string
+  runtime?: ModelRuntimeInfo
+}
+
+/** api.runtimeModel — one classifier live in the Runtime, registered or not
+ *  (the heuristic never is). */
+export interface RuntimeModel {
+  id: string
+  family: string
+  role: string
+  registered: boolean
+}
+
+/** GET /api/v1/models */
+export interface ModelList {
+  models: ModelEntry[]
+  runtime: RuntimeModel[]
+}
+
+/** GET /api/v1/models/{id} — entry plus its lineage chain and direct children. */
+export interface ModelDetail {
+  entry: ModelEntry
+  /** derived-from chain, root first, this model last. */
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+}
+
+/** registry.TreeNode — the lineage forest (§15). */
+export interface ModelTreeNode {
+  entry: ModelEntry
+  children: ModelTreeNode[]
+}
+
+/** GET /api/v1/models/{id}/lineage */
+export interface ModelLineage {
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+  tree: ModelTreeNode[]
+}
+
+/** audit.Record — one append-only line of operator history. `subject_type` is
+ *  an open string, not an enum: "model" | "dataset" | "training" today, and
+ *  whatever the review loop (issue #42) adds next, with no change here. */
+export interface AuditRecord {
+  ts: string
+  event: string
+  actor: string
+  subject_type: string
+  subject: string
+  /** equals `subject` on model lines, "" on every other subject type. */
+  model_id: string
+  detail: string
+}
+
+/** GET /api/v1/audit — read-only; the log is append-only forever, so there is
+ *  no create/update/delete counterpart. */
+export interface AuditList {
+  records: AuditRecord[]
+  count: number
+  /** the limit actually applied after clamping. */
+  limit: number
+  max_limit: number
+  /** how far back from EOF the reader will scan, in bytes. */
+  scan_bytes_cap: number
+}
+
+/** Query filters for GET /api/v1/audit. */
+export interface AuditQuery {
+  limit?: number
+  subject_type?: string
+  subject?: string
+  event?: string
+  /** RFC3339, inclusive. */
+  from?: string
+  to?: string
+}
+
+
+// ============================================================================
+// Human review loop (PROJECT.md §16; issues #42, #64) — feature/review-queue
+// ---------------------------------------------------------------------------
+// Mirrors internal/review, served by /api/v1/review*. A sibling branch also
+// edits this file; keep additions inside this block so the merges stay clean.
+//
+// The one rule this whole block exists to make visible: `predicted_class`,
+// `predicted_score` and `model_id` are the model's ORIGINAL claim, captured when
+// the flow was first reviewed. They sit *alongside* `human_label` and are never
+// replaced by it. There is deliberately no request type here that can set them.
+// ============================================================================
+
+/** review.State — the five §16 states. */
+export type ReviewState = 'unreviewed' | 'correct' | 'incorrect' | 'unsure' | 'ignored_pattern'
+
+export const REVIEW_STATES: ReviewState[] = [
+  'unreviewed',
+  'correct',
+  'incorrect',
+  'unsure',
+  'ignored_pattern',
+]
+
+/** The states that settle a flow and remove it from the queue. `unsure` is not
+ *  one of them: "I don't know" is a request to come back, not an answer. */
+export const TERMINAL_REVIEW_STATES: ReviewState[] = ['correct', 'incorrect', 'ignored_pattern']
+
+/** review.Sort — the queue orderings. */
+export type ReviewSort = 'uncertainty' | 'recent' | 'disagreement'
+
+/** review.Change — one superseded decision. */
+export interface ReviewChange {
+  /** when this decision was replaced */
+  ts: string
+  state: ReviewState
+  human_label?: string
+  note?: string
+  reviewer: string
+}
+
+/** review.Review — one flow's decision plus the frozen model prediction. */
+export interface Review {
+  flow_id: number
+  state: ReviewState
+  /** what the operator typed; empty for `correct` (it is derived) */
+  human_label: string
+  /** the class a curated dataset would use: the confirmed prediction for
+   *  `correct`, the correction for `incorrect`, "" otherwise. Derived server-side
+   *  on every read, so it can never drift from state/human_label. */
+  effective_label: string
+  /** the model's original claim — frozen at first review, never overwritten */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  /** "local" until auth lands (issue #58) */
+  reviewer: string
+  note: string
+  created_at: string
+  updated_at: string
+  history: ReviewChange[]
+}
+
+/** review.QueueItem — one flow awaiting review, with its ranking numbers. */
+export interface ReviewQueueItem {
+  flow_id: number
+  ts: string
+  sensor: string
+  proto: string
+  initiator_ip: string
+  initiator_port: number
+  responder_ip: string
+  responder_port: number
+  /** the *live* verdict being asked about (nothing is captured until review) */
+  predicted_class: string
+  predicted_score: number
+  model_id: string
+  disagreement: boolean
+  scores: number[] // length 7, traffic-classes-v1 order
+  /** the two classes the margin is between */
+  top1: string
+  top2: string
+  /** p_top1 - p_top2, 0..1. Smaller = the model is less sure. */
+  margin: number
+  /** 1 - margin, so larger = review sooner. The `uncertainty` sort key. */
+  uncertainty: number
+  /** normalised Shannon entropy over the 7 classes, 0..1 */
+  entropy: number
+  /** false when the verdict carried no usable probability vector */
+  scores_available: boolean
+  /** 'unreviewed' or 'unsure' — the only states that reach the queue */
+  review_state: ReviewState
+  /** an earlier `unsure` note, carried forward to the next reviewer */
+  note?: string
+}
+
+/** review.Stats — the counts strip. */
+export interface ReviewStats {
+  total: number
+  /** every one of the five states is present, zero included */
+  by_state: Record<string, number>
+  /** correct + incorrect + ignored_pattern */
+  terminal: number
+  /** unreviewed + unsure — still in the queue */
+  open: number
+  /** correct + incorrect — rows a curated dataset can use */
+  labelled: number
+  directory: string
+}
+
+/** The enum block every review response carries, so nothing is hardcoded. */
+export interface ReviewVocabulary {
+  states: ReviewState[]
+  classes: string[]
+  sorts: ReviewSort[]
+}
+
+/** GET /api/v1/review/queue */
+export interface ReviewQueueResponse {
+  queue: ReviewQueueItem[]
+  sort: ReviewSort
+  /** how many stored verdicts were walked to build this page */
+  scanned: number
+  vocabulary: ReviewVocabulary
+  /** the ranking formulas, in words, served next to the ranking */
+  ranking: { uncertainty: string; entropy: string }
+}
+
+/** GET /api/v1/review */
+export interface ReviewListResponse {
+  reviews: Review[]
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/** GET /api/v1/review/stats */
+export interface ReviewStatsResponse {
+  stats: ReviewStats
+  vocabulary: ReviewVocabulary
+}
+
+/**
+ * PUT|POST /api/v1/review/{flow_id} body.
+ *
+ * Note what is absent and always will be: predicted_class, predicted_score and
+ * model_id. The daemon captures the prediction itself and rejects a body that
+ * mentions them (400, unknown field) — PROJECT.md §16.
+ */
+export interface ReviewWriteInput {
+  state: ReviewState
+  /** required for `incorrect`; must be empty for every other state */
+  human_label?: string
+  note?: string
+}
+
+
+// ---------------------------------------------------------------------------
+// Downloadable investigation reports (issue #66, ADR 0023).
+//
+// Self-contained block, appended at the end of the file on purpose: several
+// sibling branches also edit types.ts, and keeping this addition isolated makes
+// a merge a concatenation rather than a conflict.
+//
+// The SPA never renders a report itself — rendering is server-side, and the
+// download is a plain browser navigation to the attachment URL. These types
+// exist so the query builder in api/client.ts is typed, and so a future view
+// that wants to preview a report's coverage block has something to read.
+// ---------------------------------------------------------------------------
+
+/** report.ScopeKind — what a report is about. */
+export type ReportScopeKind = 'host' | 'range'
+
+/** The two rendering formats GET /api/v1/reports/* accepts. */
+export type ReportFormat = 'json' | 'html'
+
+/** report.Scope — exactly what was asked for. */
+export interface ReportScope {
+  kind: ReportScopeKind
+  host?: string
+  from?: string
+  to?: string
+  unbounded: boolean
+  filter?: string
+}
+
+/** report.Note — one explicit statement about what the report does not know. */
+export interface ReportNote {
+  code: string
+  level: 'info' | 'warning'
+  text: string
+}
+
+/**
+ * report.Coverage — every limit that applied and every discard the daemon had
+ * already made. `partial` is the single flag a consumer can branch on.
+ */
+export interface ReportCoverage {
+  partial: boolean
+  store_driver: string
+  flows_retained: number
+  flows_evicted: number
+  classifications_retained: number
+  classifications_evicted: number
+  scan_limit: number
+  scan_scanned: number
+  scan_exhausted: boolean
+  oldest_retained?: string
+  range_starts_before_retention: boolean
+  hosts_tracked: number
+  host_cap: number
+  hosts_evicted: number
+  key_cap: number
+  keys_pruned: number
+  observations_dropped: number
+  timeline_late: number
+  notable_flow_cap: number
+  notable_candidates: number
+  notable_flows_truncated: boolean
+  flow_records_missing: number
+  /** Always false in this build — behavioural baselines are issues #47 / #63. */
+  baseline_available: boolean
+  /** Always false in this build — anomaly scoring is issue #47. */
+  anomaly_available: boolean
+}
+
+/** report.Report — the JSON artefact, for reference by any future consumer. */
+export interface InvestigationReport {
+  schema: string
+  generated_at: string
+  generator: {
+    product: string
+    version: string
+    commit: string
+    built_at: string
+    dirty: boolean
+    feature_schema: string
+    output_schema: string
+  }
+  scope: ReportScope
+  coverage: ReportCoverage
+  notes: ReportNote[]
+  summary: {
+    classifications: number
+    disagreements: number
+    non_normal: number
+    distinct_flows: number
+    distinct_hosts: number
+    first_verdict?: string
+    last_verdict?: string
+  }
+  [k: string]: unknown
+}
+
+// ============================================================================
+// Flow Inspector: normalized inputs, snapshot history, explanation (§19.3)
+// issue #38, ADR 0025 — feature/flow-inspector
+// ---------------------------------------------------------------------------
+// Mirrors internal/api/flows.go and internal/api/flow_snapshots.go, served by
+// GET /api/v1/flows/{id}/explain and GET /api/v1/flows/{id}/snapshots. Appended
+// as its own block on purpose: sibling branches also edit this file, so keeping
+// the addition isolated makes a merge a concatenation rather than a conflict.
+//
+// Three things this block deliberately does NOT contain, because the daemon does
+// not produce them and the drawer must not imply otherwise:
+//
+//   * a training baseline, or any "current vs baseline" pair. §19.3's example
+//     shows one, but baselines are issues #47 / #63 — `baseline.available` is
+//     false and there is no value field to render next to it.
+//   * an anomaly score. Issue #47 as well; `anomaly.available` is always false.
+//   * a per-feature contribution number for a trained model. Exact attribution
+//     needs gradients or SHAP, so `explanation.kind` is 'unavailable' for an
+//     ONNX model and `rules` is empty. A rough proxy is not offered at all,
+//     because a proxy rendered in an explanation panel reads as an explanation.
+// ============================================================================
+
+/** inference.RuleFeature — one feature value a heuristic rule compared. */
+export interface RuleFeature {
+  name: string
+  value: number
+  unit: string
+}
+
+/**
+ * inference.FiredRule — one heuristic rule that matched, and the values it
+ * matched on. There is intentionally no per-rule contribution percentage:
+ * several rules can feed one class and the mapping to probability runs through a
+ * softmax over class weights, so any per-rule share would be invented.
+ */
+export interface FiredRule {
+  rule: string
+  class: string
+  class_id: number
+  detail: string
+  features: RuleFeature[]
+}
+
+/** inference.ClassWeight — one class's pre-softmax weight. */
+export interface ClassWeight {
+  class: string
+  class_id: number
+  weight: number
+}
+
+/**
+ * inference.Explanation — a model's account of one verdict.
+ *
+ * `kind: 'rules'` is an EXACT account: those rules, on those values, produced
+ * those weights, which were soft-maxed into the reported probabilities.
+ * `kind: 'unavailable'` claims nothing beyond `note`.
+ *
+ * An empty `rules` with `kind: 'rules'` is meaningful, not a loading state: no
+ * rule fired, and `normal_prior` is what decided the verdict.
+ */
+export interface Explanation {
+  model_id: string
+  role: string
+  kind: 'rules' | 'unavailable'
+  rules: FiredRule[]
+  class_weights?: ClassWeight[]
+  normal_prior?: number
+  note: string
+}
+
+/** internal/api.normFeature — one feature as a specific model received it. */
+export interface NormalizedFeature {
+  index: number
+  name: string
+  unit: string
+  raw: number
+  normalized: number
+}
+
+/**
+ * internal/api.modelInput — what one model actually saw.
+ *
+ * `kind: 'raw'` means the model reads raw flow-features-v1 values (the Phase-1
+ * heuristic) and `features` is absent — there is no transformation to show, and
+ * the drawer must say that rather than render an identity table.
+ * `kind: 'normalized'` carries raw→normalized pairs from that model's own
+ * bundle. `kind: 'unknown'` means the normalizer could not be resolved.
+ */
+export interface ModelInput {
+  kind: 'raw' | 'normalized' | 'unknown'
+  normalizer_id?: string
+  note: string
+  features?: NormalizedFeature[]
+}
+
+/** internal/api.explainModel — one model's inputs and rationale. */
+export interface ExplainModel {
+  model_id: string
+  role: string
+  class: string
+  class_id: number
+  score: number
+  scores: number[]
+  /** False when the model that produced this verdict is no longer loaded. */
+  loaded: boolean
+  input: ModelInput
+  explanation: Explanation
+}
+
+/** internal/api.explainVerdict — the stored verdict being explained. */
+export interface ExplainVerdict {
+  ts: string
+  sensor: string
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.stubSection — an explicitly unavailable panel. Note the absence
+ * of any value field: there is nothing to show, by design.
+ */
+export interface StubSection {
+  available: boolean
+  note: string
+}
+
+/** GET /api/v1/flows/{id}/explain */
+export interface FlowExplain {
+  flow_id: number
+  snapshot_index: number
+  /** False when no verdict for this flow is retained; `models` is then empty. */
+  verdict_available: boolean
+  verdict?: ExplainVerdict
+  models: ExplainModel[]
+  anomaly: StubSection
+  baseline: StubSection
+  notes?: string[]
+}
+
+/** internal/api.versionVerdict — the verdict computed from one flow version. */
+export interface VersionVerdict {
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.flowVersionView — one retained version of a flow.
+ *
+ * Counters are CUMULATIVE, not per-interval: each version reports the flow's
+ * totals as of its own `last_seen`. A missing `verdict` means the classification
+ * aged out of the bounded ring — never "was not classified".
+ */
+export interface FlowVersionView {
+  snapshot_index: number
+  close_reason: string
+  terminal: boolean
+  first_seen: string
+  last_seen: string
+  duration_sec: number
+  fwd_packets: number
+  bwd_packets: number
+  fwd_bytes: number
+  bwd_bytes: number
+  verdict?: VersionVerdict
+}
+
+/** GET /api/v1/flows/{id}/snapshots */
+export interface FlowSnapshots {
+  flow_id: number
+  retained: number
+  cap: number
+  /** True when the per-flow cap dropped this flow's earliest versions. */
+  truncated: boolean
+  /** False for a flow that only ever produced its terminal record. */
+  snapshotting: boolean
+  versions: FlowVersionView[]
+  notes?: string[]
+}
+
+// ---- traffic matrix and sensor topology (§19.15, issues #68 + #46) ----------
+// Self-contained block at the end of the file; sibling branches also edit
+// types.ts. Backed by ADR 0026.
+
+/** insight.MatrixSort — the pair list ordering. */
+export type MatrixSort = 'flows' | 'bytes' | 'last_seen'
+
+/**
+ * insight.MatrixPair — one cell of the traffic matrix: an ordered conversation.
+ *
+ * `initiator` is the side that opened the flow, so `A→B` and `B→A` are separate
+ * cells and are never merged. `threat_class` is the highest-count class that is
+ * not "normal": a cell with 400 normal and 3 brute_force verdicts is *dominated*
+ * by normal but is the one worth looking at, so the grid colours by threat.
+ */
+export interface MatrixPair {
+  initiator: string
+  responder: string
+  flows: number
+  bytes: number
+  bytes_fwd: number
+  bytes_bwd: number
+  packets: number
+  first_seen: string
+  last_seen: string
+  classifications: number
+  classes: ClassCount[]
+  dominant_class?: string
+  threat_class?: string
+  threat_count?: number
+  disagreements: number
+}
+
+/** insight.MatrixAxis — one grid axis entry with its totals over returned pairs. */
+export interface MatrixAxis {
+  ip: string
+  flows: number
+  bytes: number
+  pairs: number
+}
+
+/**
+ * GET /api/v1/matrix.
+ *
+ * This is deliberately NOT a full hosts × hosts grid — see ADR 0026. It is a
+ * bounded top-N of the heaviest conversations, and the response says so:
+ *
+ * - `partial`   — the pair cap evicted at least one pair (or the scanned window
+ *                 was itself capped). These are the heaviest pairs, not all.
+ * - `truncated` — `limit` cut the list. Independent of `partial`: a limited view
+ *                 of a complete table is truncated but not partial.
+ * - `source`    — "incremental" (the always-on bounded table) or "scan" (a
+ *                 filtered query folded from the stored window).
+ */
+export interface TrafficMatrix {
+  pairs: MatrixPair[]
+  initiators: MatrixAxis[]
+  responders: MatrixAxis[]
+  sort: MatrixSort
+  source: 'incremental' | 'scan'
+  tracked_pairs: number
+  returned_pairs: number
+  pair_cap: number
+  pairs_evicted: number
+  partial: boolean
+  truncated: boolean
+  /** Rows walked by a scan-source query; absent/0 on the incremental source. */
+  scanned?: number
+  total_flows: number
+  total_bytes: number
+  /** Heat scale: the largest values among the RETURNED pairs. */
+  max_flows: number
+  max_bytes: number
+}
+
+/** capture.SensorStatus — one row of GET /api/v1/sensors. */
+export interface SensorStatus {
+  sensor_id: string
+  location: string
+  remote_addr: string
+  link_type: number
+  filter: string
+  connected_at: string
+  packets: number
+  bytes: number
+  drops: number
+  pps: number
+  bps: number
+  last_packet: string
+  /** running | error | stopped */
+  state: string
+  agent_version?: string
+  os_arch?: string
+  session_id?: string
+  source_name: string
+  /** raw | flow | feature */
+  mode: string
+  protocol_version: number
+  payload_schema?: string
+  records: number
+  record_bytes: number
+}
+
+/**
+ * How this sensor's flows carry its identity — and so whether they can be
+ * scoped (api.AttributionRecords / Packets / None).
+ *
+ * "records" — a flow/feature-mode sensor: its records arrive tagged, so
+ *             `sensor=`/`location=` really do filter its flows.
+ * "packets" — a raw-mode sensor: its packets are stamped with its id on the way
+ *             into the daemon and the flow table is keyed by it, so its flows
+ *             are scopeable too (issue #126). Before that fix this was "none".
+ * "none"    — the peer reported no sensor id, so nothing can select its rows:
+ *             they land in "local" with the daemon's own capture. Scope to its
+ *             counters instead.
+ */
+export type FlowAttribution = 'records' | 'packets' | 'none'
+
+/** api.TopologySensor — a sensor row plus its attribution verdict. */
+export interface TopologySensor extends SensorStatus {
+  flow_attribution: FlowAttribution
+}
+
+/** api.TopologyLocation — one location group and its aggregates. */
+export interface TopologyLocation {
+  /** Exactly what the sensors reported, or "unassigned" for the empty bucket. */
+  location: string
+  /** True for the bucket of sensors that reported no location. */
+  unassigned: boolean
+  sensor_count: number
+  running: number
+  /** ok | degraded | down */
+  health: string
+  modes: string[]
+  packets: number
+  bytes: number
+  drops: number
+  records: number
+  record_bytes: number
+  pps: number
+  bps: number
+  last_packet?: string
+  /** How many of these sensors a location= scope can actually select. */
+  attributable_sensors: number
+  sensors: TopologySensor[]
+}
+
+/** GET /api/v1/sensors/topology */
+export interface SensorTopology {
+  locations: TopologyLocation[]
+  sensors: number
+  location_count: number
+  unassigned_sensors: number
+  attributable_sensors: number
+  packets: number
+  bytes: number
+  drops: number
+  records: number
+  record_bytes: number
+  pps: number
+  bps: number
+  /** False when no SYNPOIP collector is wired — distinct from "none connected". */
+  collector: boolean
+  scope_sensor_param: string
+  scope_location_param: string
+  /** The sensor label locally-built rows carry, i.e. "local". */
+  local_sensor_label: string
+  scope_note: string
+}
+
+
+// ---- detections / alerts (§19.1, §19.4, §18; issue #117) --------------------
+// Self-contained block at the end of the file. These mirror the contract
+// GET /api/v1/detections serves (internal/alert, ADR 0027) field for field. A
+// daemon older than #117 has no such route at all, and `getDetections` in
+// client.ts turns that 404 into a state rather than an error.
+//
+// A detection is *deduplicated*: one row can stand for many occurrences, so
+// `count` is load-bearing. A 400-port scan and a single probe are both one row,
+// and rendering them identically would misstate what happened.
+
+/** The four severities a detection may carry, lowest first. */
+export const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const
+
+export type Severity = (typeof SEVERITIES)[number]
+
+/** One model's contribution to a detection (§12 — never just the verdict). */
+export interface DetectionModel {
+  model_id: string
+  role: string
+  class: string
+  confidence: number
+}
+
+/** api.Detection — one deduplicated detection. */
+export interface Detection {
+  id: number
+  /** first occurrence (RFC3339) */
+  ts: string
+  /** most recent occurrence (RFC3339) */
+  last_ts: string
+  /** deduplicated occurrence count; 1 means a single hit */
+  count: number
+  /** a traffic-classes-v1 class name */
+  class: string
+  severity: Severity
+  /** the maximum confidence seen across the deduplicated occurrences */
+  confidence: number
+  /** the most recent contributing flow — the link target */
+  flow_id: number
+  /** every contributing flow; may be truncated by the daemon */
+  flow_ids?: number[]
+  src_ip: string
+  dst_ip: string
+  src_port: number
+  dst_port: number
+  protocol: string
+  disagreement: boolean
+  reason: string
+  models?: DetectionModel[]
+}
+
+/** GET /api/v1/detections */
+export interface DetectionList {
+  detections: Detection[]
+  /** matches held by the daemon, before `limit` was applied */
+  total: number
+  /** rows in this response */
+  returned: number
+  /** detections dropped by the daemon's bounded ring */
+  evicted: number
+}
+
+/** The query GET /api/v1/detections accepts. */
+export interface DetectionQuery {
+  /** default 100, clamped to 1000 by the daemon */
+  limit?: number
+  class?: string
+  severity?: Severity | ''
+  /** 0..1 */
+  min_confidence?: number
+  /** RFC3339 */
+  since?: string
+}
+
+/**
+ * The outcome of asking for detections.
+ *
+ * `unavailable` is the honest render of a 404: this build has no detections
+ * resource, which is neither an error nor an empty result. `ok` with an empty
+ * `detections` array is genuinely "nothing detected" and must look different.
+ */
+export type DetectionsResult =
+  | { state: 'ok'; list: DetectionList }
+  | { state: 'unavailable'; message: string }
+  | { state: 'error'; message: string }
+
+/** One detection by id — the same three states as the list. */
+export type DetectionResult =
+  | { state: 'ok'; detection: Detection }
+  | { state: 'unavailable'; message: string }
+  | { state: 'error'; message: string }

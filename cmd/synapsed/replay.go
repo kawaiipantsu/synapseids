@@ -8,11 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/alert"
 	"github.com/kawaiipantsu/synapseids/internal/api"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
@@ -24,9 +26,15 @@ type replayController struct {
 	bus     *events.Bus
 	store   storage.Store
 	rt      *inference.Runtime
+	insight *insight.Index
+	alerts  *alert.Store
 	flowOpt flow.Options
 	sensor  string
 	flowID  *atomic.Uint64
+	// stats is the daemon-wide flow-table view. The replay pipeline reports its
+	// own table into it under replayStatsName; the capture pipeline reports the
+	// table that serves live and sensor traffic (issue #125).
+	stats *flowStatsHub
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -34,8 +42,11 @@ type replayController struct {
 	status api.ReplayStatus
 }
 
-func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, fo flow.Options, sensor string, flowID *atomic.Uint64) *replayController {
-	return &replayController{bus: bus, store: store, rt: rt, flowOpt: fo, sensor: sensor, flowID: flowID}
+// replayStatsName is the flowStatsHub key for the replay pipeline's flow table.
+const replayStatsName = "replay"
+
+func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, al *alert.Store, fo flow.Options, sensor string, flowID *atomic.Uint64, stats *flowStatsHub) *replayController {
+	return &replayController{bus: bus, store: store, rt: rt, insight: ins, alerts: al, flowOpt: fo, sensor: sensor, flowID: flowID, stats: stats}
 }
 
 // Start opens path and begins replaying it at speed. It fails if a replay is
@@ -61,12 +72,19 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 	c.status = api.ReplayStatus{
 		Running: true, ID: id, Source: path, Speed: speed.String(), Started: time.Now(),
 	}
+	// A new run builds a new table from zero; the finished run's totals must not
+	// keep being summed into the daemon-wide view.
+	c.stats.Reset(replayStatsName)
 	c.bus.Publish(events.ReplayStarted, map[string]string{"id": id, "source": path, "speed": speed.String()})
 
 	go c.progress(ctx, pf)
 	go func() {
 		st, runErr := pipeline.Run(ctx, src, c.rt, c.bus, c.store, pipeline.Options{
-			Flow: c.flowOpt, Sensor: c.sensor, IDGen: func() uint64 { return c.flowID.Add(1) },
+			Flow: c.flowOpt, Sensor: c.sensor,
+			IDGen:    func() uint64 { return c.flowID.Add(1) },
+			OnStats:  c.stats.Reporter(replayStatsName),
+			Observer: c.insight,
+			Alerts:   c.alerts,
 		})
 		c.mu.Lock()
 		c.status.Running = false

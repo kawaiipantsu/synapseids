@@ -7,9 +7,12 @@ package pipeline
 
 import (
 	"context"
+	"log"
+	"net/netip"
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
+	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
@@ -17,22 +20,78 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
+// evictLogEvery throttles the flow-table eviction warning: it is logged on the
+// first eviction of a run and then once per this many evictions, so sustained
+// packet-path pressure stays visible without flooding the log (PROJECT.md §24).
+const evictLogEvery = 1000
+
+// Observer receives every classified flow record. It exists so read models that
+// are not the system of record — the host/timeline aggregates behind
+// Investigation mode (PROJECT.md §19.4-6) — can be fed from the one place that
+// has both the record and its verdict, without the pipeline importing them.
+//
+// An implementation MUST NOT block, allocate heavily or take a lock a reader can
+// hold: it is called from the packet-processing goroutine (PROJECT.md §22).
+// internal/insight satisfies it with a single non-blocking channel send. The
+// arguments are only valid for the duration of the call.
+type Observer interface {
+	Observe(fr *storage.FlowRecord, cl *storage.Classification)
+}
+
 // Options configure a pipeline run.
 type Options struct {
 	Flow   flow.Options
 	Sensor string
+	// Observer, when non-nil, is handed every flow record and its verdict. See
+	// Observer for the contract it must honour.
+	Observer Observer
+	// Alerts, when non-nil, is handed every flow record and its verdict so an
+	// alert policy can turn verdicts into detections and publish
+	// events.AlertCreated (issue #117, PROJECT.md §17). internal/alert satisfies
+	// it, with the same non-blocking contract Observer documents — the detection
+	// dedup and the bus publish both happen on that package's own goroutine, so
+	// nothing about alerting is on the packet path (§22).
+	//
+	// It is a second field rather than a []Observer because the two hooks are
+	// different concerns with different owners, and a slice would make the
+	// pipeline's one-way data flow read like a plugin registry.
+	Alerts Observer
 	// IDGen, when set, allocates globally-unique flow IDs so records from
 	// different runs never collide (the daemon shares one allocator).
 	IDGen func() uint64
+	// Records, when non-nil, is the second input to this pipeline: flow and
+	// feature records from remote sensors running in `flow` / `feature` mode
+	// (issue #45, PROJECT.md §5.3).
+	//
+	// They are drained by the *same* goroutine that drains the packet channel, so
+	// the single-goroutine flow.Table invariant holds and nothing new has to be
+	// made concurrency-safe (PROJECT.md §22, CLAUDE.md). A record enters the data
+	// plane further along than a packet does: a flow record skips the flow table,
+	// a feature record skips the flow table and feature extraction too.
+	Records <-chan pcapoverip.SensorRecord
+	// OnStats, when non-nil, receives a snapshot of the flow-table counters on
+	// the table's tick cadence (roughly once a second) and once more after the
+	// final flush. It is never called per packet, so a supervisor can surface
+	// flow-table size and eviction pressure without adding work to the packet
+	// path (PROJECT.md §22, §24).
+	OnStats func(flow.Stats)
 }
 
 // Stats summarizes a completed (or in-progress) run.
 type Stats struct {
-	Packets         uint64        `json:"packets"`
-	Flows           uint64        `json:"flows"`
-	Classifications uint64        `json:"classifications"`
-	Snapshots       uint64        `json:"snapshots"`
-	Evicted         uint64        `json:"flows_evicted"`
+	Packets         uint64 `json:"packets"`
+	Flows           uint64 `json:"flows"`
+	Classifications uint64 `json:"classifications"`
+	Snapshots       uint64 `json:"snapshots"`
+	Evicted         uint64 `json:"flows_evicted"`
+	// FlowRecords and FeatureRecords count records that entered downstream of the
+	// packet path, from `flow`- and `feature`-mode sensors respectively.
+	FlowRecords    uint64 `json:"sensor_flow_records"`
+	FeatureRecords uint64 `json:"sensor_feature_records"`
+	// RecordsRejected counts records dropped before classification: an unknown
+	// schema, or a record whose mode does not match its payload. Counted and
+	// skipped, never fatal (PROJECT.md §28.11).
+	RecordsRejected uint64        `json:"sensor_records_rejected"`
 	Elapsed         time.Duration `json:"-"`
 	ElapsedMS       int64         `json:"elapsed_ms"`
 }
@@ -51,33 +110,42 @@ func Run(
 	var st Stats
 	start := time.Now()
 
-	// Feature vectors are handed to the runtime raw. Normalization is a
-	// per-model concern: a trained model applies the normalizer.json from its
-	// own bundle; the heuristic model reads raw values (PROJECT.md §11).
-	onFlow := func(r flow.Record) {
-		fv := features.Extract(r)
+	// evicted counts oldest-idle evictions seen this run; it drives the
+	// throttled capacity warning below.
+	var evicted uint64
 
-		fr := storage.FlowRecordFrom(r, fv)
+	// publish is the tail of the data plane, shared by every way a record can get
+	// here: store it, announce it, score it, store and announce the verdict.
+	//
+	// Feature vectors are handed to the runtime raw. Normalization is a per-model
+	// concern: a trained model applies the normalizer.json from its own bundle;
+	// the heuristic model reads raw values (PROJECT.md §11).
+	publish := func(fr storage.FlowRecord, sensor string) {
+		// One resolved sensor id lands on both rows. Storing it twice is
+		// deliberate denormalization — the rolling log renders a verdict without a
+		// join, and `sensor=` has to select the same flows as classifications
+		// (issue #126).
+		fr.Sensor = sensor
 		store.PutFlow(fr)
 		st.Flows++
-		if r.Reason == flow.ReasonSnapshot {
+		if fr.CloseReason == string(flow.ReasonSnapshot) {
 			st.Snapshots++
 			bus.Publish(events.FlowUpdated, fr)
 		} else {
 			bus.Publish(events.FlowClosed, fr)
 		}
-		bus.Publish(events.FeaturesGenerated, fv)
+		bus.Publish(events.FeaturesGenerated, fr.Features)
 
-		res := rt.Score(fv)
+		res := rt.Score(fr.Features)
 		cl := storage.Classification{
-			FlowID:        r.ID,
-			TS:            r.LastSeen,
-			Sensor:        opt.Sensor,
-			Proto:         r.Proto.String(),
+			FlowID:        fr.ID,
+			TS:            fr.LastSeen,
+			Sensor:        sensor,
+			Proto:         fr.Proto,
 			InitiatorIP:   fr.InitiatorIP,
-			InitiatorPort: r.InitiatorPort,
+			InitiatorPort: fr.InitiatorPort,
 			ResponderIP:   fr.ResponderIP,
-			ResponderPort: r.ResponderPort,
+			ResponderPort: fr.ResponderPort,
 			Result:        res,
 		}
 		store.PutClassification(cl)
@@ -86,6 +154,32 @@ func Run(
 		if res.Disagreement {
 			bus.Publish(events.ModelDisagreementDetected, cl)
 		}
+		if opt.Observer != nil {
+			opt.Observer.Observe(&fr, &cl)
+		}
+		// events.AlertCreated is NOT published from here. The alert policy has to
+		// dedup first — a 1000-port sweep is one detection, not a thousand — and
+		// dedup needs state the packet path must not own or lock. So the verdict is
+		// handed off with one non-blocking send and the alert store publishes from
+		// its own goroutine (PROJECT.md §22; issue #117, ADR 0027).
+		if opt.Alerts != nil {
+			opt.Alerts.Observe(&fr, &cl)
+		}
+	}
+
+	onFlow := func(r flow.Record) {
+		if r.Reason == flow.ReasonEvicted {
+			evicted++
+			if evicted == 1 || evicted%evictLogEvery == 0 {
+				log.Printf("pipeline: flow table full at cap %d — evicted %d oldest-idle flow(s) this run; raise capture.max_flows / SYNAPSE_MAX_FLOWS if this persists (PROJECT.md §22)",
+					opt.Flow.MaxFlows, evicted)
+			}
+		}
+		// A flow built from packets is attributed to the observation point those
+		// packets carried — the sensor id capture.Manager stamped on them. Local
+		// capture and replay stamp nothing, and fall back to this pipeline's own
+		// configured name (issue #126).
+		publish(storage.FlowRecordFrom(r, features.Extract(r)), sensorOr(r.Sensor(), opt.Sensor))
 	}
 
 	fopt := opt.Flow
@@ -94,12 +188,77 @@ func Run(
 	}
 	tbl := flow.NewTable(fopt, onFlow)
 
+	// nextID mints a daemon-local flow id for a remote record. A sensor's ids are
+	// its own counter and would collide across sensors and restarts, so every
+	// arriving record is remapped and the original kept as provenance (CLAUDE.md:
+	// flow ids must be globally unique across the daemon's lifetime).
+	nextID := opt.IDGen
+	if nextID == nil {
+		var local uint64
+		nextID = func() uint64 { local++; return local }
+	}
+
+	onRecord := func(rec pcapoverip.SensorRecord) {
+		sensor := sensorOr(rec.Sensor, opt.Sensor)
+		switch {
+		case rec.Flow != nil:
+			// `flow` mode joins here: the sensor already ran the flow engine, so
+			// the daemon must NOT re-run its table over this record. Extract
+			// features from it and classify.
+			//
+			// The record still gets the observation scope stamped on it, even
+			// though no local table will key on it: a stored flow's provenance
+			// must not depend on which path it arrived by.
+			r := (*rec.Flow).WithSensor(sensor)
+			sensorFlowID := r.ID
+			r.ID = nextID()
+			fr := storage.FlowRecordFrom(r, features.Extract(r))
+			fr.SensorMode = pcapoverip.ModeFlow.String()
+			fr.SensorFlowID = sensorFlowID
+			st.FlowRecords++
+			publish(fr, sensor)
+
+		case rec.Feature != nil:
+			// `feature` mode joins here: flow aggregation *and* feature extraction
+			// already happened on the sensor. The daemon only classifies and
+			// stores. Nothing about the packets is available, or claimed.
+			fv := rec.Feature
+			id := nextID()
+			c := fv.Vector(id).Counts()
+			fr := storage.FlowRecord{
+				ID:            id,
+				Proto:         fv.Proto.String(),
+				InitiatorIP:   ipText(fv.InitiatorIP),
+				InitiatorPort: fv.InitiatorPort,
+				ResponderIP:   ipText(fv.ResponderIP),
+				ResponderPort: fv.ResponderPort,
+				FirstSeen:     fv.FirstSeen,
+				LastSeen:      fv.LastSeen,
+				DurationSec:   c.DurationSec,
+				FwdPackets:    c.FwdPackets,
+				BwdPackets:    c.BwdPackets,
+				FwdBytes:      c.FwdBytes,
+				BwdBytes:      c.BwdBytes,
+				CloseReason:   string(fv.Reason),
+				SnapshotIndex: fv.SnapshotIndex,
+				Features:      fv.Vector(id),
+				SensorMode:    pcapoverip.ModeFeature.String(),
+				SensorFlowID:  fv.SensorFlowID,
+			}
+			st.FeatureRecords++
+			publish(fr, sensor)
+
+		default:
+			st.RecordsRejected++
+		}
+	}
+
 	pkts, errc := src.Packets(ctx)
-	var lastTick time.Time
-	const tickEvery = 512
+	// The tick cadence is flow.Pacer's, not the pipeline's, so a flow-mode sensor
+	// running its own Table expires flows at exactly the same points (issue #45).
+	var pacer flow.Pacer
 
 	var termErr error
-	var n uint64
 loop:
 	for {
 		select {
@@ -111,16 +270,46 @@ loop:
 				termErr = err
 				break loop
 			}
+		case rec, ok := <-opt.Records:
+			// A nil Records channel blocks forever, which is exactly the right
+			// behaviour for a select arm that should never fire.
+			if !ok {
+				// The record input closed. Keep draining packets: a collector
+				// shutting down must not stop local capture.
+				opt.Records = nil
+				continue
+			}
+			onRecord(rec)
 		case p, ok := <-pkts:
 			if !ok {
 				break loop
 			}
-			n++
 			st.Packets++
 			tbl.Observe(p)
-			if n%tickEvery == 0 || (!lastTick.IsZero() && p.TS.Sub(lastTick) >= time.Second) {
+			if pacer.Due(p.TS) {
 				tbl.Tick(p.TS)
-				lastTick = p.TS
+				if opt.OnStats != nil {
+					opt.OnStats(tbl.Stats())
+				}
+			}
+		}
+	}
+
+	// A record already accepted from a sensor is a measurement, not a queue
+	// entry to discard: drain whatever is buffered before shutting down. The
+	// default arm bounds the loop, so a collector still producing cannot hold
+	// shutdown open.
+	if opt.Records != nil {
+	drain:
+		for {
+			select {
+			case rec, ok := <-opt.Records:
+				if !ok {
+					break drain
+				}
+				onRecord(rec)
+			default:
+				break drain
 			}
 		}
 	}
@@ -128,7 +317,29 @@ loop:
 	tbl.Flush()
 	ts := tbl.Stats()
 	st.Evicted = ts.Evicted
+	if opt.OnStats != nil {
+		opt.OnStats(ts)
+	}
 	st.Elapsed = time.Since(start)
 	st.ElapsedMS = st.Elapsed.Milliseconds()
 	return st, termErr
+}
+
+// sensorOr resolves a row's observation point: the sensor that actually saw the
+// traffic, or this pipeline's configured name when nothing did (local capture,
+// replay, or an anonymous peer that reported no id).
+func sensorOr(sensor, fallback string) string {
+	if sensor != "" {
+		return sensor
+	}
+	return fallback
+}
+
+// ipText renders an address for a stored record, matching what
+// storage.FlowRecordFrom does for a locally-built one.
+func ipText(a netip.Addr) string {
+	if !a.IsValid() {
+		return ""
+	}
+	return a.String()
 }

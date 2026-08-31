@@ -1,0 +1,583 @@
+# `os-synapseids-sensor` — the SynapseIDS plugin for OPNsense
+
+Turns an OPNsense firewall into a sensor — or **several**, one per interface —
+for a central SynapseIDS daemon: capture through FreeBSD's BPF devices, stream to
+`synapsed` over the authenticated SYNPOIP transport, and configure it all from
+**Services → SynapseIDS Sensor**.
+
+**One `synapse-sensor` process per captured interface** (issue #124,
+[ADR 0031](../../docs/adr/0031-opnsense-one-sensor-process-per-interface.md)).
+The settings page holds a **list** of sensor instances; each has its own
+interface, its own sensor identity, its own rendered configuration, its own
+pidfile and its own log. That shape was chosen over merging several interfaces
+into one process because it gives correct attribution with no protocol change: a
+packet routed between two monitored segments is legitimately reported twice, by
+two *named* sensors, instead of two observations silently merging into one flow.
+
+The firewall only observes. Classification always happens on the daemon; the
+**Send** setting chooses whether flow assembly and feature extraction happen
+there too or here on the firewall — see [Choosing what the sensor
+sends](#choosing-what-the-sensor-sends), which is also how you stop packet
+content leaving the box at all. The sensor never modifies, injects or blocks
+traffic (PROJECT.md §28.17), and it opens the BPF device read-only so it could
+not transmit even if it tried.
+
+**Install, configure, verify and troubleshoot are documented in
+[`docs/opnsense-sensor.md`](../../docs/opnsense-sensor.md).** This file covers
+the packaging: what is in the plugin, how to build it, and what a maintainer
+must still validate on real hardware.
+
+> ## ⚠️ Untested on hardware
+>
+> Every part of this — the FreeBSD BPF capture source, the package, the MVC
+> plugin — was written and tested on **Linux**. Cross-builds, unit tests,
+> compile-time ABI assertions, a Jinja2 render of every configd template and a
+> stubbed run of the model's validation all pass. Nobody has run it on FreeBSD or
+> OPNsense. See [What a maintainer must
+> validate](#what-a-maintainer-must-validate-on-real-hardware).
+>
+> **The first thing to run on the box is the selftest** — see
+> [Selftest](#selftest). It is designed so one command replaces a remote
+> debugging session.
+
+## Selftest
+
+```sh
+service synapseids_sensor selftest         # every instance
+service synapseids_sensor selftest wan     # just that one
+configctl synapseidssensor selftest        # the same, through configd
+configctl synapseidssensor selftest wan
+synapse-sensor doctor --help               # the underlying subcommand
+```
+
+or press **Run selftest** on **Services → SynapseIDS Sensor**, with the instance
+selector next to it.
+
+Ten lines per instance, one per check. Exit status is 1 if any `[FAIL]` appeared;
+a `[WARN]` never fails the run. It is read-only — it never writes, chowns or
+chmods anything — and it prints no secrets, only paths, modes and certificate
+subjects.
+
+**The instance name is a column of its own**, so `selftest | grep FAIL` on a
+firewall with four sensors tells you *which* one is broken:
+
+```
+===> sensor instance: wan
+[ OK ] wan        binary        synapse-sensor 0.1.0 (abc1234, 2026-08-31) go1.27 freebsd/amd64
+[ OK ] wan        config        /usr/local/etc/synapseids/instances/wan.conf: enable=YES, 17 flags, transport=connect
+[ OK ] wan        service-user  _synapseids uid=1001 gid=1001 groups=_synapseids,network
+[ OK ] wan        bpf-access    /dev/bpf mode 0640 root:network — readable by group network, which _synapseids is in
+[ OK ] wan        interface     wan -> em0 (via interfaces.wan.if) — exists, flags up|broadcast|running
+[ OK ] wan        token-file    /usr/local/etc/synapseids/sensor.token mode 0400 _synapseids:_synapseids, 44 bytes
+[ OK ] wan        tls-identity  sensor-cert.pem + sensor-key.pem: pair matches, subject "CN=fw1.example", expires 2027-08-31T00:00:00Z
+[ OK ] wan        tls-trust     sensor-ca.pem: 1 certificate(s), subject SynapseIDS Collector CA
+[ OK ] wan        log-sink      /var/log/synapseids/wan mode 0750 _synapseids:wheel; sensor.log 4096 bytes, modified 2026-08-31T12:00:03Z
+[ OK ] wan        collector     ids.example.net:4789: TCP connect succeeded in 3ms (no TLS handshake attempted)
+wan: summary: 10 checks, 10 passed, 0 warned, 0 failed, 0 skipped
+wan: selftest: PASSED
+
+===> sensor instance: dmz
+...
+===> sensor instance: iot
+[FAIL] iot        interface     iot -> igb0.20 — device "igb0.20" does not exist on this host
+                  a sensor bound to a missing device captures nothing, so it is refused.
+                  Devices present: em0, em1, igb0, lo0
+...
+iot: selftest: FAILED — the sensor will not capture until the [FAIL] lines above are fixed
+
+===> sensor instance: mgmt
+...
+
+selftest: 4 instance(s) checked, 1 with failures
+```
+
+Under the hood each instance is one `synapse-sensor doctor` run against that
+instance's own rendered configuration and log directory — the Go subcommand is
+unchanged and knows nothing about instances, which is exactly why the per-instance
+files carry the same variable names the single-sensor file did.
+
+(`tls-identity` and `tls-trust` are two lines from one check, so a full run prints
+ten per instance.)
+
+### Troubleshooting, by output line
+
+| line | what it means | what to do |
+|---|---|---|
+| `[FAIL] instances` — *no sensor instance is configured* | the list on the settings page is empty. After an upgrade from a single-sensor release this means the model migration has not run | add one instance per interface and Save, or run `/usr/local/opnsense/mvc/script/run_migrations.php OPNsense/SynapseIDSSensor` once and reload the page. **Nothing is lost either way** — the old settings are still in `config.xml` |
+| `[FAIL] config` — *no such file* | the configd template has never rendered | press Save on the settings page, or `configctl template reload OPNsense/SynapseIDSSensor && configctl synapseidssensor fixperms` |
+| `[FAIL] config` — *shell metacharacter* / *not name=value* | `sensor.conf` was hand-edited, or a template escaping bug | never edit it; re-render. This file is sourced by `rc.d` as **root** |
+| `[FAIL] config` — *`--authorized` is absent* | the authorisation checkbox is not ticked | tick it. `synapse-sensor` refuses live capture without it (PROJECT.md §28.18) |
+| `[WARN] config` — *not enabled* | saved but disabled | tick **Enable** |
+| `[FAIL] service-user` | `pkg add`'s `post-install` did not finish | `pw groupadd _synapseids && pw useradd _synapseids -g _synapseids -d /nonexistent -s /usr/sbin/nologin && pw groupmod network -m _synapseids`. Do **not** use `pkg install` — it needs a working repository, which is often the reason the install failed. |
+| `[WARN] service-user` — *not in the bpf group* | the devfs rule grants `bpf*` to that group | `pw groupmod network -m _synapseids` (the selftest prints the group it detected) |
+| `[FAIL] bpf-access` | **the sensor would capture nothing** | run the installer with `--grant-bpf`, or the two `devfs.rules` commands the line prints |
+| `[FAIL] interface` — *does not exist* | **the worst case: bound to nothing** | the line lists the devices that *do* exist. Check **Interfaces → Assignments** and `ifconfig -l`, then re-save |
+| `[FAIL] interface` — *could not be resolved* | the configd template could not turn the identifier into a device name | re-select the interface and save. The message names both lookups it tried; please report it — this is the assumption most likely to be wrong |
+| `[WARN] interface` — *device is down* | BPF attaches but sees no traffic | bring the interface up |
+| `[FAIL] token-file` — *readable by more than the owner* | configd's umask window was not closed | `configctl synapseidssensor fixperms` |
+| `[FAIL] token-file` — *empty* | no bearer token: any peer completing the handshake would be accepted | enter one on the settings page |
+| `[FAIL] tls-identity` — *no such file* | a flag names a PEM that is not on disk | `configctl template reload OPNsense/SynapseIDSSensor`. **The service refuses to start in this state by design** — it never downgrades to an unverified transport |
+| `[FAIL] tls-identity` — *readable by more than its owner* | the private key is not `0400` | `configctl synapseidssensor fixperms` |
+| `[FAIL] tls-identity` — *do not match each other* | certificate and key are from different pairs | re-paste both; the model normally catches this at save time |
+| `[FAIL] tls-identity` — *EXPIRED* / *not valid until* | certificate dates | reissue, or check the clock: `date; service ntpd status` |
+| `[FAIL] tls-trust` — *not a certificate* | a private key was pasted into the CA field | clear it and paste the CA bundle |
+| `[WARN] tls-trust` — *`--insecure-tls`* | the collector is **not** verified | paste the collector CA and untick "do not verify" |
+| `[WARN] log-sink` — *does not exist* / *empty* while the service runs | `daemon(8)`'s `-f` is suppressing output — the one assumption still unverified | drop `-f` from `command_args` in `/usr/local/etc/rc.d/synapseids_sensor`. **Capture is unaffected; only the log is** |
+| `[FAIL] collector` | no TCP path to the daemon | check `synapsed` has a `capture.collector` block listening, and the outbound rule |
+| `[WARN] collector` — *bindable but nothing is listening* | listen mode, sensor not running | `service synapseids_sensor start` |
+| `[FAIL] collector` — *cannot bind* | the listen address is wrong for this host | fix it, or switch to **connect** mode (better behind NAT) |
+| `[ OK ] collector` — *already bound* on an instance that is **not** running | two instances share a listen port, and what is bound is the *other* one. The check cannot tell those apart | give every enabled instance its own port (4789, 4790, …). The model refuses to save a duplicate, so this only appears when something else on the box holds the port; the honest signal is the instance's own `Per instance` badge on the settings page, or `service synapseids_sensor status <name>` |
+
+If the selftest passes and the daemon still sees nothing, the remaining suspect is
+the BPF read path itself — see [Known soft spots](#known-soft-spots).
+
+## Installing
+
+```sh
+# Recommended: fetch it, read it, run it. This is a firewall.
+fetch -o install.sh https://raw.githubusercontent.com/kawaiipantsu/synapseids/main/contrib/opnsense/install.sh
+less install.sh
+sh ./install.sh
+
+# Convenience one-liner
+fetch -qo - https://raw.githubusercontent.com/kawaiipantsu/synapseids/main/contrib/opnsense/install.sh | sh
+fetch -qo - .../install.sh | sh -s -- --version v0.2.0
+```
+
+**Why the three-line form is the recommended one:** piping a remote script into
+a shell executes unreviewed code as root on the device that guards your
+network. The one-liner is offered because it is convenient, not because it is
+equally safe.
+
+`install.sh` refuses to run off OPNsense or as a non-root user (it never calls
+`sudo`), selects the package from `pkg config abi`, **verifies the SHA256
+against the release `SHA256SUMS` before installing**, then `pkg add -f`s it and
+refreshes configd. Flags: `--version <tag>`, `--url <base>` (private mirror),
+`--grant-bpf`, `--dry-run`, `--uninstall`, `--help`. Re-running upgrades in
+place.
+
+Serving it from a LAN host instead of GitHub:
+
+```sh
+sh install.sh --url http://10.0.0.10/synapseids            # version read from the mirror's SHA256SUMS
+sh install.sh --url http://10.0.0.10/synapseids --version v0.2.0
+sh install.sh --url http://10.0.0.10/synapseids --dry-run  # print every step, change nothing
+```
+
+With `--url` the installer never contacts `api.github.com` — it discovers the
+version from the mirror's own `SHA256SUMS` — so an air-gapped install works. The
+mirror must serve the `.pkg` and a `SHA256SUMS` listing it; both
+`<hash>␣␣<name>` and `<hash>␣␣./<name>` lines are accepted. `--dry-run` routes
+every mutating command through a printer, so it touches nothing.
+
+The file name is reconstructed from the firewall's own `pkg config abi`
+(`FreeBSD:14:amd64` → `…-freebsd14-amd64.pkg`, `FreeBSD:14:aarch64` →
+`…-freebsd14-arm64.pkg`). That derivation and the one in
+`scripts/package-opnsense.sh` are pinned against each other by
+`TestOPNsensePackageABIDerivation` in `make test`, and against the real artefacts
+by `tools/check-install-derivation.sh` — a mismatch there is a 404 that reads
+like a missing release.
+
+**The installer never handles the bearer token.** It does not ask for one,
+accept one on the command line, transmit one or log one — the token is entered
+in the web UI afterwards, so it cannot end up in shell history or in `ps(1)`.
+`--uninstall` removes the package and the rendered config but **deliberately
+leaves the token stored in the OPNsense configuration**; clear it from the
+Services page if you want it gone.
+
+## Building the package
+
+```sh
+make build-freebsd      # cross-compile the sensor for freebsd/{amd64,arm64}
+make opnsense-pkg       # -> dist/os-synapseids-sensor-<ver>-freebsd14-{amd64,arm64}.pkg
+make dist               # everything, with the .pkg files in SHA256SUMS
+```
+
+`scripts/package-opnsense.sh` builds a genuine FreeBSD package from a Linux
+host, with no `pkg(8)` involved. A `.pkg` is a compressed tar archive whose
+leading members are the UCL metadata (`+MANIFEST`, `+COMPACT_MANIFEST` — JSON
+is valid UCL) followed by the payload under absolute paths, so `tar` + `xz` +
+`jq` produce one directly. This is the same posture as `scripts/package-deb.sh`,
+which drives `dpkg-deb` rather than a packaging framework.
+
+The ABI is parameterised, not hardcoded — OPNsense 24.x/25.x is FreeBSD 14:
+
+```sh
+make opnsense-pkg FREEBSD_VERSION=15
+make opnsense-pkg OPNSENSE_ABIS='FreeBSD:14:amd64'
+```
+
+One `.pkg` per ABI, exactly as there is one `.deb` per Debian arch. The release
+workflow publishes them on a `v*` tag, and `install.sh` reconstructs the file
+name from the firewall's own `pkg config abi`.
+
+There is also a conventional FreeBSD port skeleton — [`Makefile`](Makefile),
+[`pkg-descr`](pkg-descr), [`pkg-plist`](pkg-plist) — for submitting this
+upstream to an `opnsense/plugins` tree. Both paths install the same file list,
+and `package-opnsense.sh` **fails the build** if the staged tree and
+`pkg-plist` have drifted apart.
+
+### What the build verifies, and what it cannot
+
+`verify_pkg()` runs on every package and asserts everything checkable without
+`pkg(8)`:
+
+- the first two archive members are `+MANIFEST` then `+COMPACT_MANIFEST`;
+- every other member is an absolute path under `/usr/local`;
+- `+MANIFEST` parses and carries `name`, `origin`, `version`, `comment`,
+  `desc`, `maintainer`, `www`, `abi`, `arch`, `prefix`, `categories`,
+  `licenselogic`, `licenses`, `flatsize`, `deps`, `files` and `scripts` (with
+  both `post-install` and `pre-deinstall`);
+- every `files` entry's sha256 matches the bytes **extracted from the archive**,
+  and the counts agree in both directions;
+- the binary and the `rc.d` script are mode `0555`, and every member is
+  `root/wheel`.
+
+It **cannot** prove `pkg(8)` accepts the result. That needs a FreeBSD box.
+
+## Choosing what the sensor sends
+
+The **Send** dropdown (`send_mode` in the model, `--mode` on the command line)
+decides how much of the pipeline runs on the firewall and therefore how much
+crosses the link. Verdicts are identical in all three — this is a bandwidth and
+privacy choice, not a detection one (issue #45,
+[ADR 0024](../../docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).
+
+| Send | leaves the firewall | wire cost | when |
+|------|--------------------|-----------|------|
+| **Raw packets** *(default)* | every captured frame | 100 % | the daemon or the site wants full packet fidelity, and the link can carry it |
+| **Flow records** | one flow record per closed flow | **~1.4 %** | the usual choice for a WAN-attached firewall: ~70× less traffic for the same classifications |
+| **Feature vectors only** | only the 48 computed features, plus each flow's endpoints and timing | **~1.8 %** | **no packet content may leave this host** — a sensitive link, or a site that permits flow telemetry off-box but not payloads |
+
+Measured end to end, TLS included, on a 68 814-packet / 1 176-flow capture.
+The cost of the two record modes is per *flow*, not per packet, so the break-even
+against raw is around 4-5 packets per flow; a port scan of one-packet flows is
+the worst case for them. Note that feature records are slightly *larger* than
+flow records — 48 `float64` values cost more than the counters they came from —
+so pick **Flow records** for bandwidth and **Feature vectors only** for privacy.
+
+The two record modes need a SynapseIDS daemon that speaks SYNPOIP v2. An older
+collector refuses the connection with `mode-unsupported`, which is deliberate: a
+firewall configured for **Feature vectors only** must never quietly start
+shipping packet content because the far end is old. The refusal is logged to
+`/var/log/synapseids/sensor.log`.
+
+## What is in the plugin
+
+Sources live under `src/`, which maps to `/usr/local` on the target
+(`src/etc/rc.d/x` → `/usr/local/etc/rc.d/x`).
+
+| path | purpose |
+|------|---------|
+| `src/opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml` | the model. `general` holds the settings there is exactly one of — transport posture (`mode`), collector address, token, TLS material. `instances/instance` is an **`ArrayField`**: one repeating item per captured interface, each with its own interface, listen port, filter preset, direction, promiscuous, snaplen, **what to send** (`send_mode`), sensor id, location and `authorized` assertion |
+| `.../Sensor.php` | the model class; its `performValidation` refuses to save an enabled instance without `authorized`, without an interface or without a sensor id, and refuses two instances that share a name, a sensor id, an interface or a listen port |
+| `.../Migrations/M1_0_1.php` | model 1.0.0 → 1.0.1: turns the old single-sensor `<general>` settings into the first instance, and any interfaces the old multi-select accepted but never captured into **disabled, unauthorised** instances |
+| `.../ACL/ACL.xml` | the privilege that gates the page and the API |
+| `.../Menu/Menu.xml` | the **Services → SynapseIDS Sensor** entry |
+| `src/opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/SettingsController.php` | the page controller |
+| `.../Api/SettingsController.php` | `GET`/`POST /api/synapseidssensor/settings/*` — read and save the shared settings, the `{search,get,add,set,del,toggle}Instance` grid endpoints, then reconfigure |
+| `.../Api/ServiceController.php` | `/api/synapseidssensor/service/*` — start, stop, restart, status for everything or for one named instance, plus `instances` (per-instance state), `log` and `selftest` |
+| `.../forms/dialogSensor.xml` | the shared-settings form |
+| `.../forms/dialogInstance.xml` | the per-instance dialog behind the grid |
+| `src/opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/index.volt` | the settings page: the instance grid, the shared settings, the per-instance state badges, the selftest and log panes, and the authorisation warning |
+| `src/opnsense/scripts/OPNsense/SynapseIDSSensor/fixperms.sh` | what `configctl synapseidssensor fixperms` runs: clamps the two secrets, creates each instance's log directory, and removes the rendered configuration of an instance that has been renamed or deleted |
+| `src/opnsense/service/conf/actions.d/actions_synapseidssensor.conf` | the configd actions the API calls. Every lifecycle action takes an **optional instance name** |
+| `src/opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS` | maps the six templates to their destinations, including the **repeating** one |
+| `.../sensor.conf` | the instance **index**: `synapseids_sensor_profiles` and where the per-instance files are — **no flags, no secrets** |
+| `.../sensor-instance.conf` | rendered **once per instance** to `instances/<name>.conf`: the command-line flags plus the resolved capture device and how it was resolved — **no secrets** |
+| `.../sensor.token` | renders the bearer token, and nothing else |
+| `.../sensor-ca.pem` | renders the peer CA bundle (`0444`) |
+| `.../sensor-cert.pem` | renders this firewall's certificate (`0444`) |
+| `.../sensor-key.pem` | renders this firewall's **private key** (`0400 _synapseids`) |
+| `src/etc/rc.d/synapseids_sensor` | the FreeBSD service script, a **multi-profile** service in the `openvpn(8)` / `nginx` shape: `service synapseids_sensor <verb> [instance]`. Fixes ownership, checks BPF access, **refuses to start unless the resolved capture device exists**, runs each sensor as `_synapseids` under `daemon(8)` with its own pidfile and log, sweeps the pidfile of a deleted instance, and provides the `selftest` verb |
+
+Plus `/usr/local/bin/synapse-sensor`, the cross-compiled static binary.
+
+### Development harnesses (not packaged)
+
+`contrib/opnsense/tools/` holds what makes this more than a `php -l` claim. None
+of it is in `pkg-plist`:
+
+```sh
+sh   contrib/opnsense/tools/check-plugin.sh             # everything below, plus php -l / XML / sh -n
+python3 contrib/opnsense/tools/render-templates.py      # render every configd template the way configd does
+php  contrib/opnsense/tools/test-sensor-model.php       # performValidation + M1_0_1 against real key material
+sh   contrib/opnsense/tools/check-install-derivation.sh # install.sh vs. the real dist/*.pkg
+```
+
+`render-templates.py` **reproduces configd rather than approximating it**, which
+is what makes it worth running:
+
+- Jinja's `Environment` exactly as `service/modules/template.py` builds it —
+  `trim_blocks` and the `do`/`loopcontrols` extensions and *nothing else*, plus
+  the filters and tests configd registers and its trailing-newline fixup. It used
+  to enable `lstrip_blocks`, `keep_trailing_newline` and `StrictUndefined`, none
+  of which configd sets.
+- The config shape configd produces: a repeating tag becomes a **list**, a single
+  occurrence stays a **dict**, and an empty element disappears. A plugin tested
+  only with several instances breaks on the firewall that has one — which is
+  every firewall migrated from the single-sensor release.
+- The `+TARGETS` per-item expansion (`__find_string_tags` / `__find_filters`),
+  so the one-file-per-instance rendering is *tested* for 0, 1 and 4 instances
+  rather than assumed.
+- Every rendered configuration is then **sourced with `/bin/sh`** and parsed the
+  way the Go doctor parses it. Those two catch different things: a whitespace
+  bug that glued two assignments onto a comment line passed `sh` and failed the
+  parser.
+
+It also covers the interface-identifier lookup in all of its states, including
+the one where `helpers.physical_interface()` echoes its input back — the
+assumption most likely to be wrong on real hardware, and the one that was wrong.
+
+`test-sensor-model.php` additionally runs `Migrations\M1_0_1` against a real
+pre-upgrade configuration, because losing an operator's working sensor on upgrade
+is the failure mode with no recovery path.
+
+`shellcheck` is **not** run — it is not installed in the environment this was
+developed in, so no claim is made about it. `sh -n` is what runs.
+
+## Secrets
+
+All paths are under `/usr/local/etc/synapseids/` (itself `0750
+root:_synapseids`).
+
+Every one of these is **rendered by configd** from the OPNsense configuration
+store; nothing is copied to the firewall by hand.
+
+| file | mode / owner | contents |
+|------|--------------|----------|
+| `sensor.conf` | `0640 root:wheel` | the instance index. **No flags, no secrets.** |
+| `instances/<name>.conf` | `0640 root:wheel` | one per sensor instance: its command-line flags. **No secrets.** |
+| `sensor.token` | `0400 _synapseids:_synapseids` | **the bearer token, and nothing else** |
+| `sensor-ca.pem` | `0444 root:wheel` | peer CA bundle (optional) |
+| `sensor-cert.pem` | `0444 root:wheel` | this firewall's certificate (optional mTLS) |
+| `sensor-key.pem` | **`0400 _synapseids:_synapseids`** | **this firewall's TLS private key** |
+
+There is **one** token and **one** key pair for the firewall, shared by every
+instance: there is one collector and one firewall identity, and duplicating the
+secrets per instance would multiply what has to be protected without protecting
+anything. The instances are told apart by their **sensor IDs**, not by their
+credentials.
+
+The token reaches the sensor through `--token-file`, never `--token`, so it is
+absent from `ps(1)`, from the rendered flag string, from shell history and from
+every log line (PROJECT.md §23). Only the *paths* of the PEM files reach `argv`.
+
+**The two secrets — the token and the private key — are clamped identically.**
+configd renders templates as root under its own umask, so the `fixperms` configd
+action runs **immediately after** every `template reload` (from both
+`Api\SettingsController::applyConfiguration` and
+`Api\ServiceController::reconfigureAction`), and the `rc.d` `start_precmd`
+re-checks before every start. `synapse-sensor doctor` reports the modes it finds,
+so the property is checkable on the box rather than assumed.
+
+**It fails safe.** `rc.d` refuses to start — naming the path — whenever a flag
+references a PEM that is missing, empty or has no `-----BEGIN` line. There is no
+code path that turns absent TLS material into `--insecure-tls`. Additionally the
+model refuses at *save* time to store a blob that is not PEM, a private key
+pasted into a certificate field, an encrypted key (Go's `crypto/tls` cannot use
+one and an unattended firewall has nowhere to type a passphrase), or a key that
+does not match its certificate.
+
+> The CA file was called `peer-ca.pem` in the first cut of this plugin
+> ([ADR 0014](../../docs/adr/0014-freebsd-bpf-capture-and-the-opnsense-sensor-plugin.md));
+> it is `sensor-ca.pem` now that all five rendered files share one prefix
+> ([ADR 0028](../../docs/adr/0028-opnsense-tls-material-and-selftest.md)). No
+> released package ever installed the old name.
+
+## Least privilege
+
+The package's `post-install` creates a dedicated unprivileged `_synapseids`
+account in group `net`, and the service runs as that user under `daemon(8)` —
+**never root** (PROJECT.md §21). The BPF device is opened `O_RDONLY`.
+
+Reading `/dev/bpf*` needs a devfs rule. Changing device permissions on
+someone's firewall is not a package's business, so `pkg add` does not do it:
+either run the installer with `--grant-bpf`, or
+
+```sh
+printf "[synapseids_bpf=10]\nadd path 'bpf*' mode 0640 group network\n" >> /etc/devfs.rules
+sysrc devfs_system_ruleset=synapseids_bpf
+service devfs restart
+```
+
+Without it the sensor refuses to start and prints exactly those commands.
+
+## `listen` vs `connect`
+
+**Both modes work.** `listen` is still the plugin's shipped default — the daemon
+dials the firewall, as
+[ADR 0012](../../docs/adr/0012-pcap-over-ip-transport.md) describes.
+
+**`connect` is now the better choice for a firewall.** It makes the box dial out,
+which is what you want behind NAT, and the daemon side finally exists: enable a
+`capture.collector` block on `synapsed` and it will accept the connection,
+register the firewall as its own capture source and list it on
+`GET /api/v1/sensors`
+([ADR 0018](../../docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md),
+[docs/opnsense-sensor.md](../../docs/opnsense-sensor.md)). The SYNPOIP roles and
+wire format are entirely unchanged
+([PROTOCOL.md §6](../../internal/capture/pcapoverip/PROTOCOL.md)) — the accepting
+daemon still sends the ClientHello. Point **Verify peer / CA** at the daemon's
+collector certificate; `synapse-sensor gen-cert` produces one that doubles as its
+own CA for testing.
+
+The plugin's *default* mode is deliberately left at `listen` in this change:
+flipping a shipped default is a plugin-side release decision, and neither mode has
+been exercised on real hardware yet (see below).
+
+**With several instances the two modes are no longer equivalent in effort.** Each
+instance is its own process, so in `listen` mode each needs **its own port** —
+`0.0.0.0:4789`, `:4790`, `:4791`, … — a matching firewall rule each, and a
+matching `capture.sources[]` entry on the daemon each. In `connect` mode every
+instance dials the *same* collector address and identifies itself by its own
+sensor ID, so four sensors need no extra configuration at either end. On a
+multi-interface firewall, `connect` is the mode that scales.
+
+## What a maintainer must validate on real hardware
+
+Nothing below has been done. In order:
+
+```sh
+# 1. Does pkg(8) accept the package at all?
+pkg info -F dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
+pkg add     dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
+pkg check -s os-synapseids-sensor
+
+# 2. Did post-install do its job?
+pw usershow _synapseids
+ls -ld /var/log/synapseids /usr/local/etc/synapseids
+
+# 2b. UPGRADING FROM A SINGLE-SENSOR RELEASE: did the model migration run?
+#     post-install runs it, but confirm - this is what preserves a working sensor.
+/usr/local/opnsense/mvc/script/run_migrations.php -v OPNsense/SynapseIDSSensor
+#   "Migrated OPNsense\SynapseIDSSensor\Sensor from 1.0.0 to 1.0.1"  (first run)
+#   "Left ... as unversioned." / nothing                             (already done)
+# The interface that WAS being captured must come back as an enabled, authorised
+# instance. Any interfaces the old multi-select accepted but never captured must
+# come back DISABLED and UNAUTHORISED - that is deliberate, not a bug.
+
+# 3. Do the UI pages load?  Services > SynapseIDS Sensor
+#    Does the instances grid render, and does Add open the dialog?
+#    Does the dialog refuse to save an enabled instance without the "authorised"
+#      checkbox, without an interface, or without a sensor ID?
+#    Does it refuse two instances sharing a name / sensor ID / interface / port?
+#    Does it refuse a mismatched certificate/key pair, and an encrypted key?
+#    Does the ACL show up under System > Access > Groups?
+#    Does the "Run selftest" button return output, for "all" and for one instance?
+
+# 4. Do all the configd templates render, with the right modes?
+#    THE REPEATING ONE IS THE NEW RISK: [OPNsense...instance.%.name] must expand
+#    to one file per instance. Zero files means the wildcard resolved nothing.
+configctl template reload OPNsense/SynapseIDSSensor
+configctl synapseidssensor fixperms
+ls -l /usr/local/etc/synapseids/ /usr/local/etc/synapseids/instances/
+#   sensor.conf              0640 root:wheel   <- index only
+#   instances/wan.conf       0640 root:wheel   <- ONE PER INSTANCE
+#   instances/dmz.conf       0640 root:wheel
+#   instances/iot.conf       0640 root:wheel
+#   instances/mgmt.conf      0640 root:wheel
+#   sensor.token             0400 _synapseids:_synapseids
+#   sensor-ca.pem            0444 root:wheel
+#   sensor-cert.pem          0444 root:wheel
+#   sensor-key.pem           0400 _synapseids:_synapseids     <- the one that matters
+grep synapseids_sensor_profiles /usr/local/etc/synapseids/sensor.conf
+#   synapseids_sensor_profiles="wan dmz iot mgmt"   <- must list every instance
+grep -r . /usr/local/etc/synapseids/instances/ | grep -i token   # must find NOTHING
+
+# 4b. THE BIG ONE: did each interface identifier resolve to a real device?
+grep synapseids_sensor_iface /usr/local/etc/synapseids/instances/*.conf
+#   .../wan.conf:synapseids_sensor_iface="em0"                     <- a device, not "wan"
+#   .../wan.conf:synapseids_sensor_iface_src="interfaces.wan.if"
+#   .../wan.conf:synapseids_sensor_iface_error=""                  <- must be empty
+# Every instance must resolve to a DIFFERENT device. If iface_src says
+# helpers.physical_interface(), the primary lookup failed and that is worth
+# reporting upstream. If iface_error is non-empty, that instance will refuse to
+# start and say so, which is the intended behaviour.
+
+# 5. Run the selftest FIRST. It covers 2, 4, 4b and 6 in one command, per instance.
+service synapseids_sensor selftest
+service synapseids_sensor selftest wan
+
+# 6. Does EVERY instance run, as the unprivileged user, on the right device?
+service synapseids_sensor start
+ls -l /var/run/synapseids/            # one pidfile per instance, owned by _synapseids
+for p in /var/run/synapseids/*.pid; do ps -o user,command -p "$(cat "$p")"; done
+# Four processes, four different --iface values, all running as _synapseids.
+service synapseids_sensor status      # one block per instance
+service synapseids_sensor restart wan # and one instance alone must not disturb the rest
+
+# 6b. Is anything reaching each log? (the kept daemon(8) -f question)
+ls -l /var/log/synapseids/*/sensor.log
+# Empty while the service runs => drop -f from command_args in
+# /usr/local/etc/rc.d/synapseids_sensor. Capture is unaffected either way.
+
+# 6c. Does deleting an instance actually stop it?
+#     Delete one in the GUI, Save, then:
+ls -l /var/run/synapseids/ ; pgrep -fl synapse-sensor
+# Its pidfile and its process must both be gone. This is the orphan sweep in the
+# rc.d stop/restart path; if it does not work, a segment the operator believes
+# they stopped monitoring is still being captured.
+
+# 7. Does the BPF capture actually work? (the biggest remaining unknown)
+/usr/local/bin/synapse-sensor pcap-over-ip \
+    --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
+# ...and does a SECOND concurrent capture on a different device work at the same
+# time? /dev/bpf is a cloning device so it should, but nothing has proven it.
+
+# 8. Does a daemon see FOUR sensors, with four identities?
+curl -s http://<synapsed>:8080/api/v1/sensors  | jq '.[].id'
+curl -s http://<synapsed>:8080/api/v1/captures | jq
+```
+
+### Known soft spots
+
+Five that are not OPNsense-API questions at all, and matter most:
+
+- **The BPF read path.** The chunk splitter and the ioctl numbers are unit-tested
+  and compile-asserted, but no packet has ever been through `BIOCGDLT` →
+  `read(2)` → `parseBPFChunk` on a real kernel. Check that packet counts and
+  timestamps look sane and that `drops` behaves under load.
+- **`pkg add` script execution.** Confirm `post-install` really ran — it creates
+  the `_synapseids` account and runs the model migration — and that the Services
+  page appears without a manual `service configd restart`.
+- **N concurrent BPF captures.** `/dev/bpf` is a cloning device, so four
+  processes should each get their own descriptor and their own buffers. Nothing
+  has proven it, and nothing has measured what four `raw`-mode sensors do to a
+  firewall's CPU or uplink (see `send_mode`).
+- **The repeating configd target.** `[OPNsense.SynapseIDSSensor.instances.instance.%.name]`
+  is reproduced faithfully in `render-templates.py` from core's own
+  `__find_filters`, for one and for four instances — but no real configd has
+  expanded it. If it resolves to nothing, **no instance file is written at all**
+  and every sensor refuses to start naming a missing file, which is loud rather
+  than silent.
+- **The model migration.** It is unit-tested against a stubbed model, including
+  the pre-#132 four-interface case, but no real `BaseModel` has run it and no
+  real `config.xml` has been rewritten by it. Take a config backup before the
+  first upgrade.
+
+Then the places where an OPNsense API name could not be confirmed from a Linux
+build host. There were nine `TODO(verify):` markers in `src/`; **eight are now
+resolved and one is deliberately kept**, so `grep -rn 'TODO(verify)' src/` is a
+one-line checklist. Four of the eight were resolved by *removing* the dependency
+rather than confirming it. Full reasoning in
+[ADR 0028](../../docs/adr/0028-opnsense-tls-material-and-selftest.md).
+
+**Still carried as a `TODO(verify)`:**
+
+| file | what to confirm | failure mode if the assumption is wrong |
+|------|-----------------|------------------------------------------|
+| `etc/rc.d/synapseids_sensor` | whether `daemon(8)`'s `-f` (supervisor std fds → `/dev/null`) also defeats `-o` / `-S -T` capture of the **child's** output on FreeBSD 14. `-f` is kept because configd reads this script to EOF and a supervisor holding that pipe open would hang the GUI's Start button. | **Capture is unaffected**; only `sensor.log` stays empty. The selftest's `log-sink` line says so and prints the remedy (drop `-f`). |
+
+**Resolved, but still worth an eye on the box** — each now fails loudly rather
+than silently, so a wrong guess is visible immediately:
+
+| file | assumption | how it fails if wrong |
+|------|-----------|------------------------|
+| `templates/…/sensor.conf` | that the configd Jinja context exposes a top-level `interfaces` node with an `if` child, so `interfaces.wan.if` → `em0`. Reasoned from the fact that the template already reads `OPNsense.…` out of the same dict. `helpers.physical_interface()` is tried second. | **Never binds to the wrong device and never to nothing.** Unresolvable → empty device + a recorded error → `rc.d` refuses to start; resolved-but-absent → `ifconfig` check refuses and lists the real devices. Check `synapseids_sensor_iface_src` to see which lookup won. |
+| `models/…/Sensor.xml` | `Required=N` + `<BlankDesc>` renders a blank "All traffic" dropdown entry (a `BaseListField` feature). | Cosmetic: the blank entry is not offered and only the four presets are selectable. Cannot produce a dead sensor. |
+| `models/…/Sensor.php` | `\Phalcon\Messages\Message` — Phalcon 4/5, i.e. OPNsense 21.1+. The package is only built for FreeBSD 14 ABIs (OPNsense 24.x/25.x), so pre-21.1 is out of scope. | Class-not-found on save: loud, immediate, first use. |
+| `controllers/…/Api/SettingsController.php` | `getModelNodes()`/`setModelNodes()` on `ApiMutableModelControllerBase` (present since 19.7). | Method-not-found on load/save: loud and immediate. |
+| `controllers/…/Api/ServiceController.php` | *removed* — the model is now instantiated directly instead of via a base-class `getModel()`. | n/a. |
+| `actions.d/actions_synapseidssensor.conf` | *removed* — `; exit 0` makes configd's non-zero `script_output` behaviour irrelevant, deliberately, rather than depending on the answer. | n/a. |
+| `views/…/index.volt` | `saveFormToEndpoint(url, formid, ok, disable_dialog, fail)` — the 20.x+ signature; and that a duplicate `#service_status_container` is harmless. | A visibly dead Save button plus a browser-console error. The status pill next to it is ours and always populates. |

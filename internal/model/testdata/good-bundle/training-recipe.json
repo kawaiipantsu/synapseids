@@ -1,0 +1,13 @@
+{
+  "batch_size": 512,
+  "class_weighting": "balanced",
+  "early_stopping": {
+    "metric": "macro_f1",
+    "patience": 6
+  },
+  "epochs": 40,
+  "learning_rate": 0.001,
+  "optimizer": "adamw",
+  "random_seed": 1337,
+  "scheduler": "cosine"
+}

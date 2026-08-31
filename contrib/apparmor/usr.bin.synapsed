@@ -37,7 +37,7 @@ profile synapsed /usr/bin/synapsed flags=(attach_disconnected) {
   network inet  dgram,
   network inet6 dgram,
   network netlink raw,          # interface enumeration, CAP_NET_ADMIN ops
-  network packet raw,           # AF_PACKET live capture (future)
+  network packet raw,           # AF_PACKET live capture (synapsed --capture / capture.sources)
   unix (bind, listen, accept, connect, send, receive) type=stream,
 
   # --- the binary --------------------------------------------------------

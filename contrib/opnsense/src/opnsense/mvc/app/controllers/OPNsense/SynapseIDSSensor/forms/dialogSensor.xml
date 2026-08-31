@@ -1,0 +1,131 @@
+<?xml version="1.0"?>
+<!--
+    forms/dialogSensor.xml - the SHARED settings on Services -> SynapseIDS Sensor.
+
+    Copyright (C) 2026 SynapseIDS contributors
+    All rights reserved. BSD 2-Clause; see Sensor.php for the full text.
+
+    Field ids are "<internalModelName>.<model path>", where internalModelName is
+    'sensor' as declared in Api\SettingsController.
+
+    Everything that describes a CAPTURE moved to forms/dialogInstance.xml when
+    the plugin became one process per interface (issue #124): interface, filter,
+    direction, promiscuous, snaplen, what to send, sensor id, location and the
+    authorisation assertion are all per instance now. What is left here is the
+    part there is exactly one of - the collector this firewall talks to and the
+    credentials it presents.
+-->
+<form>
+    <field>
+        <type>header</type>
+        <label>General</label>
+    </field>
+    <field>
+        <id>sensor.general.enabled</id>
+        <label>Enable sensors</label>
+        <type>checkbox</type>
+        <help>
+            Master switch. Start the configured sensor instances at boot and keep them running. Each instance
+            also has its own enable checkbox, so a single segment can be taken out of service without
+            disturbing the others.
+        </help>
+    </field>
+
+    <field>
+        <type>header</type>
+        <label>Transport</label>
+    </field>
+    <field>
+        <id>sensor.general.mode</id>
+        <label>Connection mode</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>
+            Listen: this firewall is the TLS server and the SynapseIDS daemon dials in (--listen). Each
+            instance is a separate process and needs its own listen port, which is set on the instance.
+            Connect: this firewall dials the daemon, which works when the firewall is behind NAT (--connect);
+            every instance dials the one collector address below and identifies itself by its own sensor ID.
+        </help>
+    </field>
+    <field>
+        <id>sensor.general.address</id>
+        <label>Collector address</label>
+        <type>text</type>
+        <help>Connect mode only: host:port of the SynapseIDS collector every instance dials (--connect).</help>
+    </field>
+    <field>
+        <id>sensor.general.token</id>
+        <label>Bearer token</label>
+        <type>password</type>
+        <help>
+            Shared secret that authenticates every SYNPOIP stream from this firewall. It is written to a
+            root-only file (/usr/local/etc/synapseids/sensor.token, mode 0400) and passed as --token-file; it
+            is never placed on a command line and never appears in a log. One token for the firewall, not one
+            per instance: the instances are distinguished by their sensor IDs, not by their credentials.
+        </help>
+    </field>
+
+    <field>
+        <type>header</type>
+        <label>TLS</label>
+    </field>
+    <field>
+        <id>sensor.general.verify_peer</id>
+        <label>Verify collector certificate</label>
+        <type>checkbox</type>
+        <help>
+            Connect mode only. When unchecked every instance runs with --insecure-tls and any host that
+            answers on the collector address can read your traffic. Requires the authorisation confirmation on
+            each enabled instance.
+        </help>
+    </field>
+    <field>
+        <id>sensor.general.ca</id>
+        <label>Peer CA bundle (PEM)</label>
+        <type>textbox</type>
+        <style>formcontrol</style>
+        <height>5</height>
+        <help>
+            Listen mode: certificate authority that client certificates are verified against, which also makes
+            a client certificate mandatory (--client-ca). Connect mode: authority used to verify the collector
+            (--ca); leave empty to use the system trust store.
+            Saved to /usr/local/etc/synapseids/sensor-ca.pem (0444 root:wheel). One or more PEM CERTIFICATE
+            blocks; pasting a private key here is refused.
+        </help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>sensor.general.client_cert</id>
+        <label>Sensor certificate (PEM)</label>
+        <type>textbox</type>
+        <style>formcontrol</style>
+        <height>5</height>
+        <help>
+            This firewall's own certificate (--cert), used by every instance. In listen mode it is the TLS
+            server certificate; in connect mode it is the mutual-TLS client certificate. Leave both this and
+            the key empty to let each sensor generate a self-signed certificate in memory (lab use only).
+            Saved to /usr/local/etc/synapseids/sensor-cert.pem (0444 root:wheel). A single PEM CERTIFICATE
+            block; put any intermediates in the CA field above.
+        </help>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>sensor.general.client_key</id>
+        <label>Sensor private key (PEM)</label>
+        <type>textbox</type>
+        <style>formcontrol</style>
+        <height>5</height>
+        <help>
+            Private key belonging to the certificate above (--key). It must be unencrypted: the sensors run
+            unattended and cannot be prompted for a passphrase, so an encrypted key is refused here rather
+            than failing at start-up. Saving verifies that it parses and that it really matches the
+            certificate above.
+            Saved to /usr/local/etc/synapseids/sensor-key.pem, mode 0400 owned by _synapseids, tightened
+            immediately after rendering and re-checked before every start. It is never written to a rendered
+            configuration, never passed on a command line and never logged. If it is missing, empty or
+            unparseable the service refuses to start and names the path; it never falls back to an unverified
+            transport.
+        </help>
+        <advanced>true</advanced>
+    </field>
+</form>

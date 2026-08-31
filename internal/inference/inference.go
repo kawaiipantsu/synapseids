@@ -6,6 +6,7 @@ package inference
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
@@ -74,27 +75,95 @@ type Result struct {
 	Models       []ModelOutput `json:"models"`
 }
 
-// Runtime holds the loaded models and scores flows through all of them.
+// Runtime holds the loaded models and scores flows through all of them. It is
+// safe for concurrent use: the packet path calls Score while an operator's
+// activate/deactivate request swaps the model set (PROJECT.md §22, §28.10).
 type Runtime struct {
-	models []Classifier
+	mu       sync.RWMutex
+	models   []Classifier // the live set Score iterates
+	fallback []Classifier // restored by Deactivate — the models NewRuntime was given
 }
 
 // NewRuntime returns a Runtime over the given models. The first model with
-// RolePrimary is authoritative; if none is primary the first model wins.
+// RolePrimary is authoritative; if none is primary the first non-experimental
+// model wins (see Score for the full role contract). The models passed here are
+// also the fallback set Deactivate restores — cmd/synapsed starts the Runtime
+// with just inference.Heuristic, so deactivating a trained model returns the
+// daemon to the transparent rule-based classifier.
 func NewRuntime(models ...Classifier) *Runtime {
-	return &Runtime{models: models}
+	return &Runtime{models: models, fallback: models}
 }
 
-// Models returns the loaded classifiers.
-func (r *Runtime) Models() []Classifier { return r.models }
+// live returns the current model slice under the read lock. The slice is
+// replaced wholesale by Activate/Deactivate/SetModels and never mutated in
+// place, so a caller may range over the returned value without holding the lock.
+func (r *Runtime) live() []Classifier {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.models
+}
 
-// Score runs every model over v and combines the outputs.
+// Models returns the currently loaded classifiers.
+func (r *Runtime) Models() []Classifier { return r.live() }
+
+// Activate atomically replaces the live model set with a single trained primary
+// (issue #26 / PROJECT.md §29 steps 16–18). It never runs on load, scan or
+// startup — only an explicit operator action reaches here. A concurrent Score
+// either sees the whole previous set or the whole new one, never a mix.
+func (r *Runtime) Activate(primary Classifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.models = []Classifier{primary}
+}
+
+// Deactivate atomically restores the fallback set NewRuntime was given (the
+// heuristic, in the daemon), so classification keeps flowing after a trained
+// model is turned off.
+func (r *Runtime) Deactivate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.models = r.fallback
+}
+
+// SetModels atomically replaces the live model set with an arbitrary ensemble.
+// It is the general form of Activate for tests and future multi-model wiring; it
+// does not change the fallback set.
+func (r *Runtime) SetModels(models ...Classifier) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.models = models
+}
+
+// Score runs every loaded model over v and combines their outputs into one
+// ensemble Result. Each model's individual verdict is always recorded in
+// Result.Models — never just the combined decision (PROJECT.md §12).
+//
+// Role contract (locked here, exercised by inference_test.go):
+//
+//   - primary — authoritative; drives Result.Class / ClassID / Score.
+//   - location, global — supervised peers; never drive the verdict, but a top
+//     class differing from another driving model raises Result.Disagreement.
+//   - experimental — shadow model (PROJECT.md §12): recorded in Result.Models,
+//     but never influences the verdict and never contributes to
+//     Result.Disagreement.
+//   - anomaly — novelty detector: a score, not a supervised class; excluded from
+//     the verdict and the disagreement set (unchanged behaviour).
+//
+// Verdict driver: the first primary model; absent any primary, the first
+// non-experimental model; if every loaded model is experimental, the first model
+// (so Result is never left empty).
+//
+// Disagreement is true when the alert-driving models — every role except
+// experimental and anomaly — predict more than one distinct top class.
 func (r *Runtime) Score(v features.Vector) Result {
 	res := Result{FlowID: v.FlowID}
-	var primary *ModelOutput
+	var driver *ModelOutput
+	primaryLocked := false
 	seen := map[int]int{}
 
-	for _, m := range r.models {
+	models := r.live()
+	for i := range models {
+		m := models[i]
 		sc := m.Classify(v)
 		id, p := sc.Top()
 		mo := ModelOutput{
@@ -102,24 +171,31 @@ func (r *Runtime) Score(v features.Vector) Result {
 			Class: schema.ClassName(id), ClassID: id, Score: p, Scores: sc,
 		}
 		res.Models = append(res.Models, mo)
-		if m.Role() != RoleAnomaly {
+
+		if m.Role() != RoleAnomaly && m.Role() != RoleExperimental {
 			seen[id]++
 		}
-		if primary == nil || m.Role() == RolePrimary {
-			cp := mo
-			primary = &cp
+
+		switch {
+		case m.Role() == RolePrimary && !primaryLocked:
+			d := mo
+			driver, primaryLocked = &d, true
+		case !primaryLocked && driver == nil && m.Role() != RoleExperimental:
+			d := mo
+			driver = &d
 		}
 	}
 
-	if primary != nil {
-		res.Class, res.ClassID, res.Score = primary.Class, primary.ClassID, primary.Score
+	if driver == nil && len(res.Models) > 0 {
+		d := res.Models[0] // every model is experimental — keep it simple
+		driver = &d
 	}
-	// Disagreement: more than one distinct non-anomaly class predicted.
-	distinct := 0
-	for range seen {
-		distinct++
+	if driver != nil {
+		res.Class, res.ClassID, res.Score = driver.Class, driver.ClassID, driver.Score
 	}
-	res.Disagreement = distinct > 1
+	// Disagreement: more than one distinct top class among the alert-driving
+	// models (experimental and anomaly excluded).
+	res.Disagreement = len(seen) > 1
 
 	sort.SliceStable(res.Models, func(i, j int) bool {
 		return roleRank(res.Models[i].Role) < roleRank(res.Models[j].Role)

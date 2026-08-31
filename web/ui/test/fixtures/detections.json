@@ -1,0 +1,76 @@
+{
+  "detections": [
+    {
+      "id": 12,
+      "ts": "2026-08-31T17:41:02.381Z",
+      "last_ts": "2026-08-31T17:44:19.006Z",
+      "count": 7,
+      "class": "brute_force",
+      "severity": "high",
+      "confidence": 0.983,
+      "flow_id": 4231,
+      "flow_ids": [4231, 4232],
+      "src_ip": "10.0.0.5",
+      "dst_ip": "10.10.10.21",
+      "src_port": 51234,
+      "dst_port": 3306,
+      "protocol": "tcp",
+      "disagreement": false,
+      "reason": "7 MySQL connections from one source in 197s, all short-lived",
+      "models": [
+        {
+          "model_id": "heuristic-v1",
+          "role": "primary",
+          "class": "brute_force",
+          "confidence": 0.983
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "ts": "2026-08-31T17:39:55.100Z",
+      "last_ts": "2026-08-31T17:40:41.884Z",
+      "count": 412,
+      "class": "scan",
+      "severity": "critical",
+      "confidence": 0.997,
+      "flow_id": 3980,
+      "flow_ids": [3980],
+      "src_ip": "10.0.0.5",
+      "dst_ip": "10.10.10.21",
+      "src_port": 0,
+      "dst_port": 0,
+      "protocol": "tcp",
+      "disagreement": true,
+      "reason": "412 distinct destination ports probed from one source in 47s",
+      "models": [
+        {
+          "model_id": "heuristic-v1",
+          "role": "primary",
+          "class": "scan",
+          "confidence": 0.997
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "ts": "2026-08-31T17:31:12.004Z",
+      "last_ts": "2026-08-31T17:31:12.004Z",
+      "count": 1,
+      "class": "suspicious",
+      "severity": "low",
+      "confidence": 0.612,
+      "flow_id": 3011,
+      "src_ip": "192.168.50.8",
+      "dst_ip": "192.168.50.1",
+      "src_port": 0,
+      "dst_port": 0,
+      "protocol": "icmp",
+      "disagreement": false,
+      "reason": "unusual ICMP volume to the gateway"
+    }
+  ],
+  "total": 12,
+  "returned": 3,
+  "evicted": 2
+}

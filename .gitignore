@@ -9,6 +9,14 @@
 /dist/
 /build/
 
+# Web UI (Node). The built bundle web/dist/ IS committed and embedded by
+# web/web.go; only the transient toolchain state is ignored.
+/web/ui/node_modules/
+/web/ui/.vite/
+/web/ui/*.tsbuildinfo
+# `npm test` compiles src/ + test/ here and runs them under node --test.
+/web/ui/.test-build/
+
 # Coverage
 coverage.out
 coverage.html
@@ -30,3 +38,20 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# Python bytecode, from the trainer and from the OPNsense template harness
+# (contrib/opnsense/tools/render-templates.py is imported by the smoke checks).
+__pycache__/
+*.pyc
+
+# Python trainer (trainer/)
+trainer/.venv/
+trainer/**/__pycache__/
+trainer/*.egg-info/
+trainer/build/
+trainer/dist/
+
+# Claude Code local state (agent worktrees, session settings). Tool-local, never
+# repo content — it otherwise shows up as an untracked path and fails
+# `make release-check`'s clean-tree gate.
+.claude/

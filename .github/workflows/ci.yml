@@ -14,8 +14,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: false
@@ -29,12 +29,19 @@ jobs:
     name: Cross-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: false
       - run: make build-linux
+      # The FreeBSD BPF source cannot be exercised on this runner, but it must
+      # at least compile and vet — and because bpf_freebsd_assert.go pins every
+      # hand-derived ioctl number against syscall.BIOC* with compile-time
+      # constant assertions, a successful build here is also a check of those
+      # numbers against the FreeBSD ABI (ADR 0014).
+      - run: make build-freebsd
+      - run: GOOS=freebsd GOARCH=amd64 go vet ./...
       - name: Confirm the fixtures are up to date
         run: |
           go run ./testdata/gen
@@ -45,8 +52,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: false
@@ -60,8 +67,8 @@ jobs:
     name: Vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: false
