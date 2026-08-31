@@ -79,6 +79,35 @@ func TestCapturesListFields(t *testing.T) {
 	}
 }
 
+// TestCapturesShowsTcpdumpAndSSHKinds: the subprocess capture kinds (#29/#30)
+// surface through GET /api/v1/captures with their kind and their raw tcpdump
+// filter expression, exactly as the Manager reports them.
+func TestCapturesShowsTcpdumpAndSSHKinds(t *testing.T) {
+	rows := []capture.SourceStatus{
+		{Name: "span", Kind: "tcpdump", State: capture.StateRunning, Filter: "tcp port 80 or udp"},
+		{Name: "edge", Kind: "ssh", State: capture.StateError, Filter: "not port 22", Error: "ssh: exit 255: Permission denied (publickey)"},
+	}
+	rr := httptest.NewRecorder()
+	serverWithCaptures(stubCaptures{rows: rows}).
+		ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/captures", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code %d", rr.Code)
+	}
+	var got []capture.SourceStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(got))
+	}
+	if got[0].Kind != "tcpdump" || got[0].Filter != "tcp port 80 or udp" {
+		t.Fatalf("tcpdump row = %+v", got[0])
+	}
+	if got[1].Kind != "ssh" || got[1].Filter != "not port 22" || got[1].State != capture.StateError {
+		t.Fatalf("ssh row = %+v", got[1])
+	}
+}
+
 func TestCaptureByName(t *testing.T) {
 	h := serverWithCaptures(stubCaptures{rows: []capture.SourceStatus{
 		{Name: "lo", Kind: "nic", State: capture.StateRunning},
