@@ -1,0 +1,12 @@
+{
+  "accuracy": 0.973,
+  "evaluated": "2026-08-31T11:58:00Z",
+  "loss": 0.0821,
+  "macro_f1": 0.941,
+  "per_class": {
+    "dos_ddos": 0.95,
+    "normal": 0.99,
+    "scan": 0.96
+  },
+  "test_flows": 128000
+}

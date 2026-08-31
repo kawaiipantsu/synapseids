@@ -22,6 +22,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/version"
 )
@@ -64,6 +65,14 @@ func run(args []string) int {
 
 	bus := events.New()
 	store := storage.NewMem(cfg.Storage.MaxFlows, cfg.Storage.MaxFlows)
+
+	// Inspect any model bundles under cfg.Models.Directory. This validates each
+	// bundle against the frozen contracts and logs the result; it never adds a
+	// model to the runtime and never activates cfg.Models.Primary — activation
+	// is a separate explicit step, still to be wired (PROJECT.md §11, §28.10).
+	// One-shot at startup, off any packet path.
+	model.Scan(cfg.Models.Directory, cfg.Models.Primary, log.Printf)
+
 	rt := inference.NewRuntime(
 		inference.NewHeuristic("heuristic-v1", inference.RolePrimary),
 	)
@@ -77,7 +86,9 @@ func run(args []string) int {
 	var flowID atomic.Uint64
 	rc := newReplayController(bus, store, rt, flowOpt, "local", &flowID)
 
-	srv := api.New(cfg, bus, store, rt, rc)
+	// rc also implements api.FlowStatsProvider: it owns the running pipeline and
+	// therefore its live flow-table counters (PROJECT.md §22, §24).
+	srv := api.New(cfg, bus, store, rt, rc, rc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

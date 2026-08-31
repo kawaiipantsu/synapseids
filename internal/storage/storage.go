@@ -54,7 +54,12 @@ type Stats struct {
 	Classifications int    `json:"classifications"`
 	FlowsEvicted    uint64 `json:"flows_evicted"`
 	ClassEvicted    uint64 `json:"classifications_evicted"`
-	Driver          string `json:"driver"`
+	// Disagreements is the cumulative number of stored classifications whose
+	// ensemble Result.Disagreement was set (PROJECT.md §12, §24: model
+	// disagreement is an instrumented signal). It counts every disagreeing
+	// verdict ever put, not just those still retained in the ring.
+	Disagreements uint64 `json:"disagreements"`
+	Driver        string `json:"driver"`
 }
 
 // Store is the persistence contract.

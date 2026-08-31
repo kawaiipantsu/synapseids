@@ -124,6 +124,45 @@ type BundleMeta struct {
 	OutputSize    int    `json:"output_size"`
 }
 
+// HiddenLayer is one configurable hidden layer of a model's architecture
+// (PROJECT.md §10). Only the hidden layers are editable; the input and output
+// layers are locked to the family's feature and output schemas.
+type HiddenLayer struct {
+	Width      int     `json:"width"`
+	Activation string  `json:"activation"`
+	Dropout    float64 `json:"dropout"`
+	BatchNorm  bool    `json:"batchnorm"`
+	Residual   bool    `json:"residual"`
+}
+
+// Architecture is a model's declared layer shape from metadata.json. InputSize
+// and OutputSize restate the locked family contract; Hidden is the configurable
+// middle (PROJECT.md §10, §11).
+type Architecture struct {
+	InputSize  int           `json:"input_size"`
+	OutputSize int           `json:"output_size"`
+	Hidden     []HiddenLayer `json:"hidden"`
+}
+
+// IsZero reports whether the architecture block was absent from metadata.json.
+func (a Architecture) IsZero() bool {
+	return a.InputSize == 0 && a.OutputSize == 0 && len(a.Hidden) == 0
+}
+
+// ValidateArchitecture reports whether a model's declared input and output
+// layers still match this build's frozen feature and output schemas. The hidden
+// layers are the trainer's to choose; the edge layers are not (PROJECT.md §10,
+// §28.6).
+func ValidateArchitecture(a Architecture) error {
+	if a.InputSize != flowFeaturesV1.InputSize {
+		return fmt.Errorf("architecture.input_size %d != %s input_size %d", a.InputSize, flowFeaturesV1.Schema, flowFeaturesV1.InputSize)
+	}
+	if a.OutputSize != trafficClassesV1.OutputSize {
+		return fmt.Errorf("architecture.output_size %d != %s output_size %d", a.OutputSize, trafficClassesV1.Schema, trafficClassesV1.OutputSize)
+	}
+	return nil
+}
+
 // ValidateBundle reports whether a model bundle's feature/output contract matches
 // what this build of the daemon can feed and interpret. An incompatible model is
 // rejected before inference, never silently run (PROJECT.md §9, §28.6).

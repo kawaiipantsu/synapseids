@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -46,6 +47,26 @@ type ReplayController interface {
 	Status() ReplayStatus
 }
 
+// FlowStats is a snapshot of the live flow table: its lifetime counters plus the
+// configured cap. It is surfaced on /api/v1/status so flow-table growth and
+// oldest-idle eviction pressure are visible without the API touching the packet
+// path (PROJECT.md §22, §24).
+type FlowStats struct {
+	Active    int    `json:"active"`
+	Started   uint64 `json:"started"`
+	Closed    uint64 `json:"closed"`
+	Snapshots uint64 `json:"snapshots"`
+	Evicted   uint64 `json:"evicted"`
+	Max       int    `json:"max"`
+}
+
+// FlowStatsProvider exposes the running pipeline's flow-table counters. The
+// daemon's replay controller implements it; it may be nil in embedded/test use,
+// in which case /api/v1/status reports zeroes and the configured cap.
+type FlowStatsProvider interface {
+	FlowStats() FlowStats
+}
+
 // Server bundles the HTTP handler, the live hub and the event pump.
 type Server struct {
 	cfg   config.Config
@@ -53,14 +74,17 @@ type Server struct {
 	store storage.Store
 	rt    *inference.Runtime
 	rc    ReplayController
+	fs    FlowStatsProvider
 	hub   *wshub.Hub
 	start time.Time
 }
 
-// New builds a Server. rc may be nil (replay endpoints then return 503).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController) *Server {
+// New builds a Server. rc may be nil (replay endpoints then return 503); fs may
+// be nil (/api/v1/status then reports a zeroed flow table with the configured
+// cap).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController, fs FlowStatsProvider) *Server {
 	return &Server{
-		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc,
+		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc, fs: fs,
 		hub:   wshub.NewHub(cfg.Live.ClientQueueSize),
 		start: time.Now(),
 	}
@@ -164,20 +188,35 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	pub, drop, subs := s.bus.Stats()
-	clients, accepted, framesOut, wsDrops := s.hub.Stats()
+	ws := s.hub.Stats()
 	var rs ReplayStatus
 	if s.rc != nil {
 		rs = s.rc.Status()
 	}
+	fs := FlowStats{Max: s.cfg.Capture.MaxFlows}
+	if s.fs != nil {
+		fs = s.fs.FlowStats()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":        version.Short("synapsed"),
-		"commit":         version.Commit,
-		"uptime_sec":     int64(time.Since(s.start).Seconds()),
-		"listen":         s.cfg.Server.Listen,
-		"loopback":       s.cfg.LoopbackOnly(),
-		"storage":        s.store.Stats(),
-		"events":         map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
-		"live":           map[string]any{"clients": clients, "accepted": accepted, "frames_out": framesOut, "client_drops": wsDrops},
+		"version":    version.Short("synapsed"),
+		"commit":     version.Commit,
+		"uptime_sec": int64(time.Since(s.start).Seconds()),
+		"listen":     s.cfg.Server.Listen,
+		"loopback":   s.cfg.LoopbackOnly(),
+		"storage":    s.store.Stats(),
+		"events":     map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
+		"live": map[string]any{
+			// Canonical WebSocket-hub counters (issue #70).
+			"ws_clients":        ws.Clients,
+			"ws_client_drops":   ws.Drops,
+			"ws_frames_batched": ws.FramesBatched,
+			// Pre-existing keys, kept for back-compat (additive).
+			"clients":      ws.Clients,
+			"accepted":     ws.Accepted,
+			"frames_out":   ws.FramesOut,
+			"client_drops": ws.Drops,
+		},
+		"flow":           fs,
 		"models":         s.modelList(),
 		"replay":         rs,
 		"feature_schema": schema.FlowFeaturesV1().Schema,
@@ -203,8 +242,118 @@ func (s *Server) handleFlow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fr)
 }
 
+// classFilterScan is how many recent verdicts a filtered query walks before it
+// caps at the requested limit. The memory store has no indexes, so a filter is a
+// linear scan of the newest window; a predicate-pushdown backend (SQLite) will
+// replace this.
+const classFilterScan = 5000
+
 func (s *Server) handleClassifications(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.RecentClassifications(limitParam(r, 100, 5000)))
+	q := r.URL.Query()
+	limit := limitParam(r, 100, 5000)
+
+	f, ok := parseClassFilters(w, q)
+	if !ok {
+		return // parseClassFilters already wrote a 400
+	}
+	if f.empty() {
+		writeJSON(w, http.StatusOK, s.store.RecentClassifications(limit))
+		return
+	}
+
+	rows := s.store.RecentClassifications(classFilterScan)
+	out := make([]storage.Classification, 0, limit)
+	for _, c := range rows {
+		if f.match(c) {
+			out = append(out, c)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// classFilters holds the optional GET /api/v1/classifications query predicates.
+// Every field is additive: a request with none of them keeps the legacy
+// behaviour (newest `limit`, max 5000).
+type classFilters struct {
+	disagreement bool    // disagreement=true  → only Result.Disagreement rows
+	class        string  // class=<name>       → Result.Class == name (validated)
+	model        string  // model=<id>         → any Result.Models[].ModelID == id
+	minConf      float64 // min_confidence=... → Result.Score >= threshold (0..1)
+	hasMinConf   bool
+}
+
+func (f classFilters) empty() bool {
+	return !f.disagreement && f.class == "" && f.model == "" && !f.hasMinConf
+}
+
+func (f classFilters) match(c storage.Classification) bool {
+	if f.disagreement && !c.Result.Disagreement {
+		return false
+	}
+	if f.class != "" && c.Result.Class != f.class {
+		return false
+	}
+	if f.hasMinConf && c.Result.Score < f.minConf {
+		return false
+	}
+	if f.model != "" {
+		found := false
+		for _, m := range c.Result.Models {
+			if m.ModelID == f.model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// parseClassFilters reads the query params, validating as it goes. On a bad
+// value it writes a 400 and returns ok=false.
+func parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool) {
+	var f classFilters
+
+	f.disagreement = q.Get("disagreement") == "true"
+
+	if v := q.Get("class"); v != "" {
+		if !validClassName(v) {
+			http.Error(w, "unknown class name", http.StatusBadRequest)
+			return f, false
+		}
+		f.class = v
+	}
+
+	f.model = q.Get("model")
+
+	if v := q.Get("min_confidence"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n < 0 {
+			http.Error(w, "bad min_confidence", http.StatusBadRequest)
+			return f, false
+		}
+		if n > 1 { // accept a 0..100 percentage, like the web UI's slider
+			n /= 100
+		}
+		f.minConf, f.hasMinConf = n, true
+	}
+
+	return f, true
+}
+
+// validClassName reports whether name is a traffic-classes-v1 class.
+func validClassName(name string) bool {
+	for _, c := range schema.TrafficClassesV1().Classes {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {

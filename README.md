@@ -26,9 +26,9 @@
 > [!IMPORTANT]
 > **SynapseIDS is in early development — this is Phase 1 of an [8-phase plan](#roadmap).** No release is tagged yet; build from source today.
 >
-> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a live WebSocket rolling log at `/`. Replay runs the *exact* pipeline live capture will.
+> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
 >
-> **Not here yet:** live NIC / tcpdump / SSH capture, a Go ONNX runtime and trained models wired into the pipeline, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the React operator SPA. The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
+> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
 <br/>
 
@@ -117,7 +117,7 @@ Select any row to explain the verdict against the raw feature vector and every m
   disagreement:  none (1 model)          anomaly score:  —  (anomaly model is Phase 7)
 ```
 
-<sub>Illustrative, and a Phase 5 view — but every value shown is already in <code>GET /api/v1/flows/{id}</code> and <code>GET /api/v1/classifications</code> today. The "normal band" column is a hand-set reference; a real trained baseline arrives with the models in Phase 2.</sub>
+<sub>Illustrative. The SPA's Flow Inspector drawer is live in Phase 1: click any row in the Flow Log to see the full 5-tuple, timing, packet/byte and TCP metadata, all 48 raw <code>flow-features-v1</code> values joined to the schema, the full class-probability vector and every model's output. Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Normalized inputs, snapshot history and human-review status are labelled Phase-2 stubs; the "normal band" reference column arrives with trained baselines in Phase 2.</sub>
 
 ### and from the CLI
 
@@ -282,6 +282,14 @@ make security                # govulncheck when installed
 make release-check           # fmt-check + vet + lint + test + cross-build
 ```
 
+The web console lives in `web/ui/` (TypeScript + React + Vite 5). The **Go build never runs Node** — the bundle in `web/dist/` is committed and embedded (`//go:embed all:dist`, [ADR 0004](docs/adr/0004-react-spa-and-committed-build-output.md)). After editing anything under `web/ui/`, rebuild and commit `web/dist/`:
+
+```bash
+make web                     # npm ci && vite build  → web/dist/  (commit the result)
+make web-dev                 # Vite dev server, proxies /api + /api/v1/stream to :8080
+make web-check               # tsc --noEmit
+```
+
 ### 🌳 Git flow
 
 `main` is tagged releases only and accepts merges from `release/*` and `hotfix/*` only · `develop` integrates · work happens on `feature/<name>` off `develop`. A PR opened against the wrong base fails the **Branch flow** check. CI also runs `fmt-check`, `vet`, `test`, `race`, cross-build, lint and `govulncheck` on every push/PR to `main` and `develop`, and fails if `testdata/pcap` is stale (run `make generate` and commit).
@@ -298,7 +306,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [PROJECT.md](PROJECT.md) — `PROJECT
 
 | Phase | | Scope | Status |
 |:--:|:--|:--|:--:|
-| 1 | Vertical slice | PCAP replay → flow engine → `flow-features-v1` → rule-based classifier → REST + WebSocket → rolling log; 4-arch build matrix, CI, `.deb` + `install.sh` packaging | ✅ this release |
+| 1 | Vertical slice | PCAP replay → flow engine → `flow-features-v1` → rule-based classifier → REST + WebSocket → React operator console (Dashboard, Flow Log, Flow Inspector, Replay); 4-arch build matrix, CI, `.deb` + `install.sh` packaging | ✅ this release |
 | 2 | Real inference | Python trainer, configurable hidden layers, ONNX export, Go ONNX inference, model bundles + registry, contract validation | ⬜ |
 | 3 | Live capture | local interface, tcpdump stream, SSH tcpdump, capture-source UI, capture performance metrics | ⬜ |
 | 4 | Dataset & training workflow | dataset manager, multi-dataset training recipes, live training dashboard, confusion matrices, model activation flow | ⬜ |

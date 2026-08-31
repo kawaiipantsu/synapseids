@@ -57,8 +57,10 @@ func TestHeuristicNormal(t *testing.T) {
 
 func TestRuntimeRecordsPerModelAndDisagreement(t *testing.T) {
 	primary := NewHeuristic("primary", RolePrimary)
-	// A second model that always says "normal" to force a disagreement on a scan.
-	shadow := constModel{id: "always-normal", role: RoleExperimental, class: 0}
+	// A second alert-driving model that always says "normal", to force a
+	// disagreement on a scan. (Role-specific disagreement rules — experimental
+	// and anomaly excluded — are covered in inference_test.go.)
+	shadow := constModel{id: "always-normal", role: RoleGlobal, class: 0}
 	rt := NewRuntime(primary, shadow)
 
 	r := flow.Record{
