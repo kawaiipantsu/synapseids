@@ -32,6 +32,22 @@ type FlowRecord struct {
 	CloseReason   string          `json:"close_reason"`
 	SnapshotIndex int             `json:"snapshot_index"`
 	Features      features.Vector `json:"features"`
+
+	// SensorMode records how this row reached the daemon: "" for a record built
+	// locally from packets (the `raw` path, and every local capture), "flow" for a
+	// remotely-aggregated flow record, "feature" for a record whose 48 values were
+	// computed on the sensor and whose packet content never crossed the wire
+	// (issue #45, PROJECT.md §5.3).
+	//
+	// It is provenance, not decoration: a `feature`-mode row carries no
+	// packet-level detail beyond what flow-features-v1 encodes, and this field is
+	// how a consumer knows that before reading the counters.
+	SensorMode string `json:"sensor_mode,omitempty"`
+	// SensorFlowID is the flow id the sensor assigned. The daemon remaps ID
+	// through its own allocator so ids stay globally unique across its lifetime
+	// (CLAUDE.md); this keeps the remote id for correlation with the sensor's own
+	// logs. 0 for a locally-built record.
+	SensorFlowID uint64 `json:"sensor_flow_id,omitempty"`
 }
 
 // Classification is a stored ensemble verdict for a flow, denormalized with just

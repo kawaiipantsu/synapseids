@@ -21,6 +21,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/api"
 	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
+	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
 	"github.com/kawaiipantsu/synapseids/internal/capturewire"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/dataset"
@@ -204,9 +205,17 @@ func run(args []string) int {
 	// ADR 0018). Nil when no collector block is configured. Bad TLS material is
 	// logged and the daemon keeps serving the API (degraded), exactly like a NIC
 	// source that cannot open.
+	// sensorRecords carries `flow`- and `feature`-mode sensor records from the
+	// collector to the capture pipeline, which drains it on the same goroutine as
+	// the merged packet channel (issue #45). It is buffered so a burst of closing
+	// flows does not stall a sensor's TLS read loop; when the buffer does fill,
+	// the collector blocks and TCP backpressure reaches the sensor, which is the
+	// right way to shed record load — records are one per flow, not per packet.
+	sensorRecords := make(chan pcapoverip.SensorRecord, 1024)
+
 	var collector *capture.Collector
 	if cfg.Capture.Collector.Listen != "" {
-		col, cerr := capturewire.BuildCollector(cfg.Capture.Collector, log.Printf)
+		col, cerr := capturewire.BuildCollector(cfg.Capture.Collector, sensorRecords, log.Printf)
 		if cerr != nil {
 			log.Printf("capture: collector disabled: %v", cerr)
 		} else {
@@ -216,7 +225,8 @@ func run(args []string) int {
 					"remote_addr": si.RemoteAddr, "link_type": si.LinkType,
 					"filter": si.Filter, "session_id": si.SessionID,
 					"agent_version": si.AgentVersion, "os_arch": si.OSArch,
-					"source_name": si.SourceName,
+					"source_name": si.SourceName, "mode": si.Mode,
+					"protocol_version": si.ProtocolVersion, "payload_schema": si.PayloadSchema,
 				})
 			}
 			col.OnDisconnect = func(si capture.SensorInfo) {
@@ -224,7 +234,7 @@ func run(args []string) int {
 					"sensor_id": si.SensorID, "location": si.Location,
 					"remote_addr": si.RemoteAddr, "link_type": si.LinkType,
 					"filter": si.Filter, "session_id": si.SessionID,
-					"source_name": si.SourceName,
+					"source_name": si.SourceName, "mode": si.Mode,
 				})
 			}
 			collector = col
@@ -253,6 +263,7 @@ func run(args []string) int {
 			Flow: flowOpt, Sensor: "local",
 			IDGen:    func() uint64 { return flowID.Add(1) },
 			Observer: ins,
+			Records:  sensorRecords,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)

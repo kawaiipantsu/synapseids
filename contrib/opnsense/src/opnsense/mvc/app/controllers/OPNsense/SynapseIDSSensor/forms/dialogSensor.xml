@@ -63,6 +63,21 @@
         <help>Which direction of traffic to hand to the BPF device (--direction).</help>
     </field>
     <field>
+        <id>sensor.general.send_mode</id>
+        <label>Send</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>
+            How much of the analysis runs here on the firewall, and therefore how much crosses the link
+            (--mode). "Raw packets" streams every frame. "Flow records" aggregates flows here and sends one
+            record per flow — around 1.5% of the raw bandwidth on ordinary traffic. "Feature vectors only"
+            also computes the 48 features here and sends nothing else, so &lt;b&gt;no packet content ever leaves
+            this firewall&lt;/b&gt; — around 1.9% of the raw bandwidth. The classifications are identical in all
+            three modes. The two record modes need a SynapseIDS daemon that speaks SYNPOIP v2; an older one
+            refuses the connection rather than silently falling back to sending packets.
+        </help>
+    </field>
+    <field>
         <id>sensor.general.promiscuous</id>
         <label>Promiscuous mode</label>
         <type>checkbox</type>

@@ -52,6 +52,14 @@ type SensorInfo struct {
 	// SourceName is the name the peer was registered under in the Manager (the
 	// sensor id, or the remote address, de-duplicated).
 	SourceName string
+	// Mode is the sensor mode negotiated for this session: "raw", "flow" or
+	// "feature" (issue #45, PROJECT.md §5.3).
+	Mode string
+	// ProtocolVersion is the SYNPOIP version in force (1 or 2).
+	ProtocolVersion uint16
+	// PayloadSchema is the frozen schema id the peer's record frames conform to,
+	// or "" in raw mode.
+	PayloadSchema string
 }
 
 // SensorStatus is one row of GET /api/v1/sensors: the Collector's view of a
@@ -75,6 +83,19 @@ type SensorStatus struct {
 	OSArch       string    `json:"os_arch,omitempty"`
 	SessionID    string    `json:"session_id,omitempty"`
 	SourceName   string    `json:"source_name"`
+
+	// Mode is what this sensor is shipping: "raw" (packet records), "flow"
+	// (remotely-aggregated flow records) or "feature" (only the 48 computed
+	// flow-features-v1 values — no packet content crosses the wire).
+	//
+	// In flow and feature mode no frames are transferred, so packets, bytes, pps,
+	// bps and last_packet are 0: that is an accurate statement about the wire, not
+	// an unmeasured field. Records and RecordBytes are the throughput to watch.
+	Mode            string `json:"mode"`
+	ProtocolVersion uint16 `json:"protocol_version"`
+	PayloadSchema   string `json:"payload_schema,omitempty"`
+	Records         uint64 `json:"records"`
+	RecordBytes     uint64 `json:"record_bytes"`
 }
 
 // CollectorConfig configures the daemon-side SYNPOIP collector. TLS material and
@@ -103,6 +124,15 @@ type CollectorConfig struct {
 	HandshakeTimeout  time.Duration
 	ReadIdleTimeout   time.Duration
 	KeepaliveInterval time.Duration
+	// Records, when non-nil, is where `flow`- and `feature`-mode sensors' record
+	// frames are delivered — normally pipeline.Options.Records, drained by the
+	// same single goroutine that drains the merged packet channel.
+	//
+	// Setting it is also the capability advertisement: only a collector with
+	// somewhere to put records offers a SYNPOIP v2 ceiling in its ClientHello.
+	// Leave it nil and a record-mode sensor is refused with a typed RejectMode
+	// instead of streaming into a void (issue #45).
+	Records chan<- pcapoverip.SensorRecord
 	// Logf receives one-line lifecycle and rejection messages. Never given the
 	// bearer token. Defaults to a no-op.
 	Logf func(string, ...any)
@@ -124,6 +154,7 @@ type Collector struct {
 	handshake time.Duration
 	readIdle  time.Duration
 	keepalive time.Duration
+	records   chan<- pcapoverip.SensorRecord
 	logf      func(string, ...any)
 
 	// OnConnect / OnDisconnect are invoked (not on the packet path) as sensors
@@ -178,6 +209,7 @@ func NewCollector(cfg CollectorConfig) (*Collector, error) {
 		handshake: orDur(cfg.HandshakeTimeout, pcapoverip.DefaultHandshakeTimeout),
 		readIdle:  orDur(cfg.ReadIdleTimeout, pcapoverip.DefaultReadIdleTimeout),
 		keepalive: orDur(cfg.KeepaliveInterval, pcapoverip.DefaultKeepaliveInterval),
+		records:   cfg.Records,
 		logf:      logf,
 		peers:     make(map[string]*peer),
 	}, nil
@@ -265,8 +297,17 @@ func (c *Collector) serve(ctx context.Context, conn net.Conn, reg SourceRegistra
 	}
 
 	// SYNPOIP client role: the collector speaks first, exactly as the dialled
-	// pcap-over-ip source does (PROTOCOL.md §6).
-	hello := pcapoverip.ClientHello{Version: pcapoverip.Version1, LinkType: c.linkPref, Token: c.token}
+	// pcap-over-ip source does (PROTOCOL.md §6). The fixed version field stays at
+	// 1 so a v1 sensor accepts; the v2 ceiling — and with it the willingness to
+	// receive flow/feature records — rides in the hello metadata (PROTOCOL.md
+	// §2.3).
+	route := recordRoute{ch: c.records}
+	hello := pcapoverip.ClientHello{
+		Version:    pcapoverip.Version1,
+		MaxVersion: route.helloCeiling(),
+		LinkType:   c.linkPref,
+		Token:      c.token,
+	}
 	sess, err := pcapoverip.ClientHandshake(conn, hello, time.Now().Add(c.handshake))
 	if err != nil {
 		var re *pcapoverip.RejectError
@@ -281,8 +322,21 @@ func (c *Collector) serve(ctx context.Context, conn net.Conn, reg SourceRegistra
 		return
 	}
 
+	// Refuse a session this build cannot read correctly — an unknown mode or a
+	// payload schema we do not implement — rather than misreading its records
+	// (PROJECT.md §28.5-6).
+	if verr := pcapoverip.ValidateAccept(sess.Accept()); verr != nil {
+		c.rejectedProto.Add(1)
+		c.logf("collector: %s refused: %v", remote, verr)
+		_ = sess.Close()
+		return
+	}
+	mode := sess.Mode()
+
+	// The link type only governs raw packet frames; a record-mode sensor ships
+	// none, so its advertised DLT must not gate the session.
 	link := packet.LinkType(sess.LinkType())
-	if link != packet.LinkEthernet && link != packet.LinkRaw {
+	if mode == pcapoverip.ModeRaw && link != packet.LinkEthernet && link != packet.LinkRaw {
 		c.rejectedProto.Add(1)
 		c.logf("collector: %s offered unsupported link type %d — dropping", remote, sess.LinkType())
 		_ = sess.Close()
@@ -291,13 +345,30 @@ func (c *Collector) serve(ctx context.Context, conn net.Conn, reg SourceRegistra
 
 	ident := pcapoverip.ParseSensorIdentity(sess.SessionID())
 	latency := time.Since(start).Milliseconds()
-	src := newSessionSource(sess, link, latency, c.readIdle, c.keepalive, c.logf)
+
+	// Mode routing (issue #45): raw keeps today's path — packets join the one
+	// merged channel the single pipeline goroutine drains. flow and feature
+	// deliver decoded records straight to the pipeline's record input, skipping
+	// the daemon's flow table (and, for feature, feature extraction too). The
+	// session is still registered as a Manager source so the operator sees the
+	// peer, its mode and its counters in the capture-sources view; it simply
+	// never yields a packet.
+	route.mode = mode
+	route.sensor = ident.SensorID
+	route.location = ident.Location
+	if mode == pcapoverip.ModeRaw {
+		route.ch = nil
+	}
+	src := newSessionSource(sess, link, latency, c.readIdle, c.keepalive, route, c.logf)
 
 	name := ident.SensorID
 	if name == "" {
 		name = remote
 	}
-	meta := SourceMeta{Kind: CollectorSourceKind, Filter: filterLabel(sess.Filter()), Origin: "collector"}
+	meta := SourceMeta{
+		Kind: CollectorSourceKind, Filter: filterLabel(sess.Filter()),
+		Origin: "collector", Mode: mode.String(),
+	}
 	regName := name
 	if aerr := reg.Add(regName, src, meta); aerr != nil {
 		regName = name + "#" + shortSession(sess.SessionID())
@@ -313,6 +384,8 @@ func (c *Collector) serve(ctx context.Context, conn net.Conn, reg SourceRegistra
 		AgentVersion: ident.AgentVersion, OSArch: ident.OSArch,
 		RemoteAddr: remote, LinkType: uint32(link), Filter: sess.Filter(),
 		SessionID: sess.SessionID(), ConnectedAt: time.Now(), SourceName: regName,
+		Mode: mode.String(), ProtocolVersion: sess.NegotiatedVersion(),
+		PayloadSchema: sess.PayloadSchema(),
 	}
 	c.mu.Lock()
 	c.peers[regName] = &peer{info: info, src: src}
@@ -321,8 +394,9 @@ func (c *Collector) serve(ctx context.Context, conn net.Conn, reg SourceRegistra
 	if c.OnConnect != nil {
 		c.OnConnect(info)
 	}
-	c.logf("collector: sensor %q connected from %s (session %s, link %d, filter %q, %dms)",
-		displayName(ident, remote), remote, sess.SessionID(), link, sess.Filter(), latency)
+	c.logf("collector: sensor %q connected from %s (session %s, protocol v%d, mode %s, schema %q, link %d, filter %q, %dms)",
+		displayName(ident, remote), remote, sess.SessionID(), sess.NegotiatedVersion(),
+		mode, sess.PayloadSchema(), link, sess.Filter(), latency)
 
 	// The Manager drives src.Packets; we wait for the stream to end (goodbye /
 	// EOF / idle) or for daemon shutdown, then deregister the peer.
@@ -394,6 +468,9 @@ func (c *Collector) status(p *peer, reg SourceRegistrar) SensorStatus {
 		LastPacket: st.LastTS, State: StateRunning,
 		AgentVersion: p.info.AgentVersion, OSArch: p.info.OSArch,
 		SessionID: p.info.SessionID, SourceName: p.info.SourceName,
+		Mode: p.info.Mode, ProtocolVersion: p.info.ProtocolVersion,
+		PayloadSchema: p.info.PayloadSchema,
+		Records:       st.Records, RecordBytes: st.RecordBytes,
 	}
 	if reg != nil {
 		if row, ok := reg.Get(p.info.SourceName); ok {
@@ -401,6 +478,9 @@ func (c *Collector) status(p *peer, reg SourceRegistrar) SensorStatus {
 			if row.Packets >= ss.Packets {
 				ss.Packets, ss.Bytes, ss.Drops = row.Packets, row.Bytes, row.Drops
 				ss.LastPacket = row.LastPacket
+			}
+			if row.Records >= ss.Records {
+				ss.Records, ss.RecordBytes = row.Records, row.RecordBytes
 			}
 		}
 	}

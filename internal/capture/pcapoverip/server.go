@@ -6,10 +6,13 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/kawaiipantsu/synapseids/internal/flow"
 )
 
 // Record is one raw captured frame handed to the transport by a sensor's packet
@@ -33,6 +36,21 @@ type ServerConfig struct {
 	// LinkType is the authoritative libpcap DLT the stream carries (1 EN10MB,
 	// 101 RAW). It is echoed in every ServerAccept.
 	LinkType uint32
+	// Mode is what this sensor ships (PROJECT.md §5.3). ModeRaw is the v1
+	// behaviour and the default: the raw StreamFunc is written straight out as
+	// FramePacket frames, byte for byte as before.
+	//
+	// ModeFlow and ModeFeature need SYNPOIP v2. The raw stream is wrapped in
+	// Aggregate, which runs the flow engine (and, for ModeFeature, feature
+	// extraction) here on the sensor. A client that did not advertise a v2
+	// ceiling is refused with RejectMode rather than silently downgraded to raw —
+	// a feature-mode sensor quietly shipping packet content would break the very
+	// property the operator selected the mode for.
+	Mode Mode
+	// Flow is the flow-table lifecycle configuration used by ModeFlow and
+	// ModeFeature. It should match the daemon's, so the same capture yields the
+	// same flows whichever mode carries it.
+	Flow flow.Options
 	// Filter is advertised to clients and shown in their capture-sources view.
 	Filter string
 	// KeepaliveInterval is how often the server emits a keepalive frame when no
@@ -143,14 +161,19 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 		return
 	}
 
-	if code, reason, ok := negotiate(hello, cfg); !ok {
+	version, code, reason, ok := negotiate(hello, cfg)
+	if !ok {
 		cfg.Logf("pcapoverip: %s: rejected (%s)", remote, code)
 		writeReject(conn, cfg, ServerReject{Code: code, Reason: reason})
 		return
 	}
 
 	sid := newSessionID(cfg.SessionPrefix)
-	acc := ServerAccept{Version: Version1, LinkType: cfg.LinkType, Filter: cfg.Filter, SessionID: sid}
+	acc := ServerAccept{Version: version, LinkType: cfg.LinkType, Filter: cfg.Filter, SessionID: sid}
+	if version >= Version2 {
+		acc.Mode = cfg.Mode
+		acc.PayloadSchema = cfg.Mode.PayloadSchema()
+	}
 	raw, err := acc.MarshalBinary()
 	if err != nil {
 		cfg.Logf("pcapoverip: %s: encoding accept: %v", remote, err)
@@ -162,7 +185,8 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	cfg.Logf("pcapoverip: %s: session %s started (sensor=%q link=%d)", remote, sid, hello.SensorID, cfg.LinkType)
+	cfg.Logf("pcapoverip: %s: session %s started (sensor=%q link=%d protocol=v%d mode=%s schema=%q)",
+		remote, sid, hello.SensorID, cfg.LinkType, version, cfg.Mode, acc.PayloadSchema)
 
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -184,7 +208,6 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 		}
 	}()
 
-	records, errc := stream(connCtx)
 	ka := time.NewTicker(cfg.KeepaliveInterval)
 	defer ka.Stop()
 
@@ -198,6 +221,52 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 		}
 		return true
 	}
+	bye := func(reason string) {
+		_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
+		_ = WriteFrame(conn, FrameGoodbye, []byte(reason))
+	}
+
+	// Record modes take the aggregation path: the flow engine (and, for
+	// ModeFeature, feature extraction) runs here and only encoded records go out.
+	if cfg.Mode != ModeRaw {
+		frames, aerrc := Aggregate(AggregateConfig{
+			Mode: cfg.Mode, LinkType: cfg.LinkType, Flow: cfg.Flow, Logf: cfg.Logf,
+		}, stream)(connCtx)
+
+		for {
+			select {
+			case <-connCtx.Done():
+				bye("server closing")
+				cfg.Logf("pcapoverip: %s: session %s closed (%d %s record(s))", remote, sid, sent, cfg.Mode)
+				return
+
+			case <-ka.C:
+				if !write(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
+					return
+				}
+
+			case rerr := <-aerrc:
+				if rerr != nil && !errors.Is(rerr, context.Canceled) {
+					bye("source error: " + rerr.Error())
+					cfg.Logf("pcapoverip: %s: session %s source error: %v", remote, sid, rerr)
+					return
+				}
+
+			case f, fok := <-frames:
+				if !fok {
+					bye("end of capture")
+					cfg.Logf("pcapoverip: %s: session %s end of capture (%d %s record(s))", remote, sid, sent, cfg.Mode)
+					return
+				}
+				if !write(f.Type, f.Payload) {
+					return
+				}
+				sent++
+			}
+		}
+	}
+
+	records, errc := stream(connCtx)
 
 	for {
 		select {
@@ -238,21 +307,35 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 	}
 }
 
-// negotiate applies the version rule and checks the bearer token and requested
-// link type. ok=false carries the reject code and reason.
-func negotiate(h ClientHello, cfg ServerConfig) (code RejectCode, reason string, ok bool) {
-	if h.Version == 0 || h.Version > Version1 {
-		return RejectVersion, "server speaks protocol version 1 only", false
+// negotiate applies the version rule, checks the bearer token and the requested
+// link type, and confirms the client can receive this sensor's mode. ok=false
+// carries the reject code and reason; ok=true carries the version in force.
+func negotiate(h ClientHello, cfg ServerConfig) (version uint16, code RejectCode, reason string, ok bool) {
+	if h.Version == 0 || h.Version > VersionMax {
+		return 0, RejectVersion, fmt.Sprintf("server speaks protocol versions 1..%d", VersionMax), false
 	}
+	// The client's baseline is the fixed Version field; its ceiling is the
+	// "max_version" capability in the hello metadata, which a v1 client never
+	// sends. Pick the highest version both ends can speak (PROTOCOL.md §2.3).
+	version = h.Ceiling()
+	if version > VersionMax {
+		version = VersionMax
+	}
+
 	if cfg.Token != "" {
 		if subtle.ConstantTimeCompare([]byte(h.Token), []byte(cfg.Token)) != 1 {
-			return RejectUnauthorized, "bad bearer token", false
+			return 0, RejectUnauthorized, "bad bearer token", false
 		}
 	}
 	if h.LinkType != 0 && h.LinkType != cfg.LinkType {
-		return RejectLinkType, "sensor stream is a different link-layer type", false
+		return 0, RejectLinkType, "sensor stream is a different link-layer type", false
 	}
-	return RejectNone, "", true
+	if version < cfg.Mode.MinVersion() {
+		return 0, RejectMode, fmt.Sprintf(
+			"sensor is in %s mode, which needs SYNPOIP v%d; the client offered at most v%d",
+			cfg.Mode, cfg.Mode.MinVersion(), version), false
+	}
+	return version, RejectNone, "", true
 }
 
 func writeReject(conn net.Conn, cfg ServerConfig, rj ServerReject) {

@@ -92,6 +92,7 @@ Without it the sensor refuses to start and prints exactly these commands.
 | Direction | `in` for inbound only (the WAN-sensor default), `out`, or both |
 | Promiscuous | see traffic not addressed to the firewall — usually wanted on a routed edge |
 | Snaplen | bytes captured per frame |
+| Send | what leaves the firewall (`--mode`): **Raw packets** (every frame, the default), **Flow records** (flows assembled here — around 1.4 % of the raw bandwidth), or **Feature vectors only** (only the 48 computed features, so **no packet content ever leaves the box** — around 1.8 %). Classifications are identical in all three; the two record modes need a daemon that speaks SYNPOIP v2, and an older one refuses the connection rather than quietly reverting to sending packets. See [ADR 0024](adr/0024-sensor-modes-and-synpoip-record-frames.md) |
 | Mode | **Daemon connects to this firewall** (`--listen`) or **This firewall connects out** (`--connect`) |
 | Listen address / Daemon address | depending on the mode |
 | Bearer token | the shared secret for the SYNPOIP handshake |

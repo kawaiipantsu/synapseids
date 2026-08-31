@@ -36,6 +36,44 @@ func (v Vector) Get(name string) float64 {
 	return 0
 }
 
+// Counts are the raw flow accumulators that flow-features-v1 already carries as
+// feature values, recovered from a vector.
+//
+// It exists for the `feature` sensor mode (issue #45): a feature-mode sensor
+// ships only the vector, and the daemon still has to store a flow row with a
+// duration and packet/byte counts. Those are features 0..4 — exact integers well
+// inside float64's range — so re-sending them beside the vector would be pure
+// waste. Reading them back here keeps the index knowledge in the package that
+// owns the frozen schema.
+type Counts struct {
+	DurationSec float64
+	FwdPackets  uint64
+	BwdPackets  uint64
+	FwdBytes    uint64
+	BwdBytes    uint64
+}
+
+// Counts recovers the accumulators of the flow this vector was extracted from.
+func (v Vector) Counts() Counts {
+	return Counts{
+		DurationSec: v.Values[0], // flow_duration
+		FwdPackets:  nonNegU64(v.Values[1]),
+		BwdPackets:  nonNegU64(v.Values[2]),
+		FwdBytes:    nonNegU64(v.Values[3]),
+		BwdBytes:    nonNegU64(v.Values[4]),
+	}
+}
+
+// nonNegU64 converts a counter-shaped feature value back to an integer, clamping
+// anything a hostile or broken peer could put there (negative, NaN, ±Inf,
+// out-of-range) to 0 rather than wrapping (PROJECT.md §28.11).
+func nonNegU64(f float64) uint64 {
+	if math.IsNaN(f) || f <= 0 || f > math.MaxInt64 {
+		return 0
+	}
+	return uint64(f)
+}
+
 // Named returns the vector as an ordered name→value map view for reporting.
 func (v Vector) Named() []struct {
 	Name  string

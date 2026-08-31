@@ -27,6 +27,11 @@ type sessionSource struct {
 	latencyMS int64
 	logf      func(string, ...any)
 
+	// route is where 0x04 / 0x05 record frames go in flow/feature mode. In raw
+	// mode its channel is nil and only packets flow.
+	route recordRoute
+	rc    recordCounters
+
 	stats struct {
 		packets, decoded, decodeErr, bytes, drops uint64
 		lastUnixNano                              int64
@@ -42,7 +47,7 @@ type sessionSource struct {
 // newSessionSource wraps sess. link must already be validated as Ethernet or
 // RAW. latencyMS is the TLS + SYNPOIP handshake cost the Collector measured, or
 // 0.
-func newSessionSource(sess *pcapoverip.Session, link packet.LinkType, latencyMS int64, readIdle, keepalive time.Duration, logf func(string, ...any)) *sessionSource {
+func newSessionSource(sess *pcapoverip.Session, link packet.LinkType, latencyMS int64, readIdle, keepalive time.Duration, route recordRoute, logf func(string, ...any)) *sessionSource {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -54,7 +59,7 @@ func newSessionSource(sess *pcapoverip.Session, link packet.LinkType, latencyMS 
 	}
 	s := &sessionSource{
 		sess: sess, link: link, readIdle: readIdle, keepalive: keepalive,
-		latencyMS: latencyMS, logf: logf, done: make(chan struct{}),
+		latencyMS: latencyMS, route: route, logf: logf, done: make(chan struct{}),
 	}
 	adv := sess.Filter()
 	s.advFilter.Store(&adv)
@@ -175,6 +180,13 @@ func (s *sessionSource) readLoop(ctx context.Context, out chan<- packet.Packet) 
 				return nil
 			}
 
+		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord:
+			// A flow/feature-mode sensor's records bypass the packet channel
+			// entirely: they enter the pipeline further along (issue #45).
+			if gone := s.route.deliver(ctx, &s.rc, ft, payload); gone {
+				return nil
+			}
+
 		case pcapoverip.FrameKeepalive:
 			if _, drops, ok := pcapoverip.ParseKeepalive(payload); ok {
 				atomic.StoreUint64(&s.stats.drops, drops)
@@ -204,14 +216,14 @@ func (s *sessionSource) Stats() Stats {
 	if last != 0 {
 		lt = time.Unix(0, last).UTC()
 	}
-	return Stats{
+	return s.rc.snapshot(Stats{
 		Packets:   atomic.LoadUint64(&s.stats.packets),
 		Decoded:   atomic.LoadUint64(&s.stats.decoded),
 		DecodeErr: atomic.LoadUint64(&s.stats.decodeErr),
 		Bytes:     atomic.LoadUint64(&s.stats.bytes),
 		LastTS:    lt,
 		Drops:     atomic.LoadUint64(&s.stats.drops),
-	}
+	})
 }
 
 // ConnLatencyMS reports the accept-time TLS + SYNPOIP handshake cost.

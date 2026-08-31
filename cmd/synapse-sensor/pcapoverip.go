@@ -21,6 +21,7 @@ import (
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
+	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/version"
 )
 
@@ -53,6 +54,16 @@ type sensorOpts struct {
 	// Sensor identity, echoed into the daemon's capture-sources view.
 	sensorID string
 	location string
+
+	// mode is what this sensor puts on the wire: raw, flow or feature.
+	mode pcapoverip.Mode
+	// Flow-table lifecycle for the flow/feature modes. The defaults mirror
+	// synapsed's own (internal/config), so the same capture yields the same flows
+	// on either side.
+	flowIdle     time.Duration
+	flowMaxLife  time.Duration
+	flowSnapshot time.Duration
+	flowMax      int
 
 	authorized bool
 	speed      float64
@@ -106,10 +117,22 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 	srvCfg := pcapoverip.ServerConfig{
 		Token:         opts.token,
 		LinkType:      link,
+		Mode:          opts.mode,
+		Flow:          opts.flowOptions(),
 		Filter:        opts.filterLabel(),
 		Drops:         drops,
 		SessionPrefix: pcapoverip.FormatSessionPrefix(ident),
 		Logf:          log.Printf,
+	}
+	switch opts.mode {
+	case pcapoverip.ModeRaw:
+		log.Printf("pcap-over-ip: mode raw — every captured frame is streamed to the daemon (SYNPOIP v1 compatible)")
+	case pcapoverip.ModeFlow:
+		log.Printf("pcap-over-ip: mode flow — flows are aggregated here and shipped as %s records; the daemon does not rebuild them (needs SYNPOIP v2)",
+			pcapoverip.FlowRecordSchema)
+	case pcapoverip.ModeFeature:
+		log.Printf("pcap-over-ip: mode feature — only %s vectors are shipped; NO packet content leaves this host (needs SYNPOIP v2)",
+			pcapoverip.FeatureRecordSchema)
 	}
 
 	if opts.connect != "" {
@@ -121,7 +144,7 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 func parseSensorFlags(args []string) (*sensorOpts, int) {
 	fs := flag.NewFlagSet("synapse-sensor pcap-over-ip", flag.ContinueOnError)
 	o := &sensorOpts{}
-	var speedStr, tokenFile, tokenLiteral string
+	var speedStr, tokenFile, tokenLiteral, modeStr string
 
 	fs.StringVar(&o.listen, "listen", ":4789", "TLS listen address (host:port); the daemon dials in")
 	fs.StringVar(&o.connect, "connect", "", "dial this synapsed collector (host:port) instead of listening — for a sensor behind NAT")
@@ -137,6 +160,13 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 
 	fs.StringVar(&o.sensorID, "sensor-id", "", "sensor identifier, shown in the daemon's capture-sources view")
 	fs.StringVar(&o.location, "location", "", "sensor location label, shown in the daemon's capture-sources view")
+
+	fs.StringVar(&modeStr, "mode", "", "what to send: raw (every frame), flow (locally aggregated flow records) "+
+		"or feature (only the 48 computed features — no packet content leaves this host); default raw, or $SYNAPSE_SENSOR_MODE")
+	fs.DurationVar(&o.flowIdle, "flow-idle-timeout", 30*time.Second, "--mode flow/feature: close a flow after this much inactivity")
+	fs.DurationVar(&o.flowMaxLife, "flow-max-lifetime", 5*time.Minute, "--mode flow/feature: close a flow after this long")
+	fs.DurationVar(&o.flowSnapshot, "flow-snapshot-interval", time.Minute, "--mode flow/feature: emit a snapshot record this often for long flows (0 disables)")
+	fs.IntVar(&o.flowMax, "flow-max", 200000, "--mode flow/feature: cap on the live flow table")
 	fs.BoolVar(&o.authorized, "authorized", false,
 		"assert you are authorized to monitor this traffic; required for live capture and for --insecure-tls")
 
@@ -163,6 +193,10 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized --token-file tok")
 		fmt.Fprintln(os.Stderr, "  # replay a capture file instead of a live NIC")
 		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --listen :4789 --from capture.pcap")
+		fmt.Fprintln(os.Stderr, "  # aggregate flows here and ship records, not frames (much less bandwidth)")
+		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized --mode flow")
+		fmt.Fprintln(os.Stderr, "  # ship only the 48 computed features: no packet content leaves this host")
+		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized --mode feature")
 		fmt.Fprintln(os.Stderr, "\nFlags:")
 		fs.PrintDefaults()
 	}
@@ -180,6 +214,18 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 		return nil, 2
 	}
 	o.speed = speed
+
+	// Precedence matches the identity flags: flag, then environment, then the
+	// default (PROJECT.md §23).
+	if modeStr == "" {
+		modeStr = strings.TrimSpace(os.Getenv("SYNAPSE_SENSOR_MODE"))
+	}
+	mode, merr := pcapoverip.ParseMode(strings.ToLower(strings.TrimSpace(modeStr)))
+	if merr != nil {
+		fmt.Fprintln(os.Stderr, "pcap-over-ip:", merr)
+		return nil, 2
+	}
+	o.mode = mode
 
 	if code := validateSensorOpts(o); code != 0 {
 		return nil, code
@@ -269,7 +315,32 @@ func validateSensorOpts(o *sensorOpts) int {
 	if o.iface == "" && (o.promisc || o.device != "" || o.direction != "") {
 		return reject("--promisc, --bpf-device and --direction apply to --iface only")
 	}
+
+	if o.mode != pcapoverip.ModeRaw {
+		if o.flowIdle <= 0 || o.flowMaxLife <= 0 {
+			return reject("--flow-idle-timeout and --flow-max-lifetime must be positive in --mode " + o.mode.String())
+		}
+		if o.flowMax < 1 {
+			return reject("--flow-max must be at least 1 in --mode " + o.mode.String())
+		}
+		if o.flowSnapshot < 0 {
+			return reject("--flow-snapshot-interval cannot be negative")
+		}
+	}
 	return 0
+}
+
+// flowOptions is the flow-table lifecycle for the flow/feature modes. IDGen is
+// left nil: the sensor's per-process counter is only ever provenance metadata,
+// because the daemon remaps every arriving record through its own globally
+// unique allocator (issue #45, CLAUDE.md).
+func (o *sensorOpts) flowOptions() flow.Options {
+	return flow.Options{
+		IdleTimeout:      o.flowIdle,
+		MaxLifetime:      o.flowMaxLife,
+		SnapshotInterval: o.flowSnapshot,
+		MaxFlows:         o.flowMax,
+	}
 }
 
 // filterLabel is the human-readable filter string advertised in the SYNPOIP

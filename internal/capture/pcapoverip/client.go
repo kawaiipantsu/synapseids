@@ -51,6 +51,18 @@ func ClientHandshake(conn net.Conn, hello ClientHello, deadline time.Time) (*Ses
 // LinkType is the authoritative libpcap DLT the server negotiated.
 func (s *Session) LinkType() uint32 { return s.accept.LinkType }
 
+// Accept is the ServerAccept this session was established on. Callers pass it to
+// ValidateAccept before consuming a single frame.
+func (s *Session) Accept() ServerAccept { return s.accept }
+
+// Mode is what the sensor declared it is shipping. A v1 accept carries no mode
+// field and always means ModeRaw.
+func (s *Session) Mode() Mode { return s.accept.Mode }
+
+// PayloadSchema is the frozen schema id the sensor's record frames conform to,
+// or "" in raw mode.
+func (s *Session) PayloadSchema() string { return s.accept.PayloadSchema }
+
 // NegotiatedVersion is the protocol version in force for this session.
 func (s *Session) NegotiatedVersion() uint16 { return s.accept.Version }
 
