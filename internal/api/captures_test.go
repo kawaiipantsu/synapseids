@@ -79,31 +79,32 @@ func TestCapturesListFields(t *testing.T) {
 	}
 }
 
-func TestCapturesShowsPCAPOverIPSource(t *testing.T) {
-	row := capture.SourceStatus{
-		Name: "hq-sensor", Kind: "pcap-over-ip", State: capture.StateRunning,
-		Packets: 512, Decoded: 512, Bytes: 400000,
-		Filter: "ip", ConnLatencyMS: 42,
-		LastPacket: time.Unix(1700000123, 0).UTC(),
+// TestCapturesShowsTcpdumpAndSSHKinds: the subprocess capture kinds (#29/#30)
+// surface through GET /api/v1/captures with their kind and their raw tcpdump
+// filter expression, exactly as the Manager reports them.
+func TestCapturesShowsTcpdumpAndSSHKinds(t *testing.T) {
+	rows := []capture.SourceStatus{
+		{Name: "span", Kind: "tcpdump", State: capture.StateRunning, Filter: "tcp port 80 or udp"},
+		{Name: "edge", Kind: "ssh", State: capture.StateError, Filter: "not port 22", Error: "ssh: exit 255: Permission denied (publickey)"},
 	}
 	rr := httptest.NewRecorder()
-	serverWithCaptures(stubCaptures{rows: []capture.SourceStatus{row}}).
+	serverWithCaptures(stubCaptures{rows: rows}).
 		ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/captures", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code %d", rr.Code)
 	}
-	var raw []map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+	var got []capture.SourceStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) != 1 || raw[0]["kind"] != "pcap-over-ip" {
-		t.Fatalf("kind not surfaced: %v", raw)
+	if len(got) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(got))
 	}
-	if raw[0]["connection_latency_ms"].(float64) != 42 {
-		t.Fatalf("connection_latency_ms not surfaced: %v", raw[0]["connection_latency_ms"])
+	if got[0].Kind != "tcpdump" || got[0].Filter != "tcp port 80 or udp" {
+		t.Fatalf("tcpdump row = %+v", got[0])
 	}
-	if raw[0]["filter"] != "ip" {
-		t.Fatalf("filter not surfaced: %v", raw[0]["filter"])
+	if got[1].Kind != "ssh" || got[1].Filter != "not port 22" || got[1].State != capture.StateError {
+		t.Fatalf("ssh row = %+v", got[1])
 	}
 }
 
@@ -134,5 +135,32 @@ func TestCaptureByNameWithoutProvider(t *testing.T) {
 	serverWithCaptures(nil).ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/captures/lo", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("no provider should 404 on by-name, got %d", rr.Code)
+	}
+}
+func TestCapturesShowsPCAPOverIPSource(t *testing.T) {
+	row := capture.SourceStatus{
+		Name: "hq-sensor", Kind: "pcap-over-ip", State: capture.StateRunning,
+		Packets: 512, Decoded: 512, Bytes: 400000,
+		Filter: "ip", ConnLatencyMS: 42,
+		LastPacket: time.Unix(1700000123, 0).UTC(),
+	}
+	rr := httptest.NewRecorder()
+	serverWithCaptures(stubCaptures{rows: []capture.SourceStatus{row}}).
+		ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/captures", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code %d", rr.Code)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 || raw[0]["kind"] != "pcap-over-ip" {
+		t.Fatalf("kind not surfaced: %v", raw)
+	}
+	if raw[0]["connection_latency_ms"].(float64) != 42 {
+		t.Fatalf("connection_latency_ms not surfaced: %v", raw[0]["connection_latency_ms"])
+	}
+	if raw[0]["filter"] != "ip" {
+		t.Fatalf("filter not surfaced: %v", raw[0]["filter"])
 	}
 }

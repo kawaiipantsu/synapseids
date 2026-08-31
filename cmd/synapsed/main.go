@@ -148,7 +148,7 @@ func run(args []string) int {
 	capMgr := capture.NewManager()
 	live := 0
 	for _, cs := range cfg.Capture.Sources {
-		src, err := buildCaptureSource(cs)
+		src, target, err := newCaptureSource(cs)
 		if err != nil {
 			log.Printf("capture: source %q disabled: %v", cs.Name, err)
 			continue
@@ -164,15 +164,15 @@ func run(args []string) int {
 		}
 		live++
 		bus.Publish(events.CaptureSourceConnected, map[string]any{
-			"name": cs.Name, "kind": cs.Kind, "interface": cs.Interface, "addr": cs.Addr, "filter": cs.Filter,
+			"name": cs.Name, "kind": cs.Kind, "interface": cs.Interface,
+			"destination": cs.Destination, "addr": cs.Addr, "filter": cs.Filter,
 		})
-		switch cs.Kind {
-		case "pcap-over-ip":
+		if cs.Kind == "pcap-over-ip" {
 			log.Printf("capture: source %q pcap-over-ip to %s (server_name=%q insecure_tls=%t mtls=%t)",
 				cs.Name, cs.Addr, cs.ServerName, cs.InsecureTLS, cs.ClientCertFile != "")
-		default:
-			log.Printf("capture: source %q live on %s (promiscuous=%t snaplen=%d filter=%q)",
-				cs.Name, cs.Interface, cs.Promiscuous, cs.Snaplen, cs.Filter)
+		} else {
+			log.Printf("capture: source %q (%s) live on %s (snaplen=%d filter=%q)",
+				cs.Name, cs.Kind, target, cs.Snaplen, cs.Filter)
 		}
 	}
 	if len(cfg.Capture.Sources) > 0 && live == 0 {
@@ -220,36 +220,60 @@ func run(args []string) int {
 	return 0
 }
 
-// hasNICInterface reports whether srcs already contains a "nic" source bound to
-// iface (mirrors config.hasNICInterface for the --capture merge).
-func hasNICInterface(srcs []config.CaptureSource, iface string) bool {
-	for _, s := range srcs {
-		if s.Kind == "nic" && s.Interface == iface {
-			return true
-		}
-	}
-	return false
-}
-
-// buildCaptureSource turns one validated config.CaptureSource into a
-// capture.Source. NIC sources open their socket here (and can fail on a missing
-// capability); pcap-over-ip sources only build their TLS client — the dial
-// happens when the pipeline starts reading.
-func buildCaptureSource(cs config.CaptureSource) (capture.Source, error) {
+// newCaptureSource builds the capture.Source for one configured entry and a
+// short human label for the startup log. config.validate has already checked
+// the per-kind required fields; the constructors here do the real environment
+// checks (interface exists, capability present, binary on PATH) and a failure
+// is logged and skipped so the daemon still serves the API (PROJECT.md §21).
+func newCaptureSource(cs config.CaptureSource) (capture.Source, string, error) {
 	switch cs.Kind {
 	case "nic":
-		return capture.NewAFPacket(capture.AFPacketConfig{
+		src, err := capture.NewAFPacket(capture.AFPacketConfig{
 			Interface:   cs.Interface,
 			Promiscuous: cs.Promiscuous,
 			Snaplen:     cs.Snaplen,
 			Filter:      cs.Filter,
 		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Interface, nil
+	case "tcpdump":
+		src, err := capture.NewTcpdumpStream(capture.TcpdumpConfig{
+			Binary:    cs.Binary,
+			Interface: cs.Interface,
+			Filter:    cs.Filter,
+			Snaplen:   cs.Snaplen,
+			ExtraArgs: cs.ExtraArgs,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Interface, nil
+	case "ssh":
+		src, err := capture.NewSSHTcpdump(capture.SSHConfig{
+			SSHBinary:      cs.Binary,
+			Destination:    cs.Destination,
+			Port:           cs.Port,
+			IdentityFile:   cs.IdentityFile,
+			RemoteBinary:   cs.RemoteBinary,
+			Interface:      cs.Interface,
+			Filter:         cs.Filter,
+			Snaplen:        cs.Snaplen,
+			ExtraSSHArgs:   cs.ExtraSSHArgs,
+			KnownHostsMode: cs.KnownHosts,
+			Authorized:     cs.Authorized,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Destination + " " + cs.Interface, nil
 	case "pcap-over-ip":
 		tok, err := resolvePOIPToken(cs)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return capture.NewPCAPOverIP(capture.POIPConfig{
+		src, err := capture.NewPCAPOverIP(capture.POIPConfig{
 			Addr:               cs.Addr,
 			Token:              tok,
 			ServerName:         cs.ServerName,
@@ -261,9 +285,24 @@ func buildCaptureSource(cs config.CaptureSource) (capture.Source, error) {
 			SensorID:           cs.Name,
 			Logf:               log.Printf,
 		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Addr, nil
 	default:
-		return nil, fmt.Errorf("unknown kind %q", cs.Kind)
+		return nil, "", fmt.Errorf("unknown kind %q", cs.Kind)
 	}
+}
+
+// hasNICInterface reports whether srcs already contains a "nic" source bound to
+// iface (mirrors config.hasNICInterface for the --capture merge).
+func hasNICInterface(srcs []config.CaptureSource, iface string) bool {
+	for _, s := range srcs {
+		if s.Kind == "nic" && s.Interface == iface {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvePOIPToken loads the bearer token for a pcap-over-ip source from its

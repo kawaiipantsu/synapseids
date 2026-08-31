@@ -269,6 +269,22 @@ synapse-sensor pcap-over-ip --listen :4789 --from ./capture.pcap --token-file ./
 ```
 
 A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 --from testdata/pcap/portscan.pcap --token-file poip.token` then point a `pcap-over-ip` source (with `insecure_tls` + `authorized`) at `127.0.0.1:4789`: `GET /api/v1/captures` counts the packets with a real `connection_latency_ms`, and `GET /api/v1/classifications` returns the port-scan flows as `scan`. See `contrib/config/synapse.pcap-over-ip.json`.
+`capture.sources[]` also takes `kind: "tcpdump"` and `kind: "ssh"` (issues #29/#30). For these two, `filter` is a **raw tcpdump filter expression** (e.g. `"tcp port 80 or udp"`), tokenised and passed as arguments — never through a shell.
+
+```jsonc
+"capture": { "sources": [
+  { "name": "span0", "kind": "tcpdump", "interface": "eth0",
+    "filter": "tcp or udp", "snaplen": 65535 },
+
+  { "name": "edge-fw", "kind": "ssh", "destination": "sensor@10.0.0.9",
+    "interface": "eth1", "filter": "not port 22",
+    "identity_file": "/etc/synapseids/id_ed25519",
+    "known_hosts": "accept-new",
+    "authorized": true }
+] }
+```
+
+`synapsed` manages the `tcpdump -U -w -` subprocess (locally, or over `ssh … tcpdump -U -w -` for `kind: "ssh"`) — no temporary capture files. `ssh` runs with `BatchMode=yes` (never prompts — use a key) and `StrictHostKeyChecking` = `known_hosts` (`"strict"` default, or `"accept-new"`). **A `kind: "ssh"` source must set `"authorized": true`** — an explicit assertion that you are authorised to monitor that host (PROJECT.md §21, §28.18); without it the config is rejected. A subprocess that exits is reported as `state: "error"` on `GET /api/v1/captures` and is not restarted automatically.
 
 **`synapse`** talks to a running `synapsed` and holds no logic of its own:
 

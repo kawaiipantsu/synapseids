@@ -357,25 +357,33 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 ]
 ```
 
-- `kind` — `nic` (a local `AF_PACKET` interface) or `pcap-over-ip` (a framed,
-  authenticated TLS stream from a remote sensor; see the config `capture.sources`
-  entry and `internal/capture/pcapoverip/PROTOCOL.md`).
+- `kind` — `nic` (a local `AF_PACKET` interface), `tcpdump` (a local
+  `tcpdump -U -w -` subprocess), `ssh` (an authorized remote
+  `ssh <host> tcpdump -U -w -`), or `pcap-over-ip` (a framed, authenticated TLS
+  stream from a remote sensor; see the config `capture.sources` entry and
+  `internal/capture/pcapoverip/PROTOCOL.md`).
 - `state` — `running`, `error` (see `error` for the message; other sources keep
   running), or `stopped` (the source was exhausted, the remote sensor sent a
-  goodbye / end-of-capture, or the source was removed). A `pcap-over-ip` source
-  does not reconnect on its own yet — a dropped stream stays `error` / `stopped`
-  until the daemon restarts.
+  goodbye / end-of-capture, or the source was removed). A `tcpdump` / `ssh`
+  source whose subprocess exits non-zero goes to `error` with
+  `"<tool>: exit <code>: <stderr tail>"`. Nothing reconnects or restarts on its
+  own yet — a dropped stream stays `error` / `stopped` until the daemon
+  restarts.
 - `pps` / `bps` — rolling packets- and bytes-per-second, sampled by the Manager
   once a second off the packet path.
 - `drops` — kernel packet drops (`AF_PACKET` `PACKET_STATISTICS` `tp_drops`),
   accumulated. A non-zero, growing value means the sensor cannot keep up
-  (PROJECT.md §22, §24). For `pcap-over-ip` this carries the sensor-reported drop
-  counter from keepalive frames, or 0.
+  (PROJECT.md §22, §24). `tcpdump` / `ssh` sources leave it 0 (tcpdump reports
+  drops only on stderr at exit); for `pcap-over-ip` it carries the
+  sensor-reported drop counter from keepalive frames, or 0.
 - `filter` — the source's current capture filter; `(all)` = everything. For
-  `pcap-over-ip` this is the filter string the sensor advertised in the
-  handshake (blank until connected).
-- `connection_latency_ms` — 0 for a local NIC; for `pcap-over-ip` the measured
-  TLS dial + handshake time.
+  `nic` it is a built-in cBPF preset name (`ip`, `ip6`, `ip-any`, `not-arp`);
+  for `tcpdump` / `ssh` it is the raw tcpdump filter expression; for
+  `pcap-over-ip` it is the filter string the sensor advertised in the handshake
+  (blank until connected).
+- `connection_latency_ms` — 0 for a local NIC or a local tcpdump; for
+  `pcap-over-ip` the measured TLS dial + handshake time; the SSH dial time for
+  an `ssh` source is a follow-up (currently 0).
 
 ### GET /api/v1/captures/{name}
 

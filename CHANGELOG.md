@@ -41,6 +41,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `validate()` requires `authorized: true` for a non-loopback `addr`,
     `insecure_tls`, or a token-less connection (§21, §28.18). `nic` is
     unchanged.
+- **tcpdump-stream and SSH remote-tcpdump capture sources** (issues #29 + #30,
+  EPIC Phase 3; [ADR 0011](docs/adr/0011-subprocess-capture-tcpdump-and-ssh.md)).
+  - The classic/pcapng stream decoder is extracted from `PCAPFile` into a
+    shared `capture.decodePCAPStream` engine (`internal/capture/pcapstream.go`).
+    `PCAPFile` behaviour is unchanged (golden / pipeline / capture tests pass
+    untouched); a new table test asserts the engine matches `PCAPFile`
+    packet-for-packet on every committed fixture.
+  - `capture.TcpdumpStream` runs
+    `tcpdump -U --immediate-mode -w - -i <iface> -s <snaplen> <filter…>` and
+    decodes its stdout through that engine. `capture.SSHTcpdump` runs
+    `ssh -o BatchMode=yes -o StrictHostKeyChecking=<strict|accept-new> <dest>
+    tcpdump -U -w - -i <iface> -s <snaplen> <filter…>`, the remote command
+    shell-quoted per field. Both share an unexported `pcapSubprocess`
+    lifecycle: argv slice (never a shell string, §28.18), own process group,
+    kill-on-cancel with reaping, bounded stderr ring surfaced as
+    `"<tool>: exit <code>: <stderr>"`, no auto-restart.
+  - **§28.18 authorization gate:** a `kind:"ssh"` source requires
+    `"authorized": true` in the config — otherwise it is a config error
+    (`remote capture requires "authorized": true — you must be authorised to
+    monitor <destination>`). Enforced again in `NewSSHTcpdump`.
+  - `config.CaptureSource` gains `kind` values `"tcpdump"` / `"ssh"` and the
+    fields `binary`, `extra_args`, `destination`, `port`, `identity_file`,
+    `remote_binary`, `known_hosts`, `extra_ssh_args`, `authorized`. `filter`
+    is now per-kind: a `capture.BuiltinFilters` preset name for `nic`, a raw
+    tcpdump filter expression for `tcpdump` / `ssh`. `synapsed` builds these
+    sources at startup and `manager.Add`s them like a NIC source; one that
+    cannot start is logged and skipped (API keeps serving). `GET
+    /api/v1/captures` reports their `kind` and filter expression.
 - **Architecture Builder** (issue #22, PROJECT.md §19.9). New `POST
   /api/v1/architecture/estimate`: given a `schema.Architecture` body it returns
   `{valid, error?, parameter_count, approx_bytes, rough_flops, layers[]}`. The
