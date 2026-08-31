@@ -61,14 +61,36 @@
             </enabled>
 
             <!--
-                OPNsense interface *identifiers* (wan, lan, opt1, ...). Only the
-                first selected identifier is used by the rendered command line:
-                synapse-sensor captures a single device per process. The field
-                is Multiple so a future revision can fan out to several sensors
-                without a schema change.
+                OPNsense interface *identifiers* (wan, lan, opt1, ...).
+                synapse-sensor captures a single device per process, so exactly
+                one identifier is stored and used.
+
+                This comment used to say the field was Multiple "so a future
+                revision can fan out to several sensors without a schema change".
+                That reasoning was wrong twice over: nothing consumed the extra
+                values, and leaving the control multi-select shipped a form that
+                accepted four interfaces and monitored one.
             -->
             <interface type="InterfaceField">
-                <Multiple>Y</Multiple>
+                <!--
+                    Single select, deliberately. The sensor captures from exactly
+                    one device and the configd template resolves only the first
+                    identifier, so a multi select silently discarded every
+                    additional choice.
+
+                    On a live gateway an operator picked WAN, IoT, DMZ and MGMT
+                    and got one VLAN, not even WAN: four segments believed
+                    monitored, one actually monitored, nothing reporting the
+                    difference. Silent under coverage is the worst failure a
+                    sensor can have, so the control must not offer what the
+                    sensor cannot do. Sensor::performValidation() also rejects a
+                    stored multi value left behind by an earlier release.
+
+                    Capturing several interfaces from one plugin instance is
+                    tracked as issue 124; it needs a real design (the same packet
+                    routed between two monitored segments is seen twice, and the
+                    flow record has nowhere to record which device saw it).
+                -->
                 <Required>N</Required>
                 <ValidationMessage>Please select the interface to capture from (normally WAN).</ValidationMessage>
             </interface>
