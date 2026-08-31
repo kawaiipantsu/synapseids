@@ -6,6 +6,7 @@ import { CaptureSources } from './CaptureSources'
 import { Dashboard } from './Dashboard'
 import { DatasetExplorer } from './DatasetExplorer'
 import { Datasets } from './Datasets'
+import { Detections } from './Detections'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
@@ -24,13 +25,24 @@ export interface RouteDef {
   label: string
   group: NavGroup
   element: ReactNode
-  /** Short sidebar tag: "live" for wired views, "P{n}" for a stubbed phase. */
+  /**
+   * Short sidebar tag: "live" for a wired view, "#{n}" — the *open* tracking
+   * issue — for a stub. It used to be "P{n}" for a phase, but a phase number
+   * goes stale the moment the epic closes, and several did (issue #118); an
+   * issue number stays checkable.
+   */
   tag: string
   live: boolean
 }
 
-const P = (phase: number, title: string, epic: string, note?: string) => (
-  <Placeholder title={title} phase={phase} epic={epic} note={note} />
+/**
+ * A stub route. `issues` must list open GitHub issues; `epic` is optional and
+ * only passed when that epic is still open — EPIC: Phase 7 is, EPIC: Phase 2 and
+ * Phase 5 are not, so the two views that used to cite them cite their leaf
+ * issues alone.
+ */
+const P = (title: string, issues: number[], note: string, epic?: string) => (
+  <Placeholder title={title} issues={issues} epic={epic} note={note} />
 )
 
 // Navigation tree from PROJECT.md §19. Order here is the sidebar order.
@@ -47,16 +59,21 @@ export const ROUTES: RouteDef[] = [
   { group: 'LIVE', path: '/timeline', label: 'Timeline', tag: 'live', live: true, element: <Timeline /> },
   // The human review loop (§16; issues #42 and #64): the ranked queue, the five
   // review states, and the curated-dataset hand-off. Distinct from Detections
-  // below, which is still a placeholder — a review is about a classification
-  // that exists, an alert is about a detection resource that does not yet.
+  // below — a review is about one classification, a detection is a deduplicated
+  // alert standing for many.
   { group: 'LIVE', path: '/review', label: 'Review', tag: 'live', live: true, element: <ReviewQueue /> },
+  // Detections (§19.1/§19.4, issue #117): the deduplicated alert feed over
+  // GET /api/v1/detections. Against a daemon older than #117 the route 404s and
+  // the view renders "not available in this build" rather than a spinner or an
+  // error — it stays `live: true` either way, because the *view* is real and that
+  // unavailability is a fact it reports about the daemon, not a stub.
   {
     group: 'LIVE',
     path: '/detections',
     label: 'Detections',
-    tag: 'P5',
-    live: false,
-    element: P(5, 'Detections', 'EPIC: Phase 5 — Investigation', 'Alert/detection feed. Needs an /api/v1/detections resource group — nothing emits AlertCreated events yet.'),
+    tag: 'live',
+    live: true,
+    element: <Detections />,
   },
 
   // ---- CAPTURE --------------------------------------------------------
@@ -120,47 +137,73 @@ export const ROUTES: RouteDef[] = [
     live: true,
     element: <Architecture />,
   },
+  // EPIC: Phase 7 — Advanced ML (#7) is still open, so the phase framing here is
+  // accurate; each view names its own leaf issue as well.
   {
     group: 'ML',
     path: '/model-compare',
     label: 'Model Compare',
-    tag: 'P7',
+    tag: '#48',
     live: false,
-    element: P(7, 'Model Comparison', 'EPIC: Phase 7 — Advanced ML', 'Side-by-side evaluation of compatible models (§19.7): predictions, confidence, disagreement, latency and confusion matrices.'),
+    element: P(
+      'Model Comparison',
+      [48],
+      'Side-by-side evaluation of compatible models (§19.7): predictions, confidence, disagreement, latency and confusion matrices. Needs two comparable models, which needs the trainer.',
+      'EPIC: Phase 7 — Advanced ML (#7)',
+    ),
   },
   {
     group: 'ML',
     path: '/drift',
     label: 'Drift',
-    tag: 'P7',
+    tag: '#49',
     live: false,
-    element: P(7, 'Drift', 'EPIC: Phase 7 — Advanced ML', 'Per-feature comparison of current traffic against a model’s training distribution (§19.13). Informational only.'),
+    element: P(
+      'Drift',
+      [49],
+      'Per-feature comparison of current traffic against a model’s training distribution (§19.13). Informational only — drift is never an automatic retrain.',
+      'EPIC: Phase 7 — Advanced ML (#7)',
+    ),
   },
 
   // ---- SYSTEM ------------------------------------------------------
+  // System Performance is §19.16 work tracked by #55 (structured logging +
+  // /metrics), not by the Advanced-ML epic it used to cite.
   {
     group: 'SYSTEM',
     path: '/performance',
     label: 'Performance',
-    tag: 'P7',
+    tag: '#55',
     live: false,
-    element: P(7, 'System Performance', 'EPIC: Phase 7 — Advanced ML', 'Full §19.16 board: CPU/memory/goroutines, decode and inference latency percentiles, queue depth, DB latency. A few counters (WS clients, event queue) are already on /api/v1/status; the rest needs a performance API.'),
+    element: P(
+      'System Performance',
+      [55],
+      'Full §19.16 board: CPU/memory/goroutines, decode and inference latency percentiles, queue depth, DB latency. A few counters (WebSocket clients, event queue, flow table) are already on /api/v1/status and shown on the Dashboard; the percentiles need the latency histograms from #55.',
+    ),
   },
   {
     group: 'SYSTEM',
     path: '/storage',
     label: 'Storage',
-    tag: 'P2',
+    tag: '#53',
     live: false,
-    element: P(2, 'Storage', 'EPIC: Phase 2 — Real Inference', 'SQLite metadata store with a retention policy (§20). Phase 1 uses a bounded in-memory ring; its counters are on /api/v1/status under "storage".'),
+    element: P(
+      'Storage',
+      [53],
+      'SQLite metadata store with a retention policy (§20). This build uses a bounded in-memory ring; its live counters are on /api/v1/status under "storage" and on the Dashboard.',
+    ),
   },
   {
     group: 'SYSTEM',
     path: '/settings',
     label: 'Settings',
-    tag: 'P2',
+    tag: '#54',
     live: false,
-    element: P(2, 'Settings', 'EPIC: Phase 2 — Real Inference', 'Runtime settings surface (§19, §23). Configuration today is one JSON file plus SYNAPSE_* env overrides, loaded at start.'),
+    element: P(
+      'Settings',
+      [54, 59],
+      'Runtime settings surface (§19, §23). Configuration today is one JSON file plus SYNAPSE_* env overrides, read once at start: #54 adds native YAML, #59 adds hot-reload, and an editable surface needs both.',
+    ),
   },
 ]
 

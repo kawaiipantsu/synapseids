@@ -2378,3 +2378,77 @@ a.rep-dl-btn:focus-visible {
   color: var(--accent);
   cursor: pointer;
 }
+
+/* ---------------------------------------------------------------- detections
+   LIVE ▸ Detections (§19.1/§19.4, issue #117). Deliberately reuses the shared
+   globals — .card, .mini, .flowbar, .cls, .bar, .linkish — so a detection row
+   and a Flow Log row read as the same table with a different subject. Only the
+   two things detections add get their own rules: the severity chip and the
+   deduplicated occurrence count. */
+
+.dt-sev {
+  display: inline-block;
+  min-width: 58px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #06222b;
+  font-weight: 700;
+}
+/* `low` is the muted slate end of the palette; dark-on-slate does not carry
+   enough contrast, so that one chip keeps the light ink. */
+.dt-sev.low {
+  color: var(--ink);
+}
+
+/* `count` is the whole point of a deduplicated feed: "×412" and "single" must
+   not look alike at a glance across a wallboard. */
+.dt-count {
+  font-weight: 700;
+  color: var(--scan);
+}
+
+.dt-table td {
+  vertical-align: middle;
+}
+.dt-table .bar {
+  margin-right: 6px;
+}
+
+.dt-open {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 1px 7px;
+}
+
+/* The Dashboard's "Recent detections" card. A four-column grid rather than the
+   shared flex .list-plain row, because the chips, the pair and the
+   count/confidence/age each need a fixed lane — flexing them wraps the pair
+   away from its own severity. */
+.dt-recent li {
+  display: grid;
+  grid-template-columns: 62px minmax(0, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 8px;
+}
+.dt-recent .pair {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-recent .meta {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The rationale line under each row: the daemon's own words, plus the per-model
+   outputs §12 requires be kept next to the verdict. */
+.dt-why td {
+  padding-top: 0;
+  border-top: none;
+  color: var(--dim);
+  font-size: 11px;
+}

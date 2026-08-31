@@ -21,6 +21,7 @@ import {
   type HiddenLayer,
 } from '../lib/arch'
 import { fmtBytes, fmtInt } from '../lib/format'
+import { Link } from '../lib/hashRouter'
 import { usePersistedState } from '../lib/persist'
 
 const PERSIST_KEY = 'architecture.hidden'
@@ -334,8 +335,8 @@ export function Architecture() {
 
       <p className="dim" style={{ marginTop: 12 }}>
         Widths &gt; {MAX_SANE_WIDTH} or a total over {EXCESSIVE_PARAM_FACTOR}× the baseline net raise a
-        warning only. Training is launched from the Training view (Phase 4), not here — this view
-        designs, estimates and exports. <span className="thugs">&#10214;THUGS&#10215;</span>
+        warning only. Training is launched from <Link to="/training">ML ▸ Training</Link>, not here —
+        this view designs, estimates and exports. <span className="thugs">&#10214;THUGS&#10215;</span>
       </p>
     </div>
   )

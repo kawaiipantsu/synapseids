@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -16,6 +17,7 @@
     "uplot": "^1.6.31"
   },
   "devDependencies": {
+    "@types/node": "^18.19.130",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

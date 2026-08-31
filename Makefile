@@ -61,6 +61,7 @@ help: ## Show available targets
 	@echo "  web                Build the React SPA into web/dist (commit the result)"
 	@echo "  web-dev            Vite dev server with /api proxy to :8080"
 	@echo "  web-check          Type-check the SPA (tsc --noEmit)"
+	@echo "  web-test           Run the SPA unit tests (node --test)"
 	@echo ""
 	@echo "Build:"
 	@echo "  build              Build all three host binaries"
@@ -154,6 +155,12 @@ web-dev: ## Vite dev server, proxying /api + /api/v1/stream to 127.0.0.1:8080
 .PHONY: web-check
 web-check: ## Type-check the SPA (tsc --noEmit)
 	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm run typecheck
+
+# SPA unit tests: node's built-in runner over the framework-free modules
+# (web/ui/test/, see web/ui/tsconfig.test.json). No test framework is installed.
+.PHONY: web-test
+web-test: ## Run the SPA unit tests (node --test)
+	cd $(WEB_UI) && { [ -d node_modules ] || npm ci; } && npm test
 
 ## ---------------------------------------------------------------- build
 

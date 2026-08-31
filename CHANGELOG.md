@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LIVE ▸ Detections — the deduplicated alert feed in the SPA** (the UI half of
+  issue #117, built alongside #118). A real filterable view where `#/detections`
+  used to be a placeholder: severity, class, occurrence **count**, the 5-tuple,
+  confidence, first-seen → last-seen, the daemon's `reason`, the per-model outputs
+  and the disagreement flag, with click-through to the Flow Inspector and to
+  Investigate. Class, severity, minimum confidence and a `since` window are
+  applied by the daemon; the control bar and the "showing N / M" idiom are the
+  Flow Log's.
+  - **`count` is its own column, and loud.** A deduplicated detection standing for
+    412 scanned ports and one standing for a single probe would otherwise render
+    identically, which understates the first and overstates the second.
+  - **It degrades honestly against a daemon that has no such route.** A 404 from
+    `GET /api/v1/detections` — an older binary, which the SPA cannot detect any
+    other way — is mapped to a *state*: "not available in this build", naming
+    #117. Not an error banner, not a spinner that never resolves, and not a
+    console error; the polling stops rather than logging a 404 a second forever.
+    The same is true of the Dashboard's *Recent detections* card. A **current**
+    daemon with no alert store answers `200` with an empty page, and that is a
+    deliberately different, equally honest render. The view was written against
+    the contract while the endpoint was still on a sibling branch and needed no
+    change when it landed.
+  - Unit-tested without any backend against `web/ui/test/fixtures/detections.json`,
+    a byte-for-byte instance of the response contract, and verified end to end
+    against the real endpoint (a replayed MySQL credential-stuffing run comes back
+    as one `brute_force` detection with `count: 182`, not 182 rows).
+- **SPA unit tests** — `npm test` / `make web-test`, using node's built-in test
+  runner over the framework-free modules (`web/ui/test/`,
+  `web/ui/tsconfig.test.json`). No test framework was added; the only new
+  dependency is `@types/node`, which ships types and no runtime code.
 - **Detections — `/api/v1/detections` and a real `AlertCreated`** (issue #117;
   [ADR 0027](docs/adr/0027-detection-dedup-and-derived-severity.md)).
   `AlertCreated` had been in the frozen `event-envelope-v1` list since Phase 1
@@ -271,6 +300,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the drawer was already dense, while the fired rules stay open. "No rule fired"
     is boxed as a finding rather than left as dim text that reads like a failed
     load. Own commented blocks at the end of `types.ts` and `styles.css`.
+
+### Changed
+
+- **Dashboard cards that claimed "needs API" for endpoints that already exist are
+  wired** (issue #118). Five cards were greyed out and citing development phases
+  that had since closed, so correct "not built yet" notices read as broken
+  promises while real data sat one fetch away.
+  - **Active flows** → `status.flow.active`, with started / closed / evicted and
+    the flow-table cap beneath it.
+  - **Packets / sec** and **Throughput** → rates derived from the cumulative
+    counters on `/api/v1/captures` and `/api/v1/sensors/topology`, plus a running
+    replay's packet counter (PROJECT.md §6 lists Replay as a capture source), each
+    with a uPlot sparkline built the same way the classifications/sec card's is.
+    `lib/rates.ts` divides the delta by the **real** elapsed time between
+    readings, the way `capture.Manager.sample` does server-side: one reading is
+    not a rate (the card says "measuring…"), and a counter moving backwards is a
+    reset rather than negative traffic. Throughput deliberately **excludes** the
+    replay, because `status.replay` carries no byte counter — the card says so
+    instead of multiplying packets by a guessed frame size (§16).
+  - **Sensor health** → `/api/v1/sensors/topology`, distinguishing
+    `collector: false` ("off — no collector configured") from a collector with
+    nobody connected, and listing each location's health, running count and
+    pps/bps.
+  - **Loaded models** footer → `/api/v1/models`: registered count, the active
+    model, and a pointer to ML ▸ Models for per-model metrics and lineage.
+  - **A working endpoint with nothing to show is an idle state, not a greyed
+    "needs API".** The three cases — no endpoint, endpoint broken, endpoint fine
+    but idle — now look different.
+- **No placeholder in the SPA cites a development phase any more** (issue #118).
+  Every "not built yet" notice names the **open** issue tracking it, which stays
+  checkable after an epic closes: Storage #53, Settings #54/#59, Model Comparison
+  #48, Drift #49, System Performance #55, the anomaly stubs on Flow Inspector /
+  Timeline / Hosts / Investigate #47, per-host baselines #63. The sidebar tag for
+  a stub is now its issue number rather than `P{n}`. Phase framing is kept only
+  where it is still accurate — EPIC: Phase 7 (#7) is open, so Model Comparison and
+  Drift still name it *alongside* their leaf issues. The gaps themselves stay:
+  §16 makes a labelled gap correct and a fabricated number a defect.
+- **`StreamProvider` polls `/api/v1/status`, `/api/v1/captures` and
+  `/api/v1/sensors/topology` in one 1 Hz `Promise.allSettled`**, so the ingest
+  counters behind the two rate cards are sampled in lock-step and one broken
+  endpoint cannot blank the others.
 
 ### Fixed
 

@@ -133,6 +133,19 @@ export interface ReplayStatus {
   last_error?: string
 }
 
+/** The `flow` block of GET /api/v1/status — the live flow table (§7). `active`
+ *  is the current table size, the rest are cumulative since daemon start. Every
+ *  field is optional because a daemon older than the block simply omits it, and
+ *  a missing count must render as "unknown", not as 0. */
+export interface FlowTableStatus {
+  active?: number
+  started?: number
+  closed?: number
+  snapshots?: number
+  evicted?: number
+  max?: number
+}
+
 /**
  * The subset of GET /api/v1/status this SPA depends on. Sibling branches are
  * concurrently reshaping handleStatus, so every access is defensive.
@@ -140,6 +153,7 @@ export interface ReplayStatus {
 export interface DaemonStatus {
   storage?: { flows?: number; classifications?: number; driver?: string }
   live?: { clients?: number }
+  flow?: FlowTableStatus
   events?: { published?: number; dropped?: number; subscribers?: number }
   replay?: ReplayStatus
   models?: ModelInfo[]
@@ -253,9 +267,9 @@ export interface HostProfile {
   disagreements: number
   /** Detail view only. */
   recent_flows?: HostFlowRef[]
-  /** Always false in Phase 5 — behavioural baselines are Phase 7. */
+  /** Always false in this build — behavioural baselines are issues #47 / #63. */
   baseline_available: boolean
-  /** Always false in Phase 5 — anomaly scoring is Phase 7. */
+  /** Always false in this build — anomaly scoring is issue #47. */
   anomaly_available: boolean
 }
 
@@ -269,7 +283,7 @@ export interface TimelineBucket {
 export interface TimelineSeries {
   bucket_sec: number
   buckets: TimelineBucket[]
-  /** Always false in Phase 5 — there is no anomaly series to plot yet. */
+  /** Always false in this build — there is no anomaly series to plot yet (#47). */
   anomaly_available: boolean
 }
 
@@ -937,9 +951,9 @@ export interface ReportCoverage {
   notable_candidates: number
   notable_flows_truncated: boolean
   flow_records_missing: number
-  /** Always false in this build — behavioural baselines are Phase 7. */
+  /** Always false in this build — behavioural baselines are issues #47 / #63. */
   baseline_available: boolean
-  /** Always false in this build — anomaly scoring is Phase 7. */
+  /** Always false in this build — anomaly scoring is issue #47. */
   anomaly_available: boolean
 }
 
@@ -984,9 +998,9 @@ export interface InvestigationReport {
 // not produce them and the drawer must not imply otherwise:
 //
 //   * a training baseline, or any "current vs baseline" pair. §19.3's example
-//     shows one, but baselines are Phase 7 — `baseline.available` is always
+//     shows one, but baselines are issues #47 / #63 — `baseline.available` is
 //     false and there is no value field to render next to it.
-//   * an anomaly score. Also Phase 7; `anomaly.available` is always false.
+//   * an anomaly score. Issue #47 as well; `anomaly.available` is always false.
 //   * a per-feature contribution number for a trained model. Exact attribution
 //     needs gradients or SHAP, so `explanation.kind` is 'unavailable' for an
 //     ONNX model and `rules` is empty. A rough proxy is not offered at all,
@@ -1319,3 +1333,96 @@ export interface SensorTopology {
   local_sensor_label: string
   scope_note: string
 }
+
+
+// ---- detections / alerts (§19.1, §19.4, §18; issue #117) --------------------
+// Self-contained block at the end of the file. These mirror the contract
+// GET /api/v1/detections serves (internal/alert, ADR 0027) field for field. A
+// daemon older than #117 has no such route at all, and `getDetections` in
+// client.ts turns that 404 into a state rather than an error.
+//
+// A detection is *deduplicated*: one row can stand for many occurrences, so
+// `count` is load-bearing. A 400-port scan and a single probe are both one row,
+// and rendering them identically would misstate what happened.
+
+/** The four severities a detection may carry, lowest first. */
+export const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const
+
+export type Severity = (typeof SEVERITIES)[number]
+
+/** One model's contribution to a detection (§12 — never just the verdict). */
+export interface DetectionModel {
+  model_id: string
+  role: string
+  class: string
+  confidence: number
+}
+
+/** api.Detection — one deduplicated detection. */
+export interface Detection {
+  id: number
+  /** first occurrence (RFC3339) */
+  ts: string
+  /** most recent occurrence (RFC3339) */
+  last_ts: string
+  /** deduplicated occurrence count; 1 means a single hit */
+  count: number
+  /** a traffic-classes-v1 class name */
+  class: string
+  severity: Severity
+  /** the maximum confidence seen across the deduplicated occurrences */
+  confidence: number
+  /** the most recent contributing flow — the link target */
+  flow_id: number
+  /** every contributing flow; may be truncated by the daemon */
+  flow_ids?: number[]
+  src_ip: string
+  dst_ip: string
+  src_port: number
+  dst_port: number
+  protocol: string
+  disagreement: boolean
+  reason: string
+  models?: DetectionModel[]
+}
+
+/** GET /api/v1/detections */
+export interface DetectionList {
+  detections: Detection[]
+  /** matches held by the daemon, before `limit` was applied */
+  total: number
+  /** rows in this response */
+  returned: number
+  /** detections dropped by the daemon's bounded ring */
+  evicted: number
+}
+
+/** The query GET /api/v1/detections accepts. */
+export interface DetectionQuery {
+  /** default 100, clamped to 1000 by the daemon */
+  limit?: number
+  class?: string
+  severity?: Severity | ''
+  /** 0..1 */
+  min_confidence?: number
+  /** RFC3339 */
+  since?: string
+}
+
+/**
+ * The outcome of asking for detections.
+ *
+ * `unavailable` is the honest render of a 404: this build has no detections
+ * resource, which is neither an error nor an empty result. `ok` with an empty
+ * `detections` array is genuinely "nothing detected" and must look different.
+ */
+export type DetectionsResult =
+  | { state: 'ok'; list: DetectionList }
+  | { state: 'unavailable'; message: string }
+  | { state: 'error'; message: string }
+
+/** One detection by id — the same three states as the list. */
+export type DetectionResult =
+  | { state: 'ok'; detection: Detection }
+  | { state: 'unavailable'; message: string }
+  | { state: 'error'; message: string }

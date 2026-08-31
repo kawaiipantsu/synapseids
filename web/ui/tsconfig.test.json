@@ -1,0 +1,27 @@
+// Unit tests for the dependency-free parts of the SPA.
+//
+// There is no test framework here on purpose: node's built-in runner
+// (`node --test`, stable since Node 18) plus `node:assert/strict` covers what
+// these tests need, and the only thing package.json gains for it is
+// @types/node — types, no runtime code. That matches the repo's posture of
+// hand-rolling rather than adding a dependency (PROJECT.md §27, §28.16).
+//
+// The main tsconfig is `noEmit` because Vite does the building; this one emits
+// plain ESM into .test-build/ (gitignored) so node can run it. It compiles only
+// modules whose *runtime* imports are empty — src/api/client.ts imports nothing
+// but types, and src/lib/rates.ts imports nothing at all — so the emitted
+// JavaScript has no unresolvable extensionless specifiers in it.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "allowImportingTsExtensions": false,
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["src/api/client.ts", "src/api/types.ts", "src/lib/rates.ts", "test"]
+}

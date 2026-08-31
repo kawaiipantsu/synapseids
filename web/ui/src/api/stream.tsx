@@ -9,12 +9,22 @@ import {
   type ReactNode,
 } from 'react'
 
-import { getStatus } from './client'
+import {
+  ZERO_COUNTERS,
+  addCounters,
+  latest,
+  newRateSampler,
+  pushSample,
+  type Counters,
+} from '../lib/rates'
+import { getCaptures, getSensorTopology, getStatus } from './client'
 import type {
+  CaptureSourceStatus,
   Classification,
   DaemonStatus,
   ModelInfo,
   ReplayStatus,
+  SensorTopology,
   WsEvent,
 } from './types'
 
@@ -29,13 +39,65 @@ export interface MappedStatus {
   driver: string
   models: ModelInfo[]
   replay: ReplayStatus
+  /** Live flow-table size from status.flow.active, and its cumulative siblings. */
+  activeFlows: number
+  flowsStarted: number
+  flowsClosed: number
+  flowsEvicted: number
+  flowMax: number
+  /** False until /api/v1/status has actually answered once. */
+  hasFlowTable: boolean
   raw: DaemonStatus | null
   error: string | null
   lastUpdated: number
 }
 
+/**
+ * Daemon-wide packet ingest, sampled into rates (§19.1 packets/sec + throughput).
+ *
+ * Every counter here is cumulative on the wire, so the rates come from
+ * differentiating successive readings — see lib/rates.ts. Three ingest paths
+ * are folded together because the card is about the daemon, not about one
+ * source: local capture sources (/api/v1/captures), remote sensors
+ * (/api/v1/sensors/topology) and a running replay, which PROJECT.md §6 lists as
+ * a capture source and which really does drive the same pipeline.
+ *
+ * `bytes` deliberately excludes the replay: `status.replay` reports packets and
+ * flows only, with no byte counter, so folding it into throughput would mean
+ * inventing one. `replayPackets > 0 && !replayBytes` is what the Throughput card
+ * says out loud instead (§16).
+ */
+export interface Ingest {
+  /** 'loading' until the first poll answers; 'error' if an endpoint is broken. */
+  state: 'loading' | 'ok' | 'error'
+  /** the endpoint error, verbatim, when state === 'error' */
+  error: string | null
+  /** cumulative packets across every ingest path the daemon reports */
+  packets: number
+  /** cumulative bytes — capture sources + sensors only */
+  bytes: number
+  drops: number
+  /** per-second history, oldest→newest, at most SPARK_WINDOW entries */
+  pktPerSec: number[]
+  bytesPerSec: number[]
+  pktRate: number
+  byteRate: number
+  /** readings folded in; a rate needs 2, so 1 means "measuring…" */
+  samples: number
+  /** the capture sources that contributed, verbatim */
+  sources: CaptureSourceStatus[]
+  sourcesRunning: number
+  /** the sensor topology document, or null if that endpoint failed */
+  topology: SensorTopology | null
+  /** packets contributed by a running replay */
+  replayPackets: number
+  replayRunning: boolean
+  /** no capture source, no sensor, no running replay: the honest idle state */
+  idle: boolean
+}
+
 export interface Rollup {
-  /** Per-second classification counts, oldest→newest, up to WINDOW entries. */
+  /** Per-second classification counts, oldest→newest, up to SPARK_WINDOW entries. */
   clsPerSec: number[]
   /** Per-second closed/updated flow counts. */
   flowPerSec: number[]
@@ -65,6 +127,7 @@ interface StreamContextValue {
   connected: boolean
   status: MappedStatus
   rollup: Rollup
+  ingest: Ingest
   replayEvents: ReplayLogEntry[]
   subscribe: (fn: EventHandler) => () => void
   refreshStatus: () => void
@@ -74,7 +137,8 @@ interface StreamContextValue {
 // Defaults / constants
 // ---------------------------------------------------------------------------
 
-const WINDOW = 90 // seconds of sparkline history
+/** Seconds of sparkline history every Dashboard series keeps. */
+const SPARK_WINDOW = 90
 const ROLL_WINDOW_MS = 5 * 60 * 1000 // top-talkers / ports / hosts window
 const RECENT_CAP = 20_000 // hard cap on the rolling-window event log
 const REPLAY_LOG_CAP = 60
@@ -91,9 +155,34 @@ const EMPTY_STATUS: MappedStatus = {
   driver: '',
   models: [],
   replay: EMPTY_REPLAY,
+  activeFlows: 0,
+  flowsStarted: 0,
+  flowsClosed: 0,
+  flowsEvicted: 0,
+  flowMax: 0,
+  hasFlowTable: false,
   raw: null,
   error: null,
   lastUpdated: 0,
+}
+
+const EMPTY_INGEST: Ingest = {
+  state: 'loading',
+  error: null,
+  packets: 0,
+  bytes: 0,
+  drops: 0,
+  pktPerSec: [],
+  bytesPerSec: [],
+  pktRate: 0,
+  byteRate: 0,
+  samples: 0,
+  sources: [],
+  sourcesRunning: 0,
+  topology: null,
+  replayPackets: 0,
+  replayRunning: false,
+  idle: true,
 }
 
 const EMPTY_ROLLUP: Rollup = {
@@ -117,6 +206,7 @@ const StreamContext = createContext<StreamContextValue | null>(null)
 // ---------------------------------------------------------------------------
 
 function mapStatus(s: DaemonStatus): MappedStatus {
+  const f = s.flow
   return {
     flows: Number(s.storage?.flows ?? 0),
     classifications: Number(s.storage?.classifications ?? 0),
@@ -124,10 +214,32 @@ function mapStatus(s: DaemonStatus): MappedStatus {
     driver: String(s.storage?.driver ?? ''),
     models: Array.isArray(s.models) ? s.models : [],
     replay: s.replay ?? EMPTY_REPLAY,
+    activeFlows: Number(f?.active ?? 0),
+    flowsStarted: Number(f?.started ?? 0),
+    flowsClosed: Number(f?.closed ?? 0),
+    flowsEvicted: Number(f?.evicted ?? 0),
+    flowMax: Number(f?.max ?? 0),
+    hasFlowTable: f != null,
     raw: s,
     error: null,
     lastUpdated: Date.now(),
   }
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+/** Cumulative counters for one poll's worth of capture sources. */
+function sourceCounters(rows: CaptureSourceStatus[]): Counters {
+  return rows.reduce<Counters>(
+    (acc, s) => addCounters(acc, {
+      packets: Number(s.packets ?? 0),
+      bytes: Number(s.bytes ?? 0),
+      drops: Number(s.drops ?? 0),
+    }),
+    ZERO_COUNTERS,
+  )
 }
 
 function replayText(type: string, data: unknown): string {
@@ -149,7 +261,9 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false)
   const [status, setStatus] = useState<MappedStatus>(EMPTY_STATUS)
   const [rollup, setRollup] = useState<Rollup>(EMPTY_ROLLUP)
+  const [ingest, setIngest] = useState<Ingest>(EMPTY_INGEST)
   const [replayEvents, setReplayEvents] = useState<ReplayLogEntry[]>([])
+  const rates = useRef(newRateSampler())
 
   const subscribers = useRef(new Set<EventHandler>())
 
@@ -178,22 +292,74 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const pollRef = useRef<() => void>(() => {})
   const refreshStatus = useCallback(() => pollRef.current(), [])
 
-  // --- status polling ------------------------------------------------------
+  // --- status + ingest polling ---------------------------------------------
+  // One loop, one cadence, three cheap reads. The ingest counters have to be
+  // sampled in lock-step with each other for the derived rate to mean anything,
+  // so they share this poll rather than getting a second timer of their own.
   useEffect(() => {
     let alive = true
     const poll = () => {
-      getStatus()
-        .then((s) => {
-          if (alive) setStatus(mapStatus(s))
-        })
-        .catch((err: unknown) => {
-          if (alive) {
-            setStatus((prev) => ({
-              ...prev,
-              error: err instanceof Error ? err.message : String(err),
-            }))
+      void Promise.allSettled([getStatus(), getCaptures(), getSensorTopology()]).then(
+        ([sr, cr, tr]) => {
+          if (!alive) return
+
+          if (sr.status === 'fulfilled') setStatus(mapStatus(sr.value))
+          else setStatus((prev) => ({ ...prev, error: errText(sr.reason) }))
+          const st = sr.status === 'fulfilled' ? sr.value : null
+
+          const sources = cr.status === 'fulfilled' ? cr.value : []
+          const topology = tr.status === 'fulfilled' ? tr.value : null
+          const failure =
+            cr.status === 'rejected'
+              ? errText(cr.reason)
+              : tr.status === 'rejected'
+                ? errText(tr.reason)
+                : null
+
+          const replay = st?.replay ?? EMPTY_REPLAY
+          const replayRunning = Boolean(replay.running)
+          const replayPackets = Number(replay.packets ?? 0)
+
+          // bytes: sources + sensors only. status.replay carries no byte
+          // counter, so there is nothing honest to add for a replay.
+          const byteBearing = addCounters(sourceCounters(sources), {
+            packets: Number(topology?.packets ?? 0),
+            bytes: Number(topology?.bytes ?? 0),
+            drops: Number(topology?.drops ?? 0),
+          })
+          const total: Counters = {
+            packets: byteBearing.packets + replayPackets,
+            bytes: byteBearing.bytes,
+            drops: byteBearing.drops,
           }
-        })
+
+          const s = rates.current
+          pushSample(s, total, Date.now(), SPARK_WINDOW)
+
+          setIngest({
+            state: failure ? 'error' : 'ok',
+            error: failure,
+            packets: total.packets,
+            bytes: total.bytes,
+            drops: total.drops,
+            pktPerSec: s.pktPerSec.slice(),
+            bytesPerSec: s.bytesPerSec.slice(),
+            pktRate: latest(s.pktPerSec),
+            byteRate: latest(s.bytesPerSec),
+            samples: s.samples,
+            sources,
+            sourcesRunning: sources.filter((x) => x.state === 'running').length,
+            topology,
+            replayPackets,
+            replayRunning,
+            idle:
+              sources.length === 0 &&
+              Number(topology?.sensors ?? 0) === 0 &&
+              !replayRunning &&
+              replayPackets === 0,
+          })
+        },
+      )
     }
     pollRef.current = poll
     poll()
@@ -214,8 +380,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       a.flowPerSec.push(a.flowPending)
       a.clsPending = 0
       a.flowPending = 0
-      if (a.clsPerSec.length > WINDOW) a.clsPerSec.splice(0, a.clsPerSec.length - WINDOW)
-      if (a.flowPerSec.length > WINDOW) a.flowPerSec.splice(0, a.flowPerSec.length - WINDOW)
+      if (a.clsPerSec.length > SPARK_WINDOW) a.clsPerSec.splice(0, a.clsPerSec.length - SPARK_WINDOW)
+      if (a.flowPerSec.length > SPARK_WINDOW) a.flowPerSec.splice(0, a.flowPerSec.length - SPARK_WINDOW)
 
       const cutoff = now - ROLL_WINDOW_MS
       if (a.recent.length && a.recent[0]!.t < cutoff) {
@@ -353,8 +519,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<StreamContextValue>(
-    () => ({ connected, status, rollup, replayEvents, subscribe, refreshStatus }),
-    [connected, status, rollup, replayEvents, subscribe, refreshStatus],
+    () => ({ connected, status, rollup, ingest, replayEvents, subscribe, refreshStatus }),
+    [connected, status, rollup, ingest, replayEvents, subscribe, refreshStatus],
   )
 
   return <StreamContext.Provider value={value}>{children}</StreamContext.Provider>

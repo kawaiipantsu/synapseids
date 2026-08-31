@@ -3,6 +3,7 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import type { TimelineBucket } from '../api/types'
 import { CLASS_NAMES, classColor } from '../lib/classes'
+import { IssueLink } from './IssueLink'
 
 // Classification timeline (PROJECT.md §19.6, issue #41): stacked per-class
 // volume over time with a disagreement overlay. Dragging across the plot selects
@@ -230,7 +231,7 @@ export function TimelineChart({
         )}
       </div>
       <div className="tl-stub">
-        anomaly score series — Phase 7 (<code>anomaly_available: false</code>)
+        anomaly score series — <IssueLink n={47} /> (<code>anomaly_available: false</code>)
       </div>
     </div>
   )

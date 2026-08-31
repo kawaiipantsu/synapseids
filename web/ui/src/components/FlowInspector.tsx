@@ -11,6 +11,7 @@ import {
 import type { Classification, ClassSchema, FeatureSchema, FlowRecord, Review } from '../api/types'
 import type { FlowExplain, FlowSnapshots } from '../api/types'
 import { classColor } from '../lib/classes'
+import { IssueLink } from './IssueLink'
 import {
   endpoint,
   fmtBytes,
@@ -409,7 +410,7 @@ export function FlowInspector({ cls, onClose }: Props) {
           {/* ---- why this verdict (§19.3; issue #38) ---- */}
           <ExplanationPanel explain={explain} err={explainErr} />
 
-          {/* ---- anomaly score: Phase 7, a labelled stub with no number ---- */}
+          {/* ---- anomaly score: issue #47, a labelled stub with no number ---- */}
           <AnomalyStub explain={explain} />
         </div>
       </aside>
@@ -431,28 +432,33 @@ export function FlowInspector({ cls, onClose }: Props) {
 //
 // What these components must never do:
 //   * render a baseline column, or any "expected range". §19.3's example shows
-//     one; this build has no training baselines (Phase 7) and inventing a range
-//     would turn an absent check into an apparent clean bill of health.
-//   * render an anomaly number. Phase 7 as well.
+//     one; this build has no training baselines (issues #47 / #63) and inventing
+//     a range would turn an absent check into an apparent clean bill of health.
+//   * render an anomaly number. Issue #47 as well.
 //   * render a per-feature contribution for a trained model. The API returns
 //     kind:'unavailable' there, and this panel says so in words instead of
 //     drawing bars from a proxy.
 // ===========================================================================
 
-/** A section that says why it has nothing to show. */
+/**
+ * A section that says why it has nothing to show.
+ *
+ * `tag` is the tracking-issue citation, not a development phase: a phase number
+ * stops being checkable as soon as its epic closes (issue #118).
+ */
 function UnavailableSect({
   title,
-  phase,
+  tag,
   children,
 }: {
   title: string
-  phase?: string
+  tag?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <div className="sect stub">
       <h4>
-        {title} {phase ? <span className="tag">{phase}</span> : null}
+        {title} {tag ? <span className="tag">{tag}</span> : null}
       </h4>
       <p className="dim">{children}</p>
     </div>
@@ -769,12 +775,16 @@ function ExplanationPanel({ explain, err }: { explain: FlowExplain | null; err: 
   )
 }
 
-/** Anomaly score (§19.3) — Phase 7. A labelled gap, never a number. */
+/** Anomaly score (§19.3) — issue #47. A labelled gap, never a number. */
 function AnomalyStub({ explain }: { explain: FlowExplain | null }) {
   return (
-    <UnavailableSect title="Anomaly score" phase="Phase 7">
-      {explain?.anomaly.note ??
-        'Not available in this build. Anomaly scoring is Phase 7 work (PROJECT.md §13).'}
+    <UnavailableSect title="Anomaly score" tag={<IssueLink n={47} />}>
+      {explain?.anomaly.note ?? (
+        <>
+          Not available in this build. Anomaly scoring needs the autoencoder tracked by{' '}
+          <IssueLink n={47} /> (PROJECT.md §13).
+        </>
+      )}
     </UnavailableSect>
   )
 }
