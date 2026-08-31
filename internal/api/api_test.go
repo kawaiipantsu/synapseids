@@ -43,6 +43,16 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatalf("default config should report loopback=true")
 	}
 
+	live, ok := body["live"].(map[string]any)
+	if !ok {
+		t.Fatalf("status payload has no live object: %v", body["live"])
+	}
+	for _, k := range []string{"ws_clients", "ws_client_drops", "ws_frames_batched"} {
+		if _, present := live[k]; !present {
+			t.Fatalf("live.%s missing from status payload: %v", k, live)
+		}
+	}
+
 	// The flow object is always present; with no provider it reports zeroes and
 	// the configured cap (PROJECT.md §22, §24).
 	fl, ok := body["flow"].(map[string]any)

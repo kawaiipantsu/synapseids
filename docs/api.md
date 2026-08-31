@@ -43,7 +43,10 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
-  "live": { "clients": 1, "accepted": 3, "frames_out": 210, "client_drops": 0 },
+  "live": {
+    "ws_clients": 1, "ws_client_drops": 0, "ws_frames_batched": 87,
+    "clients": 1, "accepted": 3, "frames_out": 210, "client_drops": 0
+  },
   "flow": {
     "active": 128,
     "started": 4210,
@@ -66,9 +69,14 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
 }
 ```
 
-`live.client_drops` is the count of WebSocket clients dropped for being too slow
-(see [below](#backpressure)). When a replay is running, `replay` also carries
-`id`, `source`, `speed` and (on failure) `last_error`.
+`live` reports the WebSocket hub counters (PROJECT.md §24). The canonical keys
+are `ws_clients` (connections currently registered), `ws_client_drops` (clients
+dropped for being too slow — see [below](#backpressure)) and `ws_frames_batched`
+(batched frames produced by the pump, one per flush, independent of the
+client count). `clients`, `accepted`, `frames_out` and `client_drops` are kept
+as pre-existing aliases (`frames_out` counts per-client frame writes). When a
+replay is running, `replay` also carries `id`, `source`, `speed` and (on
+failure) `last_error`.
 
 `flow` is the running pipeline's flow table (`internal/api.FlowStats`): `active`
 flows held right now, and lifetime `started` / `closed` / `snapshots` / `evicted`
@@ -214,7 +222,8 @@ float; empty = `1`.
 - `400` `path does not name a readable file` — `stat` failed or it is a directory
 - `400` `capture: invalid replay speed "…"` — bad `speed`
 - `409` — `Start` refused: a replay is already running, or the file is not a
-  classic pcap (pcapng, truncated header, unsupported link type)
+  readable capture (not a classic pcap or minimal pcapng: truncated header,
+  unsupported link type, multi-section pcapng)
 - `503` `replay not available` — no controller
 
 The daemon runs **one replay at a time**; stop the current one first. Replayed
@@ -270,7 +279,8 @@ Empty intervals send nothing.
 Each client has a bounded send queue of `live.client_queue_size` payloads
 (config, default `5000`). If that queue is full when a batch is broadcast, the
 **client is dropped** — its connection is closed and the hub's drop counter
-increments, visible at `/api/v1/status` as `live.client_drops` (PROJECT.md §22).
+increments, visible at `/api/v1/status` as `live.ws_client_drops` (and its
+`live.client_drops` alias) (PROJECT.md §22).
 Reconnecting is the client's responsibility (the built-in page retries after
 1.5s). Separately, if the pump's own bus subscription overflows (the pump itself
 falling behind), those misses are counted in `events.dropped`.

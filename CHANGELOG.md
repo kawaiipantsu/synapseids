@@ -19,6 +19,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The pipeline logs a throttled warning (the first eviction of a run, then every
   1000th) when the flow table is full and starts evicting, pointing at
   `capture.max_flows`.
+- `internal/capture` now reads **minimal pcapng** as well as classic pcap
+  (GitHub issue #73). The hand-rolled reader handles a single Section Header
+  Block (either byte order), Interface Description Blocks (link type, snap
+  length, `if_tsresol` timestamp resolution), Enhanced Packet Blocks and Simple
+  Packet Blocks, for Ethernet or RAW link types. Every declared block length is
+  bounded before allocation and the trailing length is verified. Multi-section
+  files, mid-file endianness changes and non-Ethernet/RAW link types are still
+  refused with the existing `editcap -F pcap` hint.
+- `testdata/pcap/http.pcapng` — a hand-encoded pcapng twin of `http.pcap`,
+  produced by `testdata/gen` and covered by a test that asserts it decodes to
+  the same packets, flows and `flow-features-v1` vectors as the classic file.
+- `/api/v1/status` `live` object now also reports `ws_clients`,
+  `ws_client_drops` and `ws_frames_batched` — the last being the count of
+  batched WebSocket frames produced by the pump (one per flush, independent of
+  the connected-client count). The existing `clients`, `frames_out` and
+  `client_drops` keys are unchanged (issue #70).
+- `internal/features/interarrival_test.go` — regression tests that pin the
+  `interarrival_*` missing-value sentinels (flow-features-v1 indices 15–20)
+  through `features.Extract`: a 1-packet flow reads `0` for mean/min/max/stddev,
+  a 2-packet flow reports the single gap with stddev still `0`, a 3-packet flow
+  with unequal gaps has a non-zero stddev, and `forward_interarrival_mean` stays
+  `0` until a direction has two packets (#72).
+
+### Changed
+
+- `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
+  capture)"; the replay-start `409` and the capture docs describe the wider
+  accepted set.
+- `docs/features-v1.md` now spells out the inter-arrival missing-value contract:
+  a flow with fewer than two packets in the relevant direction has no defined
+  inter-arrival distribution, so `0` is the deliberate `default_missing`
+  sentinel, not a measured value. Documentation only — matches the
+  already-frozen `schemas/features/flow-features-v1.json`; no schema or code
+  change.
+
+### Fixed
+
+- `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
+  every 256 packets. The unpaced emit loop previously had no blocking point, so
+  on a single-CPU host a long replay could monopolise the Go scheduler and delay
+  `/api/v1` responses. The paced speeds are unchanged — they already block on a
+  timer. (#71)
 
 ## [0.1.0] - 2026-08-31
 
