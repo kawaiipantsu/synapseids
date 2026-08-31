@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-frozen `schemas/features/flow-features-v1.json`; no schema or code
   change.
 
+### Fixed
+
+- `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
+  every 256 packets. The unpaced emit loop previously had no blocking point, so
+  on a single-CPU host a long replay could monopolise the Go scheduler and delay
+  `/api/v1` responses. The paced speeds are unchanged — they already block on a
+  timer. (#71)
+
 ## [0.1.0] - 2026-08-31
 
 First tagged release: the Phase 1 vertical slice plus the full build, packaging

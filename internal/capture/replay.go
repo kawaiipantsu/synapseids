@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,15 @@ type Speed float64
 
 // SpeedMax replays with no pacing at all.
 const SpeedMax Speed = 0
+
+// yieldEvery bounds how many packets the unpaced (SpeedMax) emit loop may send
+// between cooperative scheduler yields. Without it a tight "out <- pk" loop has
+// no point at which it parks, so on a single-P machine it can monopolise the
+// scheduler and delay unrelated goroutines such as the HTTP API handler
+// (issue #71). The paced path already blocks on a timer and needs no such yield.
+// 256 keeps the per-yield cost negligible while bounding scheduler latency to a
+// few hundred sends.
+const yieldEvery = 256
 
 // ParseSpeed accepts "0.5", "1", "2", "10", "max", or any positive float.
 func ParseSpeed(s string) (Speed, error) {
@@ -64,6 +74,7 @@ func (r *Replay) Packets(ctx context.Context) (<-chan packet.Packet, <-chan erro
 
 		var haveBase bool
 		var baseCap, baseWall time.Time
+		var sinceYield int // SpeedMax path only: sends since the last runtime.Gosched
 
 		emit := func(pk packet.Packet) bool {
 			if r.speed > 0 {
@@ -80,6 +91,17 @@ func (r *Replay) Packets(ctx context.Context) (<-chan packet.Packet, <-chan erro
 							return false
 						}
 					}
+				}
+			} else {
+				// SpeedMax has no timer to park on: yield the P by hand every
+				// yieldEvery packets so a long capture cannot starve the API
+				// goroutine (issue #71). Allocation-free, never reached on the
+				// paced path above, and ordering is unaffected — the send below
+				// is in this same goroutine.
+				sinceYield++
+				if sinceYield >= yieldEvery {
+					sinceYield = 0
+					runtime.Gosched()
 				}
 			}
 			select {
