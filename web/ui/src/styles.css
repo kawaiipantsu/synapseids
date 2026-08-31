@@ -1479,3 +1479,165 @@ table.tr-cm td.tr-cm-diag {
     position: static;
   }
 }
+
+/* ==========================================================================
+   ML ▸ Models — model registry, activation workflow, audit trail
+   (§19.12, §15, §21, §28.10; issue #36, ADR 0022)
+   Self-contained block, prefix `mr-`. Two sibling branches also edit this
+   file; append your own clearly-marked block below rather than editing this
+   one. It reuses the shared globals (.card, .kv, .mini, .src-*) and the
+   .tr-cm confusion-matrix table from the Training block above.
+   ========================================================================== */
+.mr {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mr-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* status pill: registered / active / deactivated */
+.mr-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  color: var(--dim);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.mr-pill.mr-active {
+  color: #7ee0b0;
+  border-color: #7ee0b0;
+}
+.mr-pill.mr-registered {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.mr-pill.mr-deactivated {
+  color: var(--dim);
+  border-color: var(--edge);
+}
+
+/* registry table */
+table.mr-table tbody tr {
+  cursor: pointer;
+}
+table.mr-table tbody tr:hover {
+  background: var(--panel2);
+}
+table.mr-table tbody tr.sel {
+  background: var(--panel2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+button.mr-idlink {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+button.mr-idlink:hover {
+  text-decoration: underline;
+}
+
+/* the activation workflow */
+.mr-actions .mr-actionrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.mr-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* headline metric tiles */
+.mr-metrics {
+  margin-bottom: 6px;
+}
+.mr-metric .big {
+  font-size: 20px;
+}
+
+/* lineage tree (§15) */
+.mr-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.mr-treerow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.mr-treerow.sel {
+  background: var(--panel2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+button.mr-treelink {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+button.mr-treelink:hover {
+  text-decoration: underline;
+}
+
+/* audit trail */
+.mr-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.mr-chips button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+table.mr-audit td.mr-detail {
+  color: var(--dim);
+  max-width: 460px;
+  overflow-wrap: anywhere;
+}
+.mr-subjtype {
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 4px;
+}
+/* One accent per subject type so the global trail is scannable. An unknown
+   subject type (issue #42's review lines) simply falls through to the base
+   colour — no rule here needs to know about it in advance. */
+.mr-ev {
+  white-space: nowrap;
+}
+.mr-ev-model {
+  color: var(--accent);
+}
+.mr-ev-dataset {
+  color: var(--web);
+}
+.mr-ev-training {
+  color: #7ee0b0;
+}

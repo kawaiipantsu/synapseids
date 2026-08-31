@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Model activation workflow + audit log** (issue #36, EPIC Phase 4;
+  [ADR 0022](docs/adr/0022-auditable-model-activation-workflow.md)). The audit
+  log was write-only and `ML ▸ Models` was a placeholder, so the one action
+  PROJECT.md §28.10 singles out as requiring a deliberate human step had no
+  operator surface and left no inspectable trail. Both are now real.
+  - **`internal/audit` gained a read path.** `Tail(n, Filter)` returns records
+    **newest first**, seeking to EOF and scanning backwards in 64 KiB chunks.
+    Bounded twice: `MaxTail` caps the result at 1000 records (`DefaultTail` 100),
+    and `MaxScanBytes` stops the scan 8 MiB back from EOF, so the whole file is
+    never read and request cost does not grow with the log. A torn trailing line
+    from a crash mid-append is skipped, not fatal; a log file that does not exist
+    yet reads as empty, not an error.
+  - `GET /api/v1/audit` — read-only, `limit` (default 100, max 1000),
+    `subject_type=`, `subject=`, `event=`, `from=`/`to=` (RFC3339, inclusive),
+    reusing the existing `limitParam` / `parseTimeRange` helpers. The response
+    echoes `limit`, `max_limit` and `scan_bytes_cap` so a client can say what it
+    is not showing.
+  - **Append-only forever.** `GET` is the only method routed at `/api/v1/audit`;
+    `POST`/`PATCH`/`DELETE` return `404` and always will. An audit trail an
+    operator can curate after the fact records nothing worth reading (§21). The
+    trail is sensitive operational history and inherits the loopback-by-default,
+    unauthenticated posture of the rest of the API until issue #58.
+  - **`Filter` is generic over subject types.** `subject_type` is compared as an
+    opaque string and never validated against an enum, so §21's fourth category
+    — human label changes, arriving as a `review` subject type with issue #42 —
+    becomes readable and filterable the moment it is first written, with no
+    change to the reader, the route or the UI's filter chips (which derive
+    themselves from the records).
+  - **SPA:** `ML ▸ Models` replaces the "Planned — Phase 2" placeholder with the
+    §19.12 field set — registry table (status pill, parameter count, artifact
+    size, short content hash, live-in-runtime), detail pane with schemas and I/O
+    sizes, a read-only architecture breakdown, training dataset ids, metrics, the
+    confusion matrix, lineage as a tree (§15), the per-model audit trail, and a
+    global audit view with a chip per subject type. `architecture` and `metrics`
+    are bundle pass-throughs and are parsed defensively — an unreported metric
+    reads as missing, never as zero.
+  - **Activation is confirmation-gated (§28.10).** **Activate** opens a
+    confirmation that names the model, states plainly that it will become the
+    primary classifier for *all live traffic*, names what it replaces, lists the
+    content hash / parameter count / artifact size / provenance, and warns that
+    the action is audited and does not survive a restart. **Deactivate** confirms
+    the heuristic will be restored. A `409` (bundle no longer loads, no longer
+    validates, or cannot be compiled) is surfaced **verbatim**. There is
+    deliberately no "auto-activate on register", no "activate newest" and no bulk
+    activate — §28.10 forbids the mechanism, so the UI offers no switch that
+    could become one.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature
@@ -814,6 +861,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three audit-coverage gaps in the model lifecycle** (issue #36). Each made the
+  log disagree with reality, and each was only visible once the log could be read
+  back as a sequence of state changes:
+  - Activating B while A was active demoted A in the registry but wrote no record
+    under A, so A's most recent audit line still said *activated* while it was
+    not live. `POST /api/v1/models/{id}/activate` now writes A's implicit
+    `ModelDeactivated` under A's own subject, ordered before B's activation.
+  - A model active at shutdown is reconciled to `deactivated` on restart — a real
+    state change that was never audited. `registry.Reconciled()` now reports the
+    demoted IDs and `cmd/synapsed` audits each; the reconciliation is persisted,
+    so this is written once rather than on every boot.
+  - `ModelRegistered` was appended on every boot for bundles the registry already
+    knew (`Register` is idempotent), burying real changes in duplicates. The
+    startup sweep now audits only a genuinely new registration.
+  - Smaller honesty fix: deactivating an entry that was never the live primary is
+    a legal no-op, and its record no longer claims it "restored the heuristic".
+- The stale `getModels()` client helper claimed `Promise<ModelInfo[]>` while
+  `GET /api/v1/models` returns `{models, runtime}`. It had no call sites; it is
+  now correctly typed and used by `ML ▸ Models`.
 - `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
   every 256 packets. The unpaced emit loop previously had no blocking point, so
   on a single-CPU host a long replay could monopolise the Go scheduler and delay

@@ -193,6 +193,14 @@ func (s *Server) handleModelActivate(w http.ResponseWriter, r *http.Request) {
 	if hadPrev && prev.ModelID != id {
 		replaced = prev.ModelID
 		detail += "; replaced=" + replaced
+		// Activating one model implicitly deactivates the previous one
+		// (registry.SetStatus enforces a single active entry). Audit that
+		// demotion under the *previous* model's own subject, and before this
+		// activation, so reading the log per model gives the right answer:
+		// without this line the previous model's most recent record still
+		// claims it is active (PROJECT.md §21).
+		s.audit.Log(audit.EventModelDeactivated, audit.ActorLocal, replaced,
+			"implicitly deactivated: replaced as active primary by "+id)
 	}
 	s.audit.Log(audit.EventModelActivated, audit.ActorLocal, id, detail)
 	if s.bus != nil {
@@ -218,10 +226,12 @@ func (s *Server) handleModelDeactivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if _, ok := s.reg.Get(id); !ok {
+	before, ok := s.reg.Get(id)
+	if !ok {
 		http.Error(w, "unknown model id", http.StatusNotFound)
 		return
 	}
+	wasActive := before.Status == registry.StatusActive
 
 	updated, err := s.reg.SetStatus(id, registry.StatusDeactivated)
 	if err != nil {
@@ -229,7 +239,14 @@ func (s *Server) handleModelDeactivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rt.Deactivate()
-	s.audit.Log(audit.EventModelDeactivated, audit.ActorLocal, id, "restored heuristic as primary")
+	// Only claim the heuristic was restored when this model actually was the
+	// live primary. Deactivating an already-inactive entry is a legal no-op and
+	// the audit line must not overstate what changed.
+	detail := "restored heuristic as primary"
+	if !wasActive {
+		detail = "no-op: was already " + string(before.Status) + "; heuristic remains primary"
+	}
+	s.audit.Log(audit.EventModelDeactivated, audit.ActorLocal, id, detail)
 	if s.bus != nil {
 		s.bus.Publish(events.ModelDeactivated, map[string]any{"model_id": id})
 	}

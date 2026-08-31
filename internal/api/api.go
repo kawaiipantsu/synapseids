@@ -154,6 +154,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/training/{id}", s.handleTraining)
 	mux.HandleFunc("POST /api/v1/training/{id}/progress", s.handleTrainingProgress)
 	mux.HandleFunc("POST /api/v1/training/{id}/fail", s.handleTrainingFail)
+	// Read-only by design: the audit log is append-only forever, so there is
+	// no DELETE or PATCH counterpart to this route (PROJECT.md §21).
+	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)

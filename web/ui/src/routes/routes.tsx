@@ -9,6 +9,7 @@ import { Datasets } from './Datasets'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
+import { Models } from './Models'
 import { ReplayPage } from './ReplayPage'
 import { Timeline } from './Timeline'
 import { Training } from './Training'
@@ -70,9 +71,9 @@ export const ROUTES: RouteDef[] = [
     group: 'ML',
     path: '/models',
     label: 'Models',
-    tag: 'P2',
-    live: false,
-    element: P(2, 'Model Registry', 'EPIC: Phase 2 — Real Inference', 'Loaded models are listed on the Dashboard today. The registry (§19.12) — schema, architecture, datasets, lineage, metrics, confusion matrices — arrives with trained ONNX models.'),
+    tag: 'live',
+    live: true,
+    element: <Models />,
   },
   {
     group: 'ML',
