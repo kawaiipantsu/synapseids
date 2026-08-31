@@ -269,6 +269,20 @@ run service configd restart
 # ---------------------------------------------------------------- bpf grant
 
 DEVFS_RULES=/etc/devfs.rules
+# The bpf group is detected, not assumed. FreeBSD base ships "network" (gid 69);
+# much documentation says "net", which does not exist on a stock system. Writing
+# a devfs rule against a nonexistent group grants nothing and fails silently.
+bpf_group() {
+	for _g in network net; do
+		if /usr/sbin/pw groupshow "$_g" >/dev/null 2>&1; then
+			printf '%s' "$_g"
+			return 0
+		fi
+	done
+	printf 'network'
+}
+BPF_GROUP="$(bpf_group)"
+
 if [ "$GRANT_BPF" = 1 ]; then
 	if grep -q 'synapseids_bpf' "$DEVFS_RULES" 2>/dev/null; then
 		say "devfs rule synapseids_bpf already present in $DEVFS_RULES"
@@ -279,7 +293,7 @@ if [ "$GRANT_BPF" = 1 ]; then
 		else
 			{
 				printf '\n[synapseids_bpf=10]\n'
-				printf "add path 'bpf*' mode 0640 group net\n"
+				printf "add path 'bpf*' mode 0640 group %s\n" "$BPF_GROUP"
 			} >> "$DEVFS_RULES"
 		fi
 	fi
@@ -303,7 +317,7 @@ if [ "$GRANT_BPF" != 1 ]; then
 	say "The sensor runs as the unprivileged _synapseids user and needs read access"
 	say "to /dev/bpf*. If it refuses to start, either re-run with --grant-bpf or do it"
 	say "by hand:"
-	say "    printf '[synapseids_bpf=10]\\nadd path '\\''bpf*'\\'' mode 0640 group net\\n' >> /etc/devfs.rules"
+	say "    printf '[synapseids_bpf=10]\\nadd path '\\''bpf*'\\'' mode 0640 group $BPF_GROUP\\n' >> /etc/devfs.rules"
 	say "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
 fi
 say ""

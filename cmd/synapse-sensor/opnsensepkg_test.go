@@ -422,3 +422,66 @@ func TestOPNsenseScriptsAreShellCheckable(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- post-install
+
+// The post-install script must be able to create the service account on a stock
+// FreeBSD system. It once ran `pw useradd -G net`, and because FreeBSD base
+// ships the group as "network" (gid 69) and not "net", that command failed --
+// which under the script's `set -e` aborted everything after it. The observed
+// result on a real OPNsense 25.1 gateway was a created group, NO ACCOUNT, no log
+// directory, and an unregistered plugin: the sensor could not start at all and
+// the reason was several steps removed from the symptom.
+//
+// These assertions pin the shape of the fix rather than the wording.
+func TestPostInstallCreatesAccountIndependentlyOfTheBPFGroup(t *testing.T) {
+	pkg := readScript(t, packageSh)
+
+	useradd := regexp.MustCompile(`(?s)pw useradd _synapseids(.*?)\n`).FindStringSubmatch(pkg)
+	if useradd == nil {
+		t.Fatal("package-opnsense.sh: no `pw useradd _synapseids` found in the post-install script")
+	}
+	// The account creation must not depend on any supplementary group existing.
+	if strings.Contains(useradd[1], "-G ") {
+		t.Errorf("pw useradd still passes a supplementary group (-G): %q\n"+
+			"a missing group must not be able to fail account creation", useradd[1])
+	}
+
+	// The bpf group has to be discovered, and both candidate names considered.
+	for _, want := range []string{"pw groupshow", "network", "net"} {
+		if !strings.Contains(pkg, want) {
+			t.Errorf("post-install does not mention %q — the bpf group must be detected, not assumed", want)
+		}
+	}
+
+	// Adding the account to the bpf group must be best-effort.
+	groupmod := regexp.MustCompile(`pw groupmod "?\$?\{?bpf_group\}?"? -m _synapseids[^\n]*`).FindString(pkg)
+	if groupmod == "" {
+		t.Fatal("post-install does not add _synapseids to the detected bpf group")
+	}
+	if !strings.Contains(groupmod, "|| true") {
+		t.Errorf("group membership is not best-effort: %q", groupmod)
+	}
+}
+
+// A repository-dependent remedy is useless on the box that needs it: a stale pkg
+// database is itself a common reason the install went wrong ("Repository OPNsense
+// has a wrong packagesite"), and the plugin is normally installed from a local
+// file with `pkg add`. No selftest remedy may route through `pkg install`.
+func TestRemediesDoNotRequireAPackageRepository(t *testing.T) {
+	for _, path := range []string{"doctor.go", "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor"} {
+		// Only what the tool actually prints counts. Commentary is allowed to
+		// name the rejected command in order to explain why it is rejected.
+		for i, line := range strings.Split(readScript(t, path), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if strings.Contains(trimmed, "pkg install") {
+				t.Errorf("%s:%d suggests `pkg install`, which needs a working repository; "+
+					"use `pkg add -f <file>` or direct pw(8) commands instead\n\t%s",
+					path, i+1, trimmed)
+			}
+		}
+	}
+}

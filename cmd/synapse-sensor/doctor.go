@@ -262,18 +262,25 @@ func checkConfig(env doctorEnv) (sensorConf, checkResult) {
 func checkServiceUser(env doctorEnv) checkResult {
 	u, err := user.Lookup(env.user)
 	if err != nil {
+		// Do NOT suggest `pkg install -f`: that resolves through the configured
+		// repository, which is exactly what is broken on a box whose pkg
+		// database is stale, and the plugin is normally installed from a local
+		// file anyway. Give commands that need no repository at all.
 		return fail("service-user", fmt.Sprintf("%s: %v", env.user, err),
-			"the package's post-install script creates this account. Re-run it with:",
-			"    pkg install -f os-synapseids-sensor",
-			"or create it by hand:",
-			"    pw useradd "+env.user+" -d /nonexistent -s /usr/sbin/nologin -G net")
+			"the package's post-install script did not finish. Create the account",
+			"directly -- no repository needed:",
+			"    pw groupadd "+env.user,
+			"    pw useradd "+env.user+" -g "+env.user+" -d /nonexistent -s /usr/sbin/nologin",
+			"    pw groupmod "+bpfGroupName()+" -m "+env.user,
+			"then re-render the configuration:",
+			"    configctl template reload OPNsense/SynapseIDSSensor && configctl synapseidssensor fixperms")
 	}
 	groups := groupNames(u)
 	detail := fmt.Sprintf("%s uid=%s gid=%s groups=%s", u.Username, u.Uid, u.Gid, strings.Join(groups, ","))
-	if !contains(groups, "net") {
+	if bpf := bpfGroupName(); !contains(groups, bpf) {
 		return warn("service-user", detail,
-			"not a member of group net, which is the group the documented devfs rule",
-			"grants /dev/bpf* to. Fix with:  pw groupmod net -m "+env.user)
+			"not a member of group "+bpf+", which is the group the documented devfs",
+			"rule grants /dev/bpf* to. Fix with:  pw groupmod "+bpf+" -m "+env.user)
 	}
 	return pass("service-user", "%s", detail)
 }
@@ -316,11 +323,11 @@ func checkBPFAccess(env doctorEnv) checkResult {
 		return pass("bpf-access", "%s — readable by group %s, which %s is in", detail, group, env.user)
 	case mode&0o004 != 0:
 		return warn("bpf-access", detail+" — world readable, which is broader than necessary",
-			"the documented rule is  mode 0640 group net.")
+			"the documented rule is  mode 0640 group "+bpfGroupName()+".")
 	}
 	return fail("bpf-access", detail+fmt.Sprintf(" — %s cannot read it, so the sensor will capture nothing", env.user),
 		"grant it with the devfs rule the plugin documents:",
-		"    printf \"[synapseids_bpf=10]\\nadd path 'bpf*' mode 0640 group net\\n\" >> /etc/devfs.rules",
+		"    printf \"[synapseids_bpf=10]\\nadd path 'bpf*' mode 0640 group "+bpfGroupName()+"\\n\" >> /etc/devfs.rules",
 		"    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart",
 		"or re-run the installer with --grant-bpf.")
 }
@@ -691,6 +698,24 @@ func groupNames(u *user.User) []string {
 		names = append(names, gid)
 	}
 	return names
+}
+
+// bpfGroupName returns the group a devfs rule should grant bpf* to, resolved
+// against the running system rather than assumed.
+//
+// FreeBSD base ships "network" (gid 69). A lot of documentation says "net",
+// which does not exist on a stock system -- and this package used to hardcode
+// it, which made `pw useradd -G net` fail and, under the post-install script's
+// `set -e`, silently cost us the whole service account. Every remedy line the
+// selftest prints goes through here so a wrong guess cannot be baked into
+// advice again.
+func bpfGroupName() string {
+	for _, name := range []string{"network", "net"} {
+		if _, err := user.LookupGroup(name); err == nil {
+			return name
+		}
+	}
+	return "network" // documented default when neither resolves
 }
 
 func contains(haystack []string, needle string) bool {

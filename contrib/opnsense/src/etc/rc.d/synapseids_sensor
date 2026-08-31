@@ -224,14 +224,29 @@ synapseids_sensor_check_iface()
     return 0
 }
 
-# Print the devfs guidance and fail.  Kept verbatim so it can be pasted.
+# Resolve the group a devfs rule should grant bpf* to.  FreeBSD base ships
+# "network" (gid 69); much documentation says "net", which does not exist on a
+# stock system, and a rule naming a nonexistent group grants nothing.
+synapseids_sensor_bpf_group()
+{
+    for _g in network net; do
+        if /usr/sbin/pw groupshow "${_g}" >/dev/null 2>&1; then
+            echo "${_g}"
+            return 0
+        fi
+    done
+    echo network
+}
+
+# Print the devfs guidance and fail.  Pasteable as printed.
 synapseids_sensor_bpf_help()
 {
-    cat <<'EOF'
-synapseids_sensor: the _synapseids user cannot read /dev/bpf*.
+    _bpfgrp=$(synapseids_sensor_bpf_group)
+    cat <<EOF
+synapseids_sensor: the ${synapseids_sensor_user} user cannot read /dev/bpf*.
 Add to /etc/devfs.rules:
     [synapseids_bpf=10]
-    add path 'bpf*' mode 0640 group net
+    add path 'bpf*' mode 0640 group ${_bpfgrp}
 then: sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart
 EOF
 }
@@ -356,7 +371,8 @@ synapseids_sensor_selftest()
 {
     if [ ! -x "${synapseids_sensor_bin}" ]; then
         echo "[FAIL] binary        ${synapseids_sensor_bin} is missing or not executable."
-        echo "       reinstall the package:  pkg install -f os-synapseids-sensor"
+        echo "       reinstall from the file you installed (no repository needed):"
+        echo "           pkg add -f /path/to/os-synapseids-sensor-*.pkg"
         return 1
     fi
 
