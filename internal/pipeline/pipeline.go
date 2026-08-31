@@ -7,6 +7,7 @@ package pipeline
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
@@ -17,6 +18,11 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
+// evictLogEvery throttles the flow-table eviction warning: it is logged on the
+// first eviction of a run and then once per this many evictions, so sustained
+// packet-path pressure stays visible without flooding the log (PROJECT.md §24).
+const evictLogEvery = 1000
+
 // Options configure a pipeline run.
 type Options struct {
 	Flow   flow.Options
@@ -24,6 +30,12 @@ type Options struct {
 	// IDGen, when set, allocates globally-unique flow IDs so records from
 	// different runs never collide (the daemon shares one allocator).
 	IDGen func() uint64
+	// OnStats, when non-nil, receives a snapshot of the flow-table counters on
+	// the table's tick cadence (roughly once a second) and once more after the
+	// final flush. It is never called per packet, so a supervisor can surface
+	// flow-table size and eviction pressure without adding work to the packet
+	// path (PROJECT.md §22, §24).
+	OnStats func(flow.Stats)
 }
 
 // Stats summarizes a completed (or in-progress) run.
@@ -51,10 +63,22 @@ func Run(
 	var st Stats
 	start := time.Now()
 
+	// evicted counts oldest-idle evictions seen this run; it drives the
+	// throttled capacity warning below.
+	var evicted uint64
+
 	// Feature vectors are handed to the runtime raw. Normalization is a
 	// per-model concern: a trained model applies the normalizer.json from its
 	// own bundle; the heuristic model reads raw values (PROJECT.md §11).
 	onFlow := func(r flow.Record) {
+		if r.Reason == flow.ReasonEvicted {
+			evicted++
+			if evicted == 1 || evicted%evictLogEvery == 0 {
+				log.Printf("pipeline: flow table full at cap %d — evicted %d oldest-idle flow(s) this run; raise capture.max_flows / SYNAPSE_MAX_FLOWS if this persists (PROJECT.md §22)",
+					opt.Flow.MaxFlows, evicted)
+			}
+		}
+
 		fv := features.Extract(r)
 
 		fr := storage.FlowRecordFrom(r, fv)
@@ -121,6 +145,9 @@ loop:
 			if n%tickEvery == 0 || (!lastTick.IsZero() && p.TS.Sub(lastTick) >= time.Second) {
 				tbl.Tick(p.TS)
 				lastTick = p.TS
+				if opt.OnStats != nil {
+					opt.OnStats(tbl.Stats())
+				}
 			}
 		}
 	}
@@ -128,6 +155,9 @@ loop:
 	tbl.Flush()
 	ts := tbl.Stats()
 	st.Evicted = ts.Evicted
+	if opt.OnStats != nil {
+		opt.OnStats(ts)
+	}
 	st.Elapsed = time.Since(start)
 	st.ElapsedMS = st.Elapsed.Milliseconds()
 	return st, termErr

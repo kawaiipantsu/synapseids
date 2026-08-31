@@ -90,6 +90,22 @@ values regardless (PROJECT.md §11).
 context flags (#42–#45) means private, loopback or link-local
 (`netip.Addr.IsPrivate|IsLoopback|IsLinkLocal*`).
 
+**Inter-arrival features (#15–#20).** An inter-arrival gap is the span between
+two consecutive packet timestamps, so a flow only has a gap once it has seen a
+second packet: N packets yield N−1 gaps. A flow with fewer than two packets in
+the relevant scope therefore has **no defined inter-arrival distribution** —
+`interarrival_mean` / `_min` / `_max` need two packets overall,
+`interarrival_stddev` needs a second gap and so wants three, and
+`forward_interarrival_mean` / `backward_interarrival_mean` each need two packets
+*in that direction*. In every one of those cases the feature is emitted as `0` —
+the schema's `default_missing` sentinel (`default_missing` in
+`schemas/features/flow-features-v1.json`), not a measured zero — and a model
+must read it as "unknown", exactly as for any other missing slot.
+`internal/flow` counts gaps rather than packets, which is why the "`<2 packets`"
+and "`<3 packets`" thresholds in the table above fall straight out of "fewer
+than one gap" and "fewer than two gaps"; the boundaries are pinned by
+`internal/features/interarrival_test.go`.
+
 ## traffic-classes-v1
 
 `output_size` is `7`, `"frozen": true`. The class count and ordering are locked

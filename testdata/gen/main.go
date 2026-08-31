@@ -25,6 +25,9 @@ func main() {
 	write(filepath.Join(out, "http.pcap"), httpFlow())
 	write(filepath.Join(out, "portscan.pcap"), portScan())
 	write(filepath.Join(out, "udp.pcap"), udpExchange())
+	// A pcapng twin of http.pcap: same frames, so capture -> flow -> features
+	// must land on the identical golden vectors (GitHub issue #73).
+	writeNG(filepath.Join(out, "http.pcapng"), httpFlow())
 	log.Printf("wrote fixtures to %s/", out)
 }
 
@@ -58,6 +61,67 @@ func write(path string, pkts []pkt) {
 		binary.LittleEndian.PutUint32(rh[12:16], uint32(len(p.data)))
 		f.Write(rh[:])
 		f.Write(p.data)
+	}
+}
+
+// ---- pcapng container --------------------------------------------------
+
+// writeNG hand-encodes a minimal little-endian pcapng file: one Section Header
+// Block, one Ethernet Interface Description Block carrying an explicit
+// if_tsresol=6 option, then one Enhanced Packet Block per packet. It mirrors the
+// classic write() above so the two fixtures are exact twins.
+func writeNG(path string, pkts []pkt) {
+	f, err := os.Create(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	le := binary.LittleEndian
+	block := func(typ uint32, body []byte) []byte {
+		for len(body)%4 != 0 { // 32-bit align the body
+			body = append(body, 0)
+		}
+		total := uint32(12 + len(body))
+		b := make([]byte, 0, total)
+		b = le.AppendUint32(b, typ)
+		b = le.AppendUint32(b, total)
+		b = append(b, body...)
+		b = le.AppendUint32(b, total)
+		return b
+	}
+
+	// Section Header Block: byte-order magic, version 1.0, section length -1.
+	shb := make([]byte, 0, 16)
+	shb = le.AppendUint32(shb, 0x1A2B3C4D)
+	shb = le.AppendUint16(shb, 1)
+	shb = le.AppendUint16(shb, 0)
+	shb = le.AppendUint64(shb, ^uint64(0))
+	f.Write(block(0x0A0D0D0A, shb))
+
+	// Interface Description Block: LinkType EN10MB, snaplen 65535, if_tsresol=6.
+	idb := make([]byte, 0, 24)
+	idb = le.AppendUint16(idb, 1) // LINKTYPE_ETHERNET
+	idb = le.AppendUint16(idb, 0) // reserved
+	idb = le.AppendUint32(idb, 65535)
+	idb = le.AppendUint16(idb, 9) // option: if_tsresol
+	idb = le.AppendUint16(idb, 1) // length
+	idb = append(idb, 6, 0, 0, 0) // value 10^-6, padded to 32 bits
+	idb = le.AppendUint16(idb, 0) // opt_endofopt
+	idb = le.AppendUint16(idb, 0)
+	f.Write(block(0x00000001, idb))
+
+	// One Enhanced Packet Block per packet, timestamp in microseconds.
+	for _, p := range pkts {
+		usec := uint64(p.ts.Unix())*1_000_000 + uint64(p.ts.Nanosecond()/1000)
+		epb := make([]byte, 0, 20+len(p.data))
+		epb = le.AppendUint32(epb, 0) // interface id
+		epb = le.AppendUint32(epb, uint32(usec>>32))
+		epb = le.AppendUint32(epb, uint32(usec))
+		epb = le.AppendUint32(epb, uint32(len(p.data))) // captured length
+		epb = le.AppendUint32(epb, uint32(len(p.data))) // original length
+		epb = append(epb, p.data...)
+		f.Write(block(0x00000006, epb))
 	}
 }
 

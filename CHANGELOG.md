@@ -9,6 +9,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
+  `started`, `closed`, `snapshots` and `evicted` counters plus the configured
+  `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
+  pressure is observable without attaching to the packet path (PROJECT.md §22,
+  §24). It is sourced from the running replay pipeline's flow table via a new
+  `pipeline.Options.OnStats` hook that fires on the flow-table tick cadence,
+  never per packet.
+- The pipeline logs a throttled warning (the first eviction of a run, then every
+  1000th) when the flow table is full and starts evicting, pointing at
+  `capture.max_flows`.
+- `internal/capture` now reads **minimal pcapng** as well as classic pcap
+  (GitHub issue #73). The hand-rolled reader handles a single Section Header
+  Block (either byte order), Interface Description Blocks (link type, snap
+  length, `if_tsresol` timestamp resolution), Enhanced Packet Blocks and Simple
+  Packet Blocks, for Ethernet or RAW link types. Every declared block length is
+  bounded before allocation and the trailing length is verified. Multi-section
+  files, mid-file endianness changes and non-Ethernet/RAW link types are still
+  refused with the existing `editcap -F pcap` hint.
+- `testdata/pcap/http.pcapng` — a hand-encoded pcapng twin of `http.pcap`,
+  produced by `testdata/gen` and covered by a test that asserts it decodes to
+  the same packets, flows and `flow-features-v1` vectors as the classic file.
+- `/api/v1/status` `live` object now also reports `ws_clients`,
+  `ws_client_drops` and `ws_frames_batched` — the last being the count of
+  batched WebSocket frames produced by the pump (one per flush, independent of
+  the connected-client count). The existing `clients`, `frames_out` and
+  `client_drops` keys are unchanged (issue #70).
+- `internal/features/interarrival_test.go` — regression tests that pin the
+  `interarrival_*` missing-value sentinels (flow-features-v1 indices 15–20)
+  through `features.Extract`: a 1-packet flow reads `0` for mean/min/max/stddev,
+  a 2-packet flow reports the single gap with stddev still `0`, a 3-packet flow
+  with unequal gaps has a non-zero stddev, and `forward_interarrival_mean` stays
+  `0` until a direction has two packets (#72).
+- **Operator SPA** (`web/ui/`) — a TypeScript + React 18 single-page app built
+  with Vite 5, replacing the vanilla-JS rolling-log shell (PROJECT.md §19, §27;
+  issue #20, EPIC #1). Hash-routed (`/#/flow-log`), so `internal/api` is
+  unchanged. The dark-terminal palette, per-class colours and `⟦THUGS⟧ · (c)
+  2026` mark are carried over. Wired Phase-1 views:
+  - **Flow Log** — the vanilla rolling log ported to React and extended:
+    pause/resume that buffers backend events instead of dropping them,
+    resume-to-latest, configurable max retained rows, compact/comfortable
+    density, class / min-confidence / protocol / text-search filters, suspicious
+    / low-confidence / disagreement row highlighting, kiosk full-screen
+    (Fullscreen API), keyboard nav (↑/↓ select, Enter inspect, Space pause), and
+    click-to-open Flow Inspector.
+  - **Flow Inspector** — a drawer over `GET /api/v1/flows/{id}` +
+    `GET /api/v1/schemas/features`: full 5-tuple and direction, timing,
+    packet/byte and TCP metadata, all 48 raw feature values joined to the schema,
+    the full class-probability vector, per-model outputs and the disagreement
+    flag. Normalized inputs, snapshot history and human-review status are labelled
+    Phase-2 stubs.
+  - **Dashboard** — live counters from `/api/v1/status` plus client-side
+    aggregation of the classification stream: classifications/sec and flow-event/sec
+    uPlot sparklines, class and protocol breakdowns, rolling-window top talkers and
+    destination ports, hosts seen, and the loaded-model list. Cards with no data
+    source yet are greyed and marked "needs API".
+  - **Replay control** — the footer path / speed / start / stop / status bar
+    (same endpoints as before) plus a CAPTURE ▸ Replay page with a live
+    ReplayStarted/Progress/Finished event feed.
+  - App shell with the full §19 navigation tree; every non-Phase-1 route renders
+    a "Planned — Phase N" placeholder naming its tracking epic.
+- New Make targets: `web` (build the SPA into `web/dist/`), `web-dev` (Vite dev
+  server proxying `/api` + `/api/v1/stream` to `127.0.0.1:8080`), `web-check`
+  (`tsc --noEmit`).
+- [ADR 0008](docs/adr/0008-react-spa-and-committed-build-output.md) — records the
+  TS + React + Vite 5 stack, uPlot, hash routing and the committed-`web/dist/`
+  decision.
+
+- **`internal/nn`** — a dependency-free, CGO-free executor for the feed-forward
+  neural networks the trainer produces (PROJECT.md §10, EPIC Phase 2). A
+  hand-rolled reader for the ONNX protobuf-wire subset (`ModelProto` /
+  `GraphProto` / `NodeProto`, `float32` and little-endian `raw_data`
+  `TensorProto` initializers, `ValueInfoProto` shapes — no protobuf library)
+  feeds a deterministic, batch-1, all-`float32` graph executor. Supported ops:
+  `Gemm` (α/β, transA/transB), `MatMul`, `Add` (broadcast — residual blocks
+  work), `Relu`, `LeakyRelu`, `Sigmoid`, `Tanh`, `BatchNormalization`
+  (inference-time affine fold), `Dropout` (identity), `Softmax`, `Identity`,
+  `Flatten`, `Reshape` (constant shape) and `Constant` (folded to an
+  initializer). Any other op is a hard load-time error (`nn: unsupported op
+  %q`); a malformed model returns an error, never a panic. Public API: `Load`,
+  `LoadFile`, `Model.Run`, `Model.InputSize` / `OutputSize` / `OpCounts`. See
+  [ADR 0005](docs/adr/0005-go-onnx-inference-runtime.md).
+- **`inference.ONNXModel`** — adapts a loaded `nn.Model` to the `Classifier`
+  interface, so trained models score through the same `Runtime` as the heuristic
+  and each model's output is recorded (PROJECT.md §12). Takes an optional
+  per-model `Normalizer` (`func(features.Vector) [48]float64`) supplied from the
+  bundle's `normalizer.json`; with none, raw feature values are fed, matching
+  the heuristic path. The distribution is defensively clamped and renormalised.
+- **`internal/nn/onnxbuild`** — a small ONNX `ModelProto` writer used only by
+  tests and by `internal/nn/testdata/gen`, which regenerates the committed
+  `internal/nn/testdata/model.onnx` fixture (`go run
+  ./internal/nn/testdata/gen`).
+
 - **Model bundle validation gate** (`internal/model`, issue #25) — the daemon
   now reads a self-describing model bundle and refuses an incompatible one
   before it could ever be activated (PROJECT.md §11, §28.6, §28.10):
@@ -40,6 +132,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     step, still to be wired.
   - `model.Executor` interface + `Bundle.Bind` are defined (unused) as the seam
     the Phase 2 ONNX runtime (issue #24) will implement.
+
+### Changed
+
+- `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
+  capture)"; the replay-start `409` and the capture docs describe the wider
+  accepted set.
+- `docs/features-v1.md` now spells out the inter-arrival missing-value contract:
+  a flow with fewer than two packets in the relevant direction has no defined
+  inter-arrival distribution, so `0` is the deliberate `default_missing`
+  sentinel, not a measured value. Documentation only — matches the
+  already-frozen `schemas/features/flow-features-v1.json`; no schema or code
+  change.
+- `web/` now embeds the committed Vite build output (`web/dist/`, `//go:embed
+  all:dist`) instead of a single hand-written `index.html`. The Go build stays
+  Node-free, offline and cross-compilable; rebuild the bundle with `make web`
+  and commit `web/dist/` after editing anything under `web/ui/`. `web.FS()` keeps
+  its signature, so `internal/api` is untouched.
+- `make clean` also removes `web/ui/node_modules`, `web/ui/.vite` and
+  `*.tsbuildinfo` (it leaves the committed `web/dist/` in place).
+
+### Removed
+
+- `web/index.html` — the vanilla-JS placeholder shell; its behaviour is ported
+  into the SPA's Flow Log and Replay control.
+
+### Fixed
+
+- `capture.Replay` at `--speed max` now yields the scheduler (`runtime.Gosched`)
+  every 256 packets. The unpaced emit loop previously had no blocking point, so
+  on a single-CPU host a long replay could monopolise the Go scheduler and delay
+  `/api/v1` responses. The paced speeds are unchanged — they already block on a
+  timer. (#71)
 
 ## [0.1.0] - 2026-08-31
 

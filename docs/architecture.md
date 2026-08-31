@@ -40,7 +40,7 @@ end). See [PROJECT.md](../PROJECT.md) §2, §3, §5, §26 for the intended shape
                         └────────────────────────────────┬──────────────────────────────────┘
                                             HTTP + WebSocket (/api/v1)
                                                          ▼
-                                   browser (web/index.html)  ·  synapse CLI
+                              browser (web/ — React SPA)  ·  synapse CLI
 ```
 
 Adapted from PROJECT.md §3. The trainer, SQLite store, sensors and React SPA in
@@ -56,12 +56,14 @@ that diagram are not in the tree yet (see [What is not here yet](#what-is-not-he
   the 48 numbers. Nothing else computes a feature.
 - **Renderers never measure.** `internal/api` imports `storage`, `inference`,
   `schema` — not `flow`, `features` or `packet`. It serves structs the pipeline
-  already filled in. `synapse` and `web/index.html` do the same over HTTP.
+  already filled in. `synapse` and the `web/` SPA do the same over HTTP.
 - **Normalization is a per-model concern** (PROJECT.md §11). `pipeline.Run`
   hands `inference.Runtime` the **raw** vector. The Phase-1 `Heuristic` reads raw
-  values directly. A trained model (Phase 2) applies the `normalizer.json` from
-  its own bundle; `internal/features` ships `Identity` and `Log1p` helpers but
-  the pipeline does not call them.
+  values directly. A trained model applies the `normalizer.json` from its own
+  bundle: `inference.ONNXModel` takes that as an optional `Normalizer` and
+  applies it before handing the vector to the `internal/nn` executor. When none
+  is supplied it feeds raw values, exactly like the heuristic. `internal/features`
+  ships `Identity` and `Log1p` helpers but the pipeline does not call them.
 
 ## Package responsibilities
 
@@ -72,11 +74,12 @@ respected.
 | Package | Owns | Imports | Must not import |
 |---|---|---|---|
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
-| `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap reader, rejects pcapng) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
+| `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
 | `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle` and `Architecture` + `ValidateArchitecture` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p` and the fitted `Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`). No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
-| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), and the rule-based `Heuristic` model. | `features`, `schema` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
+| `nn` | Dependency-free, CGO-free ONNX executor for the feed-forward MLPs the trainer emits: a hand-rolled protobuf-wire reader plus a batch-1, all-`float32`, deterministic graph runner over a fixed op subset (`Gemm`, `MatMul`, `Add`, `Relu`/`LeakyRelu`/`Sigmoid`/`Tanh`, `BatchNormalization`, `Dropout`, `Softmax`, `Identity`, `Flatten`, `Reshape`, `Constant`). Unknown op → load error; malformed model → error, never a panic. `Load`/`LoadFile`/`Model.Run`. See [ADR 0005](adr/0005-go-onnx-inference-runtime.md). | stdlib only | everything else internal |
+| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
 | `model` | `Load(dir)` for the five-file bundle; `Bundle` (inactive — `Meta` / `Normalizer` / `Metrics` / `Recipe` / `ONNXPath` / `Hash`); `Validate()`, the pre-activation gate; `Scan(dir, primary, logf)`, the startup sweep. `Executor` seam for the Phase-2 ONNX runtime. Activates nothing. | `features`, `schema` | `inference`, `pipeline`, `api`, `flow`, `packet`, `capture`, `storage`, `events` |
 | `events` | In-process fan-out `Bus`: `Publish` (non-blocking), `Subscribe(depth)`, per-sub + bus drop counters, monotonic `seq`. Event type constants. | stdlib only | every other internal package (kept a leaf) |
 | `storage` | `Store` interface, `FlowRecord` / `Classification` DTOs, `FlowRecordFrom`, and `Mem` (fixed-capacity ring buffers, oldest evicted + counted). | `features`, `flow`, `inference` | `capture`, `events`, `api`, `pipeline` |
@@ -86,7 +89,7 @@ respected.
 | `config` | Load one JSON file + `SYNAPSE_*` env overrides onto `Default()`; validate; `LoopbackOnly()`. JSON only (see [ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)). | stdlib only | everything else internal |
 | `version` | Build metadata stamped by `-ldflags`. | stdlib only | everything else internal |
 | `schemas` | `//go:embed` bytes of the three schema JSON documents. | `embed` | — |
-| `web` | `//go:embed index.html`, the placeholder rolling-log page served at `/`. | `embed` | — |
+| `web` | `//go:embed all:dist` — the built React SPA served at `/` (source in `web/ui/`, committed build output in `web/dist/`; see [ADR 0004](adr/0004-react-spa-and-committed-build-output.md)). `FS()` returns the `dist` subtree. | `embed` | — |
 
 `cmd/synapsed` composes `config` + `events` + `storage.Mem` + `inference.Runtime`
 + `api.Server` and owns the `replayController` (which is the only caller of
@@ -194,8 +197,35 @@ The envelope schema is embedded but is not served over HTTP (only
 - **The replay controller runs one replay at a time.** `replayController.Start`
   refuses to start while `status.Running` is set; `Stop` cancels the run's
   context. A separate `progress` goroutine ticks `ReplayProgress` every 500ms.
+- **`capture.Replay` paces on the emit goroutine.** For a fractional/×N speed it
+  sleeps on a `time.Timer` between packets; at `--speed max` there is no sleep,
+  so it calls `runtime.Gosched()` every 256 packets to stay off the scheduler's
+  back and keep the API responsive on a single-CPU host (issue #71).
 - **The API pump is its own goroutine**, started by `Server.Run`, holding one bus
   subscription and one `time.Ticker`.
+
+## Web UI
+
+The operator console is a TypeScript + React 18 SPA, bundled with Vite 5
+([ADR 0008](adr/0008-react-spa-and-committed-build-output.md), PROJECT.md §19,
+§27). It is a pure REST + WebSocket client — like `synapse`, it never computes a
+feature.
+
+- **Source** is `web/ui/` (`src/**`, `package.json`, `package-lock.json`,
+  `vite.config.ts`). `make web` runs `npm ci && npm run build`; `make web-dev`
+  serves it with `/api` and `/api/v1/stream` proxied to `127.0.0.1:8080`;
+  `make web-check` is `tsc --noEmit`.
+- **Build output** is `web/dist/` — content-hashed JS/CSS plus `index.html`,
+  **committed to the repo** and embedded by `web/web.go` (`//go:embed all:dist`).
+  `go build`, `make build-linux` and CI never run Node. Rebuild and commit
+  `web/dist/` after any `web/ui/` change.
+- **Routing is hash-based** (`/#/flow-log`): every document request stays on `/`,
+  so `internal/api` needs no SPA-fallback route. A `StreamProvider` opens the one
+  WebSocket, polls `/api/v1/status` once a second, fans event batches to
+  subscribers, and keeps rolling client-side aggregates for the Dashboard.
+- **Wired views:** Dashboard, the full-screen Flow Log, the Flow Inspector
+  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), and Replay
+  control. Every other §19 route is a "Planned — Phase N" placeholder.
 
 ## Model bundles
 
@@ -243,11 +273,11 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 
 | Missing | Present instead | Tracked |
 |---|---|---|
-| Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap only (pcapng rejected with an `editcap` hint) | see EPIC: Phase 3 |
-| ONNX / trained neural-network models | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` accepts more models; `internal/model` loads and validates a bundle but adds nothing to the runtime and activates nothing (issue #25); the ONNX runtime is issue #24 | see EPIC: Phase 2 |
+| Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
+| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
-| React / TypeScript SPA | `web/index.html` — one embedded, dependency-free rolling-log page | see EPIC: Phase 1 UI (PROJECT.md §19, §27) |
+| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
 | Anomaly model, model compare, drift, human review, datasets, training UI | — | see EPIC: Phase 4, Phase 5, Phase 7 |
 | YAML config, retention sweeper, host/investigation/detection API groups | JSON config; rings are size-bounded, not time-bounded | see EPIC: Phase 2 ([ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)), Phase 5 |
 

@@ -46,6 +46,26 @@ type ReplayController interface {
 	Status() ReplayStatus
 }
 
+// FlowStats is a snapshot of the live flow table: its lifetime counters plus the
+// configured cap. It is surfaced on /api/v1/status so flow-table growth and
+// oldest-idle eviction pressure are visible without the API touching the packet
+// path (PROJECT.md §22, §24).
+type FlowStats struct {
+	Active    int    `json:"active"`
+	Started   uint64 `json:"started"`
+	Closed    uint64 `json:"closed"`
+	Snapshots uint64 `json:"snapshots"`
+	Evicted   uint64 `json:"evicted"`
+	Max       int    `json:"max"`
+}
+
+// FlowStatsProvider exposes the running pipeline's flow-table counters. The
+// daemon's replay controller implements it; it may be nil in embedded/test use,
+// in which case /api/v1/status reports zeroes and the configured cap.
+type FlowStatsProvider interface {
+	FlowStats() FlowStats
+}
+
 // Server bundles the HTTP handler, the live hub and the event pump.
 type Server struct {
 	cfg   config.Config
@@ -53,14 +73,17 @@ type Server struct {
 	store storage.Store
 	rt    *inference.Runtime
 	rc    ReplayController
+	fs    FlowStatsProvider
 	hub   *wshub.Hub
 	start time.Time
 }
 
-// New builds a Server. rc may be nil (replay endpoints then return 503).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController) *Server {
+// New builds a Server. rc may be nil (replay endpoints then return 503); fs may
+// be nil (/api/v1/status then reports a zeroed flow table with the configured
+// cap).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, rc ReplayController, fs FlowStatsProvider) *Server {
 	return &Server{
-		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc,
+		cfg: cfg, bus: bus, store: store, rt: rt, rc: rc, fs: fs,
 		hub:   wshub.NewHub(cfg.Live.ClientQueueSize),
 		start: time.Now(),
 	}
@@ -164,20 +187,35 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	pub, drop, subs := s.bus.Stats()
-	clients, accepted, framesOut, wsDrops := s.hub.Stats()
+	ws := s.hub.Stats()
 	var rs ReplayStatus
 	if s.rc != nil {
 		rs = s.rc.Status()
 	}
+	fs := FlowStats{Max: s.cfg.Capture.MaxFlows}
+	if s.fs != nil {
+		fs = s.fs.FlowStats()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":        version.Short("synapsed"),
-		"commit":         version.Commit,
-		"uptime_sec":     int64(time.Since(s.start).Seconds()),
-		"listen":         s.cfg.Server.Listen,
-		"loopback":       s.cfg.LoopbackOnly(),
-		"storage":        s.store.Stats(),
-		"events":         map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
-		"live":           map[string]any{"clients": clients, "accepted": accepted, "frames_out": framesOut, "client_drops": wsDrops},
+		"version":    version.Short("synapsed"),
+		"commit":     version.Commit,
+		"uptime_sec": int64(time.Since(s.start).Seconds()),
+		"listen":     s.cfg.Server.Listen,
+		"loopback":   s.cfg.LoopbackOnly(),
+		"storage":    s.store.Stats(),
+		"events":     map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
+		"live": map[string]any{
+			// Canonical WebSocket-hub counters (issue #70).
+			"ws_clients":        ws.Clients,
+			"ws_client_drops":   ws.Drops,
+			"ws_frames_batched": ws.FramesBatched,
+			// Pre-existing keys, kept for back-compat (additive).
+			"clients":      ws.Clients,
+			"accepted":     ws.Accepted,
+			"frames_out":   ws.FramesOut,
+			"client_drops": ws.Drops,
+		},
+		"flow":           fs,
 		"models":         s.modelList(),
 		"replay":         rs,
 		"feature_schema": schema.FlowFeaturesV1().Schema,
