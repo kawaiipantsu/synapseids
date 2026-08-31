@@ -226,6 +226,14 @@ func (f *doctorFixture) goodArgs(t *testing.T) string {
 
 func write(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
+	// Remove first: the fixture pre-creates the token and the PEMs read-only
+	// (0400/0444), and a subtest that overwrites one would get EACCES from
+	// os.WriteFile as an ordinary user. Running the suite as root hides this,
+	// because root bypasses the permission check -- which is exactly how it
+	// reached CI green locally and red on the runner.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, mode); err != nil {
 		t.Fatal(err)
 	}
