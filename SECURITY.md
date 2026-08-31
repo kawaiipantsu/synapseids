@@ -105,8 +105,10 @@ supported. There are no backports.
   dropped and counted, never queued without limit. Packet ingestion never blocks
   on storage or the UI.
 - **Untrusted input, enforced.** Every decoder is bounds-checked; a malformed
-  frame is counted and skipped. `pcapng` and unknown link types are refused
-  rather than guessed at.
+  frame is counted and skipped. The classic-pcap and minimal-pcapng readers cap
+  every declared block/record length before allocating; unknown link types,
+  multi-section pcapng and structurally broken files are refused rather than
+  guessed at.
 - **Safe model deployment.** A model whose feature/output contract does not match
   the daemon is rejected before inference (`schema.ValidateBundle`). Newly
   trained models are never auto-activated — activation is an explicit,

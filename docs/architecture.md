@@ -72,7 +72,7 @@ respected.
 | Package | Owns | Imports | Must not import |
 |---|---|---|---|
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
-| `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap reader, rejects pcapng) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
+| `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
 | `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, and `BundleMeta` + `ValidateBundle` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p`. No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
@@ -204,7 +204,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 
 | Missing | Present instead | Tracked |
 |---|---|---|
-| Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap only (pcapng rejected with an `editcap` hint) | see EPIC: Phase 3 |
+| Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
 | ONNX / trained neural-network models | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` and `schema.ValidateBundle` already accept more models | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |

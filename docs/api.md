@@ -203,7 +203,8 @@ float; empty = `1`.
 - `400` `path does not name a readable file` — `stat` failed or it is a directory
 - `400` `capture: invalid replay speed "…"` — bad `speed`
 - `409` — `Start` refused: a replay is already running, or the file is not a
-  classic pcap (pcapng, truncated header, unsupported link type)
+  readable capture (not a classic pcap or minimal pcapng: truncated header,
+  unsupported link type, multi-section pcapng)
 - `503` `replay not available` — no controller
 
 The daemon runs **one replay at a time**; stop the current one first. Replayed
