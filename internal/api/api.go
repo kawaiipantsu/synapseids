@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
+	mux.HandleFunc("POST /api/v1/architecture/estimate", s.handleArchitectureEstimate)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)
 	mux.HandleFunc("POST /api/v1/replay/stop", s.handleReplayStop)

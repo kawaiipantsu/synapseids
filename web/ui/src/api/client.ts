@@ -74,3 +74,23 @@ export async function stopReplay(): Promise<ReplayStartResult> {
   const text = (await res.text().catch(() => '')).trim()
   return { ok: res.ok, message: res.ok ? 'stopped' : text || `${res.status}` }
 }
+
+/** POST /api/v1/architecture/estimate — parameter/size/FLOP math + validation
+ *  for the ML ▸ Architecture builder. Input/output layers are locked 48/7
+ *  server-side regardless of what is sent. */
+export interface ArchEstimate {
+  valid: boolean
+  error?: string
+  parameter_count: number
+  approx_bytes: number
+  rough_flops: number
+  layers: { name: string; in: number; out: number; params: number }[]
+}
+
+export function estimateArchitecture(arch: unknown): Promise<ArchEstimate> {
+  return getJSON<ArchEstimate>('/api/v1/architecture/estimate', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(arch),
+  })
+}
