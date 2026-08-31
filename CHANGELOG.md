@@ -87,6 +87,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     persistence — detections live in a ring and do not survive a restart. The
     `#/detections` SPA view is separate work.
 
+- **OPNsense plugin: TLS material is rendered, and there is a selftest**
+  (issues #104 and #102;
+  [ADR 0028](docs/adr/0028-opnsense-tls-material-and-selftest.md)). The plugin was
+  built and packaged but had never been near a firewall; this is the pass that
+  makes the parts that *can* be made correct correct, and makes the rest fail
+  loudly on the box instead of half-working.
+  - **Three new configd template targets (#104).** `sensor-ca.pem` and
+    `sensor-cert.pem` (`0444 root:wheel`) and `sensor-key.pem`
+    (**`0400 _synapseids:_synapseids`**) are now rendered from the OPNsense
+    configuration store. An operator no longer copies PEM files to the firewall by
+    hand. The CA file is renamed `peer-ca.pem` → `sensor-ca.pem`; no released
+    package installed the old name.
+  - **The private key is clamped exactly like the bearer token.** The `fixperms`
+    configd action now covers all five rendered files and runs immediately after
+    every `template reload`, closing configd's umask window.
+    `Api\ServiceController::reconfigureAction` is overridden to run it too —
+    previously a `reconfigure` that left the service stopped could leave a fresh
+    private key mode `0644` indefinitely.
+  - **The fail-safe property is kept and widened.** `rc.d` still refuses to start
+    and names the path when a referenced PEM is missing — now also when it is
+    *empty* or has no `-----BEGIN` line. Nothing anywhere downgrades to
+    `--insecure-tls`.
+  - **PEM validation moved to save time.** `Sensor::performValidation` rejects
+    truncated or mismatched-label blocks, undecodable base64, a private key pasted
+    into a certificate or CA field (and vice versa), a chain where a single
+    certificate belongs, an encrypted key (Go's `crypto/tls` cannot use one and an
+    unattended firewall has nowhere to type a passphrase), and **a key that does
+    not match its certificate**.
+  - **`synapse-sensor doctor` — an on-box selftest (#102).** Nine checks, one
+    `[ OK ]`/`[WARN]`/`[FAIL]`/`[SKIP]` line each, remedies inlined on failure:
+    binary, rendered config, service account, `/dev/bpf*` access, capture device,
+    token mode, TLS identity, TLS trust, log sink, collector reachability (TCP
+    connect only — no handshake, no credentials). Reachable as
+    `service synapseids_sensor selftest`, `configctl synapseidssensor selftest`,
+    and a **Run selftest** button on the settings page. Read-only; prints no
+    secrets.
+  - **Interface resolution hardened — the highest-value fix.** The template used
+    to fall back to emitting the bare OPNsense identifier, so a sensor could report
+    *running* while bound to nothing and capturing zero packets. It now tries
+    `interfaces.<id>.if` then `helpers.physical_interface(<id>)`, records which
+    won, and on failure emits an **empty** device plus a diagnostic that `rc.d`
+    refuses to start on. `rc.d` additionally runs `ifconfig` and refuses if the
+    resolved device does not exist, printing the attempted lookup and the devices
+    that do.
+  - **Eight of nine `TODO(verify)` markers resolved**, four by removing the
+    dependency rather than confirming it. The one kept — whether `daemon(8)`'s
+    `-f` defeats `-S -T` — now has `-o <logdir>/sensor.log` as a second sink and a
+    `log-sink` selftest line that reports it; if the assumption is wrong the sensor
+    still captures and only its log is empty.
+
 - **Traffic matrix and sensor topology** (issues #68 and #46 — **the last two open
   children of EPIC Phase 5 and EPIC Phase 6**;
   [ADR 0026](docs/adr/0026-traffic-matrix-and-sensor-topology.md)). Two
@@ -223,6 +273,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     load. Own commented blocks at the end of `types.ts` and `styles.css`.
 
 ### Fixed
+
+- **`install.sh` rejected valid `SHA256SUMS` files** and aborted with "no entry in
+  SHA256SUMS". The pattern `\./\{0,1\}` requires a literal dot and makes only the
+  *slash* optional, so a `<hash>  <name>` line — what a hand-rolled LAN mirror
+  produces — never matched. It is now three plain `-e` expressions, because every
+  BRE interval (`\{0,1\}`, `\{1,\}`) contains a comma and comma was the `s,,,`
+  delimiter, which silently truncated the combined pattern. The package name is
+  escaped so version dots cannot act as wildcards, and the digest is length-checked.
+- **`install.sh --url` needed internet access.** With a mirror but no `--version`
+  it still called `api.github.com` to resolve "latest", which fails on a firewall
+  served from a LAN host. The version now comes from the mirror's own `SHA256SUMS`.
+- **The configd template's `sh()` escaping macro was one barrier short.** It
+  stripped `'`, `"`, `` ` `` and `$` but not `;` `|` `&` `<` `>` `\`, so a config
+  value containing a shell metacharacter reached the file `rc.d` sources as root.
+  Not exploitable — the same macro removes the quoting needed to break out of the
+  word, and each field's `Mask` already excluded those characters — but it is now
+  actually the two independent barriers the header claimed. `synapse-sensor doctor`
+  refuses to parse a `sensor.conf` containing any of them.
+- **`install.sh --uninstall` left the rendered TLS private key on disk.** It now
+  removes all five rendered files.
 
 - `GET /api/v1/sensors` and `/api/v1/sensors/topology` panicked and returned an
   empty reply on a daemon with no `capture.collector` block configured — which is
@@ -1370,6 +1440,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (§28.16).
 
 ### Changed
+
+- `make test` now covers the OPNsense packaging contract: the `.pkg` file name and
+  the pkg-ABI→GOARCH mapping are lifted out of both `install.sh` and
+  `scripts/package-opnsense.sh`, run under `/bin/sh` and asserted equal, and the
+  `SHA256SUMS` parser is exercised against every line form. Previously only
+  `make opnsense-pkg` checked any of this.
+- New development harnesses under `contrib/opnsense/tools/` (not packaged):
+  `check-plugin.sh` (php -l, XML, `sh -n`, and the two below),
+  `render-templates.py` (renders every configd template with Jinja2 against a mock
+  context — 17 scenarios, including the interface lookup in all four states),
+  `test-sensor-model.php` (25 model-validation cases against real key material),
+  and `check-install-derivation.sh` (`install.sh` versus the real `dist/*.pkg`).
 
 - `api.New` takes a tenth parameter, `*insight.Index`. It may be nil, in which
   case `/api/v1/hosts` returns `[]` and `/api/v1/timeline` an empty series.

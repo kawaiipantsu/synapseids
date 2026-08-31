@@ -78,14 +78,24 @@
                 Maps to the `filter` flag. An empty value means "no filter at
                 all" and the flag is omitted entirely.
 
-                TODO(verify): an empty OptionValues key cannot be expressed in
-                model XML (an XML tag cannot be named ""), so the empty choice
-                relies on Required=N plus BlankDesc rendering a blank entry in
-                the dropdown. Confirm on a real box that the "All traffic" blank
-                option is offered by the base_form dropdown widget for a
-                non-required OptionField; if it is not, add an explicit sentinel
-                key (for example <all>All traffic</all>) here and translate it
-                back to "no filter flag" in sensor.conf.
+                An empty OptionValues key cannot be expressed in model XML (an
+                XML tag cannot be named ""), so the empty "All traffic" choice
+                uses Required=N plus BlankDesc, which is the supported core
+                idiom: BaseListField, the parent of OptionField, offers a blank
+                entry described by BlankDesc precisely when the field is not
+                required.
+
+                Worst case if that is wrong on some core: the dropdown simply
+                does not offer the blank entry, so an operator cannot select
+                "capture everything" and is limited to the four presets. That is
+                a cosmetic limitation, visible immediately in the GUI, and it
+                cannot produce a dead or misconfigured sensor, so it is not worth
+                the extra sentinel-value translation step in sensor.conf.
+
+                The rendered value is validated twice more anyway: the OptionField
+                itself refuses a value outside this list, and `synapse-sensor
+                doctor` fails its config check if sensor.conf ever names a filter
+                that is not a built-in preset.
             -->
             <filter type="OptionField">
                 <default>ip-any</default>
@@ -232,16 +242,36 @@
             </verify_peer>
 
             <!--
+                All three fields below hold PEM *text*. Since issue #104 configd
+                renders each to its own file and only the resulting path reaches
+                the command line:
+
+                  ca          -> /usr/local/etc/synapseids/sensor-ca.pem    0444 root:wheel
+                  client_cert -> /usr/local/etc/synapseids/sensor-cert.pem  0444 root:wheel
+                  client_key  -> /usr/local/etc/synapseids/sensor-key.pem   0400 _synapseids
+
+                A Mask cannot express a multi-line PEM blob usefully (and a
+                regular expression is the wrong tool for "is this a certificate"),
+                so all three are validated in Sensor::performValidation instead:
+                complete BEGIN/END blocks, decodable base64, the right block type
+                for the field, a key that OpenSSL can actually parse, no
+                passphrase-protected key, and the certificate and key proven to
+                match each other. A blob that fails any of those is a save-time
+                configuration error, not a start-time surprise on a remote
+                firewall.
+            -->
+
+            <!--
                 Peer verification bundle.
                   listen  mode : becomes the `client-ca` flag (require and
                                  verify a client certificate)
                   connect mode : becomes the `ca` flag (verify the collector)
-                No Mask: a PEM bundle is multi-line and is checked in
-                performValidation() instead.
+                One or more CERTIFICATE blocks; a private key here is refused.
             -->
             <ca type="TextField">
                 <Required>N</Required>
                 <Multiline>Y</Multiline>
+                <ValidationMessage>Paste one or more PEM CERTIFICATE blocks (a CA bundle), not a private key.</ValidationMessage>
             </ca>
 
             <!--
@@ -253,11 +283,21 @@
             <client_cert type="TextField">
                 <Required>N</Required>
                 <Multiline>Y</Multiline>
+                <ValidationMessage>Paste a single PEM CERTIFICATE block. Put any intermediates in the CA field.</ValidationMessage>
             </client_cert>
 
+            <!--
+                The private key. This is the second secret on the firewall after
+                the bearer token and it is treated the same way: rendered only to
+                a 0400 _synapseids file, clamped by the fixperms configd action
+                immediately after every template reload, re-checked by the rc.d
+                script before every start, and never written to sensor.conf, to
+                argv or to a log.
+            -->
             <client_key type="TextField">
                 <Required>N</Required>
                 <Multiline>Y</Multiline>
+                <ValidationMessage>Paste an unencrypted PEM PRIVATE KEY block matching the certificate above.</ValidationMessage>
             </client_key>
 
             <!-- =========================== authorization =================== -->

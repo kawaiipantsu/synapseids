@@ -157,6 +157,8 @@
             Listen mode: certificate authority that client certificates are verified against, which also makes
             a client certificate mandatory (--client-ca). Connect mode: authority used to verify the collector
             (--ca); leave empty to use the system trust store.
+            Saved to /usr/local/etc/synapseids/sensor-ca.pem (0444 root:wheel). One or more PEM CERTIFICATE
+            blocks; pasting a private key here is refused.
         </help>
         <advanced>true</advanced>
     </field>
@@ -170,6 +172,8 @@
             This sensor's own certificate (--cert). In listen mode it is the TLS server certificate; in connect
             mode it is the mutual-TLS client certificate. Leave both this and the key empty to let the sensor
             generate a self-signed certificate in memory (lab use only).
+            Saved to /usr/local/etc/synapseids/sensor-cert.pem (0444 root:wheel). A single PEM CERTIFICATE
+            block; put any intermediates in the CA field above.
         </help>
         <advanced>true</advanced>
     </field>
@@ -180,11 +184,14 @@
         <style>formcontrol</style>
         <height>5</height>
         <help>
-            Private key belonging to the certificate above (--key).
-            NOTE: the PEM text entered here is stored in the OPNsense configuration, but this version of the
-            plugin does not yet write it to disk. Place the files at /usr/local/etc/synapseids/peer-ca.pem,
-            sensor-cert.pem and sensor-key.pem yourself; the service refuses to start and names the missing
-            path if one of them is absent.
+            Private key belonging to the certificate above (--key). It must be unencrypted: the sensor runs
+            unattended and cannot be prompted for a passphrase, so an encrypted key is refused here rather
+            than failing at start-up. Saving verifies that it parses and that it really matches the
+            certificate above.
+            Saved to /usr/local/etc/synapseids/sensor-key.pem, mode 0400 owned by _synapseids, tightened
+            immediately after rendering and re-checked before every start. It is never written to sensor.conf,
+            never passed on a command line and never logged. If it is missing, empty or unparseable the
+            service refuses to start and names the path; it never falls back to an unverified transport.
         </help>
         <advanced>true</advanced>
     </field>

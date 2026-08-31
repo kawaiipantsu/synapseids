@@ -73,10 +73,12 @@ class SettingsController extends ApiMutableModelControllerBase
     /**
      * Return the full settings tree.
      *
-     * TODO(verify): getModelNodes()/setModelNodes() are provided by
-     * ApiMutableModelControllerBase on OPNsense 19.7 and later.  If this plugin
-     * ever has to build against an older core, replace them with
-     * `$this->getModel()->getNodes()` and an explicit `setNodes()` + `save()`.
+     * getModelNodes()/setModelNodes() are provided by
+     * ApiMutableModelControllerBase on OPNsense 19.7 and later, and this plugin
+     * is packaged only for FreeBSD 14 cores -- OPNsense 24.x/25.x -- so they are
+     * present.  A pre-19.7 core is explicitly out of scope; there the
+     * replacement is `$this->getModel()->getNodes()` plus an explicit
+     * `setNodes()` + `save()`.
      *
      * @return array
      */
@@ -119,10 +121,15 @@ class SettingsController extends ApiMutableModelControllerBase
         $backend = new Backend();
         $steps = [];
 
-        // Renders /usr/local/etc/synapseids/sensor.conf and sensor.token.
+        // Renders all five targets under /usr/local/etc/synapseids/:
+        // sensor.conf, sensor.token, sensor-ca.pem, sensor-cert.pem and
+        // sensor-key.pem (issue #104).
         $steps['template'] = trim($backend->configdRun('template reload OPNsense/SynapseIDSSensor'));
 
-        // Templates land as root:wheel 0644; the token must not stay that way.
+        // Templates land as root:wheel 0644 under configd's umask. The two
+        // secrets -- the bearer token and the TLS private key -- must not stay
+        // that way for even a moment longer than necessary, so this runs
+        // immediately, before the service is touched.
         $steps['fixperms'] = trim($backend->configdRun('synapseidssensor fixperms'));
 
         $enabled = (string)$this->getModel()->general->enabled === '1';

@@ -20,5 +20,8 @@ opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml
 opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/index.volt
 opnsense/service/conf/actions.d/actions_synapseidssensor.conf
 opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-ca.pem
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-cert.pem
+opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-key.pem
 opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.conf
 opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.token
