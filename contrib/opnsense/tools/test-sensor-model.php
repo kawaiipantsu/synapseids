@@ -236,6 +236,17 @@ namespace {
 
     check('enabled without authorised', ['authorized' => '0'], ['general.authorized', '28.18']);
     check('enabled without an interface', ['interface' => ''], ['general.interface']);
+
+    // An earlier release made this field a multi-select while the configd
+    // template resolved only the first identifier. A gateway operator selected
+    // WAN, IoT, DMZ and MGMT and got one VLAN: four segments believed
+    // monitored, one actually monitored. Saving that must now fail, and fail
+    // whether or not the sensor is enabled.
+    check('multiple interfaces selected', ['interface' => 'wan,opt5,opt4,opt2'],
+        ['general.interface', 'Select exactly one interface']);
+    check('multiple interfaces while disabled', ['enabled' => '0', 'interface' => 'wan,opt4'],
+        ['general.interface', 'Select exactly one interface']);
+    check('a single interface is fine', ['interface' => 'wan'], []);
     check('enabled without a token', ['token' => ''], ['general.token']);
     check('connect mode without an address', ['mode' => 'connect'], ['general.address']);
     check('insecure TLS without authorisation', [

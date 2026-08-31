@@ -171,6 +171,35 @@ class Sensor extends BaseModel
 
         // --cert and --key must be supplied together, enabled or not: half a key
         // pair is always a configuration mistake.
+        // A comma means more than one interface is stored, which an earlier
+        // release allowed (the field was a multi-select) while the configd
+        // template only ever resolved the first identifier. On a live gateway
+        // that meant WAN, IoT, DMZ and MGMT were selected and a single VLAN was
+        // captured -- four segments believed monitored, one actually monitored,
+        // and nothing anywhere reporting the difference.
+        //
+        // Not gated on "enabled": a stored multi-value is wrong either way, and
+        // refusing it at save time is the only place the operator finds out
+        // before trusting the coverage. Ungated so an existing configuration is
+        // caught on the next save rather than silently carried forward.
+        if (strpos($interface, ',') !== false) {
+            $count = count(array_filter(explode(',', $interface), 'strlen'));
+            $this->addError(
+                $messages,
+                'general.interface',
+                sprintf(
+                    gettext(
+                        'Select exactly one interface. %d are stored (%s) but the sensor captures ' .
+                        'a single device, so only the first would be monitored and the rest would be ' .
+                        'silently ignored. Run one sensor per interface, or capture from a mirror ' .
+                        'port that already carries the segments you want.'
+                    ),
+                    $count,
+                    $interface
+                )
+            );
+        }
+
         if ($clientCert !== '' && $clientKey === '') {
             $this->addError(
                 $messages,
