@@ -118,20 +118,22 @@ func TestTopologyGroupsByLocationWithAggregates(t *testing.T) {
 		t.Errorf("embedded sensor detail lost: %+v", wan.Sensors[1])
 	}
 
-	// Attribution: flow/feature mode is scopeable, raw is not.
+	// Attribution: every sensor that reported an id is scopeable since #126, but
+	// by two different mechanisms, and the verdict must say which — a raw sensor's
+	// rows are tagged on the packet path, not by a record frame.
 	if wan.Sensors[0].FlowAttribution != AttributionRecords {
 		t.Errorf("flow-mode sensor attribution = %q, want %q",
 			wan.Sensors[0].FlowAttribution, AttributionRecords)
 	}
-	if wan.Sensors[1].FlowAttribution != AttributionNone {
+	if wan.Sensors[1].FlowAttribution != AttributionPackets {
 		t.Errorf("raw-mode sensor attribution = %q, want %q",
-			wan.Sensors[1].FlowAttribution, AttributionNone)
+			wan.Sensors[1].FlowAttribution, AttributionPackets)
 	}
-	if wan.AttributableSensors != 1 {
-		t.Errorf("wan attributable = %d, want 1 of 2", wan.AttributableSensors)
+	if wan.AttributableSensors != 2 {
+		t.Errorf("wan attributable = %d, want 2 of 2", wan.AttributableSensors)
 	}
-	if got.AttributableSensors != 2 {
-		t.Errorf("total attributable = %d, want 2 (one flow, one feature)", got.AttributableSensors)
+	if got.AttributableSensors != 3 {
+		t.Errorf("total attributable = %d, want 3 (raw, flow and feature all carry a sensor id)", got.AttributableSensors)
 	}
 
 	// Totals are the sum over groups.

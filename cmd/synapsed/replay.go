@@ -31,16 +31,22 @@ type replayController struct {
 	flowOpt flow.Options
 	sensor  string
 	flowID  *atomic.Uint64
+	// stats is the daemon-wide flow-table view. The replay pipeline reports its
+	// own table into it under replayStatsName; the capture pipeline reports the
+	// table that serves live and sensor traffic (issue #125).
+	stats *flowStatsHub
 
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	src       capture.Source
-	status    api.ReplayStatus
-	flowStats flow.Stats // latest flow-table snapshot from the running pipeline
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	src    capture.Source
+	status api.ReplayStatus
 }
 
-func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, al *alert.Store, fo flow.Options, sensor string, flowID *atomic.Uint64) *replayController {
-	return &replayController{bus: bus, store: store, rt: rt, insight: ins, alerts: al, flowOpt: fo, sensor: sensor, flowID: flowID}
+// replayStatsName is the flowStatsHub key for the replay pipeline's flow table.
+const replayStatsName = "replay"
+
+func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, al *alert.Store, fo flow.Options, sensor string, flowID *atomic.Uint64, stats *flowStatsHub) *replayController {
+	return &replayController{bus: bus, store: store, rt: rt, insight: ins, alerts: al, flowOpt: fo, sensor: sensor, flowID: flowID, stats: stats}
 }
 
 // Start opens path and begins replaying it at speed. It fails if a replay is
@@ -66,7 +72,9 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 	c.status = api.ReplayStatus{
 		Running: true, ID: id, Source: path, Speed: speed.String(), Started: time.Now(),
 	}
-	c.flowStats = flow.Stats{}
+	// A new run builds a new table from zero; the finished run's totals must not
+	// keep being summed into the daemon-wide view.
+	c.stats.Reset(replayStatsName)
 	c.bus.Publish(events.ReplayStarted, map[string]string{"id": id, "source": path, "speed": speed.String()})
 
 	go c.progress(ctx, pf)
@@ -74,7 +82,7 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 		st, runErr := pipeline.Run(ctx, src, c.rt, c.bus, c.store, pipeline.Options{
 			Flow: c.flowOpt, Sensor: c.sensor,
 			IDGen:    func() uint64 { return c.flowID.Add(1) },
-			OnStats:  c.setFlowStats,
+			OnStats:  c.stats.Reporter(replayStatsName),
 			Observer: c.insight,
 			Alerts:   c.alerts,
 		})
@@ -114,30 +122,6 @@ func (c *replayController) Status() api.ReplayStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status
-}
-
-// setFlowStats records the latest flow-table counter snapshot from the pipeline.
-// The pipeline calls it on the flow-table tick cadence (~1/s), never per packet.
-func (c *replayController) setFlowStats(s flow.Stats) {
-	c.mu.Lock()
-	c.flowStats = s
-	c.mu.Unlock()
-}
-
-// FlowStats reports the live flow-table counters plus the configured cap, for
-// /api/v1/status (PROJECT.md §22, §24).
-func (c *replayController) FlowStats() api.FlowStats {
-	c.mu.Lock()
-	s := c.flowStats
-	c.mu.Unlock()
-	return api.FlowStats{
-		Active:    s.Active,
-		Started:   s.Started,
-		Closed:    s.Closed,
-		Snapshots: s.Snapshots,
-		Evicted:   s.Evicted,
-		Max:       c.flowOpt.MaxFlows,
-	}
 }
 
 func (c *replayController) progress(ctx context.Context, src capture.Source) {

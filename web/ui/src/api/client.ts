@@ -553,12 +553,12 @@ export function rangeReportURL(p: ReportParams): string {
 /**
  * The sensor scope shared by /flows, /classifications and /matrix.
  *
- * Both parameters resolve to the sensor id stored on a classification. Only
- * flow-/feature-mode sensors carry one, so consult a sensor's
- * `flow_attribution` from getSensorTopology() before offering this as a filter —
- * scoping to a raw-mode sensor matches nothing. `location` is matched exactly as
- * the topology response spells it; an unknown location is a 400, not an empty
- * result.
+ * Both parameters resolve to the sensor id stored on every flow and
+ * classification. All three sensor modes carry one since issue #126, so the
+ * filter works for a raw-mode sensor too; only a peer that reported no id is
+ * unscopeable, and its `flow_attribution` from getSensorTopology() says "none".
+ * `location` is matched exactly as the topology response spells it; an unknown
+ * location is a 400, not an empty result.
  */
 export interface SensorScopeParams {
   sensor?: string

@@ -57,7 +57,10 @@ func (v verdict) String() string {
 type runResult struct {
 	verdicts []verdict
 	flows    []storage.FlowRecord
-	stats    pipeline.Stats
+	// classifications are kept raw beside the mode-independent verdicts because
+	// attribution is exactly the field verdict deliberately drops.
+	classifications []storage.Classification
+	stats           pipeline.Stats
 	// wireBytes is the total SYNPOIP frame payload the daemon received.
 	wireBytes uint64
 	records   uint64
@@ -71,7 +74,7 @@ func summarize(store *storage.Mem, st pipeline.Stats) runResult {
 		byID[f.ID] = f
 	}
 	cls := store.RecentClassifications(5000)
-	out := runResult{flows: flows, stats: st, verdicts: make([]verdict, 0, len(cls))}
+	out := runResult{flows: flows, classifications: cls, stats: st, verdicts: make([]verdict, 0, len(cls))}
 	for _, c := range cls {
 		f := byID[c.FlowID]
 		out.verdicts = append(out.verdicts, verdict{
@@ -311,8 +314,12 @@ func TestSensorModesAgree(t *testing.T) {
 			}
 		}
 
-		// Flow ids must be globally unique whatever entered the pipeline.
+		// Flow ids must be globally unique whatever entered the pipeline, and
+		// every row must name the sensor that saw the traffic rather than the
+		// pipeline's own configured name ("collector" here) — in all three modes,
+		// by whichever mechanism carries it (issue #126).
 		seen := map[uint64]bool{}
+		wantSensor := "edge-" + mode.String()
 		for _, f := range res.flows {
 			if f.ID == 0 {
 				t.Errorf("%s mode: a stored flow has id 0", mode)
@@ -321,6 +328,15 @@ func TestSensorModesAgree(t *testing.T) {
 				t.Errorf("%s mode: flow id %d was reused", mode, f.ID)
 			}
 			seen[f.ID] = true
+			if f.Sensor != wantSensor {
+				t.Errorf("%s mode: flow %d attributed to %q, want %q", mode, f.ID, f.Sensor, wantSensor)
+			}
+		}
+		for _, c := range res.classifications {
+			if c.Sensor != wantSensor {
+				t.Errorf("%s mode: classification for flow %d attributed to %q, want %q",
+					mode, c.FlowID, c.Sensor, wantSensor)
+			}
 		}
 
 		switch mode {
@@ -452,13 +468,20 @@ func TestSensorModesConcurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var connected atomic.Int64
+	var connected, drained atomic.Int64
 	col.OnConnect = func(si capture.SensorInfo) {
 		if si.Mode == "" {
 			t.Errorf("sensor %q connected with no mode", si.SensorID)
 		}
 		connected.Add(1)
 	}
+	// OnDisconnect is the raw path's completion signal, and the ordering is the
+	// point: the Collector calls it only after reg.Remove has returned, and
+	// Manager.Remove returns only after that source's forwarder goroutine has
+	// exited — which it does by draining the session's packet channel into the
+	// merged one. So once every sensor has been counted here, no packet is still
+	// in flight anywhere the Manager could cut it off (issue #120).
+	col.OnDisconnect = func(capture.SensorInfo) { drained.Add(1) }
 
 	store := storage.NewMem(5000, 5000)
 	bus := events.New()
@@ -527,21 +550,33 @@ func TestSensorModesConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Every sensor has stopped *sending*. Now wait until the pipeline has
-	// actually classified every record both record-mode sensors produced. The
-	// fixture yields 24 flows, so the target is exact: this cannot pass before
-	// the records have been processed, and a genuinely lost record makes it time
-	// out rather than quietly under-count.
+	// Every sensor has stopped *sending*. wg.Wait() proves only that: the three
+	// ServeConn calls returned. Each mode still has work in flight on a different
+	// path, and the gate below waits for all three — gating on two of them was
+	// issue #120, where mgr.Close() could cut the raw source off mid-stream and
+	// the run ended with 0 packets.
+	//
+	//   - flow / feature: records travel the records channel. The completion
+	//     signal is the pipeline having *classified* them, counted by the
+	//     Observer. The fixture yields 24 flows, so the target is exact.
+	//   - raw: packets travel session -> Manager -> the pipeline's packet loop.
+	//     They are not classified until the final flush (a SYN scan's flows stay
+	//     open until then), so the signal cannot be a verdict count; it is the
+	//     Manager having drained the source, which OnDisconnect reports.
+	//
+	// Nothing here can be satisfied before the work happened, so a genuinely lost
+	// record or packet times out instead of quietly under-counting.
 	const wantPerMode = 24
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		gotFlow, gotFeat := seen.counts()
-		if gotFlow >= wantPerMode && gotFeat >= wantPerMode {
+		gotFlow, gotFeat, _ := seen.counts()
+		if gotFlow >= wantPerMode && gotFeat >= wantPerMode && drained.Load() == int64(len(modes)) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("pipeline classified %d flow-mode and %d feature-mode records, want %d each",
-				gotFlow, gotFeat, wantPerMode)
+			t.Fatalf("pipeline classified %d flow-mode and %d feature-mode records (want %d each) "+
+				"and %d of %d sensors finished draining",
+				gotFlow, gotFeat, wantPerMode, drained.Load(), len(modes))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -565,25 +600,54 @@ func TestSensorModesConcurrent(t *testing.T) {
 
 	ids := map[uint64]bool{}
 	byMode := map[string]int{}
+	bySensor := map[string]int{}
 	for _, f := range store.RecentFlows(5000) {
 		if ids[f.ID] {
 			t.Errorf("flow id %d was reused across concurrent sensors", f.ID)
 		}
 		ids[f.ID] = true
 		byMode[f.SensorMode]++
+		bySensor[f.Sensor]++
 	}
-	t.Logf("three concurrent sensors: %+v; flows by provenance: %v", st, byMode)
+	t.Logf("three concurrent sensors: %+v; flows by mode: %v; by sensor: %v", st, byMode, bySensor)
+
+	// Transport mode: raw builds its flow locally so it carries no record mode,
+	// which is exactly how a stored row says "these counters came from packets".
 	if byMode[""] == 0 || byMode["flow"] == 0 || byMode["feature"] == 0 {
 		t.Errorf("expected flows from all three modes, got %v", byMode)
 	}
+	if byMode[""] != wantPerMode {
+		t.Errorf("raw mode produced %d flows, want %d", byMode[""], wantPerMode)
+	}
+	// Attribution (issue #126) is a *separate* axis from transport mode: each of
+	// the three sensors owns its own flows, raw included, and none of them is
+	// labelled with the pipeline's own name.
+	for _, m := range modes {
+		if n := bySensor["edge-"+m.String()]; n != wantPerMode {
+			t.Errorf("sensor %q owns %d flows, want %d — attribution by sensor id is %v",
+				"edge-"+m.String(), n, wantPerMode, bySensor)
+		}
+	}
+	if n := bySensor["collector"]; n != 0 {
+		t.Errorf("%d flows were labelled with the pipeline's own sensor name instead of the "+
+			"sensor that saw them (issue #126)", n)
+	}
+	if _, _, gotRaw := seen.counts(); gotRaw != wantPerMode {
+		t.Errorf("the observer saw %d raw-mode verdicts, want %d", gotRaw, wantPerMode)
+	}
 }
 
-// modeCounter is a pipeline.Observer that tallies classified records by
-// provenance. Observe runs on the pipeline goroutine, so the counters are
-// updated from one place and read from the test with atomics.
+// modeCounter is a pipeline.Observer that tallies classified records by the
+// transport mode that carried them. Observe runs on the pipeline goroutine, so
+// the counters are updated from one place and read from the test with atomics.
+//
+// The raw tally is the "" bucket: a flow the daemon built from packets records
+// no remote record mode. In this test only sensors feed the pipeline, so "" is
+// unambiguously the raw-mode sensor.
 type modeCounter struct {
 	flow    atomic.Int64
 	feature atomic.Int64
+	raw     atomic.Int64
 }
 
 func (m *modeCounter) Observe(fr *storage.FlowRecord, _ *storage.Classification) {
@@ -592,11 +656,13 @@ func (m *modeCounter) Observe(fr *storage.FlowRecord, _ *storage.Classification)
 		m.flow.Add(1)
 	case "feature":
 		m.feature.Add(1)
+	case "":
+		m.raw.Add(1)
 	}
 }
 
-func (m *modeCounter) counts() (flowRecs, featureRecs int64) {
-	return m.flow.Load(), m.feature.Load()
+func (m *modeCounter) counts() (flowRecs, featureRecs, rawFlows int64) {
+	return m.flow.Load(), m.feature.Load(), m.raw.Load()
 }
 
 // TestFeatureModeStoresNoInventedPacketDetail checks the honesty requirement: a

@@ -337,10 +337,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 // location=) so the topology view can pivot the flow list onto one sensor
 // (PROJECT.md §19.15); without those params its behaviour is unchanged.
 //
-// A flow record carries no sensor field of its own, so the scope is applied by
-// joining each flow to its verdict from the recent classification window — the
-// same join handleHostFlows already uses for the class predicates. A flow whose
-// verdict has aged out of that window therefore drops out of a scoped list.
+// A flow record carries its own observation point since issue #126, so the scope
+// is answered from the row itself. A row stored before that — or written by an
+// embedder that does not set it — falls back to the old join against the recent
+// classification window, and drops out of a scoped list once its verdict ages
+// out of that window.
 func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
 	limit := limitParam(r, 2000)
 	scope, ok := s.parseSensorScope(w, r.URL.Query())
@@ -352,16 +353,28 @@ func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verdict := make(map[uint64]storage.Classification, classFilterScan)
-	for _, c := range s.store.RecentClassifications(classFilterScan) {
-		if _, seen := verdict[c.FlowID]; !seen {
-			verdict[c.FlowID] = c
-		}
-	}
+	var verdict map[uint64]storage.Classification
 	out := make([]storage.FlowRecord, 0, min(limit, 128))
 	for _, fr := range s.store.RecentFlows(classFilterScan) {
-		c, found := verdict[fr.ID]
-		if !found || !scope[c.Sensor] {
+		sensor := fr.Sensor
+		if sensor == "" {
+			// Build the fallback index lazily: a store whose rows all carry a
+			// sensor never pays for it.
+			if verdict == nil {
+				verdict = make(map[uint64]storage.Classification, classFilterScan)
+				for _, c := range s.store.RecentClassifications(classFilterScan) {
+					if _, seen := verdict[c.FlowID]; !seen {
+						verdict[c.FlowID] = c
+					}
+				}
+			}
+			c, found := verdict[fr.ID]
+			if !found {
+				continue
+			}
+			sensor = c.Sensor
+		}
+		if !scope[sensor] {
 			continue
 		}
 		out = append(out, fr)
@@ -474,9 +487,9 @@ type classFilters struct {
 	// map means "any sensor" — it is not the same as an empty map, which matches
 	// nothing.
 	//
-	// Read the honesty note on parseClassFilters before using this: for most
-	// traffic Classification.Sensor is the literal "local", so this predicate is
-	// only as good as the attribution the pipeline actually performs.
+	// Since issue #126 every stored row carries the id of the sensor that saw the
+	// traffic, in all three sensor modes; "local" now means what it says — the
+	// daemon's own capture — rather than "provenance was lost".
 	sensors map[string]bool
 }
 
@@ -519,21 +532,20 @@ func (f classFilters) match(c storage.Classification) bool {
 //
 // sensor= and location= exist so clicking a sensor or a location in the topology
 // view can scope the other views (PROJECT.md §19.15). Both resolve to a set of
-// allowed Classification.Sensor values, which is the *only* sensor provenance any
-// stored row carries.
+// allowed Sensor values, which is the sensor provenance every stored row carries.
 //
-// That field is a real sensor id for `flow`- and `feature`-mode SYNPOIP sensors,
-// whose records arrive pre-aggregated and tagged. For a `raw`-mode sensor it is
-// not: raw packets from every source merge into one channel and one flow table
-// before a flow record exists, so those rows are labelled "local" exactly like a
-// local NIC or a PCAP replay. ADR 0026 records this and why widening it is a
-// packet-path change, not an API one.
+// All three sensor modes are scopeable since issue #126. `flow` and `feature`
+// records arrive pre-aggregated and tagged; a `raw` sensor's packets are stamped
+// with its id by capture.Manager and keyed by it in the flow table, so the flow
+// the daemon builds knows which observation point it came from (ADR 0030). The
+// literal "local" remains a legitimate scope and now means only what it says:
+// traffic the daemon captured itself, or replayed.
 //
-// The consequence, stated rather than hidden: sensor=<a raw-mode sensor> matches
-// nothing, and location=<a location with only raw-mode sensors> matches nothing.
-// The topology response marks each sensor's flow_attribution so a client can
-// avoid offering a scope that cannot work, and an unresolvable location= is a 400
-// rather than a silently empty 200.
+// Two limits remain, stated rather than hidden. A sensor that reported no id at
+// all is indistinguishable from local capture and lands in "local". And
+// location= resolves through the *currently connected* sensors, because a
+// location lives on the live session and is not stored on a row — so an
+// unresolvable location= is a 400 rather than a silently empty 200.
 func (s *Server) parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool) {
 	var f classFilters
 

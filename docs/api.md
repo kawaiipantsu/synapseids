@@ -102,11 +102,18 @@ flows held right now, and lifetime `started` / `closed` / `snapshots` / `evicted
 counters, alongside the configured cap `max` (`capture.max_flows`, default
 `200000`; override with `SYNAPSE_MAX_FLOWS`). A rising `evicted` means the table
 is at capacity and shedding its least-recently-seen flows — raise `max` if that
-is not expected (PROJECT.md §22, §24). The counters come from the replay
-pipeline; between replays they hold the last run's final snapshot (`active` back
-at `0`), and are all `0` before the first replay. The pipeline also writes a
-throttled warning to the daemon log on the first eviction of a run and every
-1000th after it.
+is not expected (PROJECT.md §22, §24). The counters are the **sum over every flow
+table the daemon runs**: the capture pipeline's (live NICs and every `raw`-mode
+SYNPOIP sensor) plus the replay pipeline's. Before issue #125 only the replay
+table was reported, so a sensor-fed daemon showed `{"active":0,"started":0,…}`
+while it was classifying hundreds of flows. Between replays the replay table
+holds its last run's final snapshot (`active` back at `0`) and is cleared when a
+new replay starts. `max` is the **per-table** cap as configured, not multiplied
+by the number of tables, because that is the limit each one actually enforces.
+The counters are refreshed on the flow table's tick cadence (about once a second
+of capture time, and once more after a run's final flush) — never per packet. The
+pipeline also writes a throttled warning to the daemon log on the first eviction
+of a run and every 1000th after it.
 
 `storage.flow_versions_dropped` counts snapshot versions dropped because one flow
 exceeded `storage.FlowHistoryCap` (64 versions per flow) — a long-lived flow
@@ -159,6 +166,7 @@ plus the optional [`sensor=` / `location=` scope](#the-sensor-and-location-scope
     "bwd_bytes": 1310,
     "close_reason": "fin_rst",
     "snapshot_index": 0,
+    "sensor": "opnsense-wan",
     "features": {
       "flow_id": 42,
       "schema": "flow-features-v1",
@@ -172,6 +180,19 @@ plus the optional [`sensor=` / `location=` scope](#the-sensor-and-location-scope
 `capture_end`, `evicted` (see [architecture.md](architecture.md#flow-lifecycle)).
 `features.values` is the frozen 48-element `flow-features-v1` vector
 ([features-v1.md](features-v1.md)).
+
+`sensor` is the **observation point**: the id of the sensor that saw this
+traffic, or `"local"` for the daemon's own capture and replay (issue #126;
+[ADR 0030](adr/0030-flow-attribution-scoped-by-observation-point.md)). It always
+equals the `sensor` on this flow's classification, and it is what `sensor=`
+matches. Two sensors watching the same conversation produce **two** flows with
+two ids, each with its own counters — the flow key is scoped by the observation
+point, so their packet and byte counts are never summed together. The sensor id
+is metadata on the record and is **not** part of the frozen 48-value feature
+vector.
+`sensor_mode` (`flow` / `feature`, absent for a flow built from packets) and
+`sensor_flow_id` describe the *transport*, which is a separate question from
+which sensor saw the traffic.
 
 ### GET /api/v1/flows/{id}
 
@@ -1701,6 +1722,11 @@ params. Always `200` — an empty array `[]` when no live capture is configured
   a local source, which is always equivalent to `raw`. See
   `GET /api/v1/sensors` for what the modes mean and why `packets` is `0` in the
   record modes (issue #45).
+- `sensor_id` / `location` — the **observation point** this source speaks for,
+  when it speaks for one. `sensor_id` is exactly the value stamped on every flow
+  this source produces, and therefore the value to pass as `sensor=`. Both are
+  omitted for a local NIC or a replay, whose flows are attributed to the daemon's
+  own name (`local`) — issue #126.
 
 ### POST /api/v1/captures
 
@@ -1971,14 +1997,14 @@ curl -sS http://127.0.0.1:8080/api/v1/sensors/topology
       "pps": 145730.58,
       "bps": 69424771.67,
       "last_packet": "2026-08-31T15:20:07.613208863Z",
-      "attributable_sensors": 0,
+      "attributable_sensors": 1,
       "sensors": [
         {
           "sensor_id": "edge-dmz-1",
           "location": "dmz",
           "mode": "raw",
           "state": "running",
-          "flow_attribution": "none",
+          "flow_attribution": "packets",
           "…": "every other GET /api/v1/sensors field"
         }
       ]
@@ -2010,7 +2036,7 @@ curl -sS http://127.0.0.1:8080/api/v1/sensors/topology
   "sensors": 2,
   "location_count": 2,
   "unassigned_sensors": 0,
-  "attributable_sensors": 1,
+  "attributable_sensors": 2,
   "packets": 904156,
   "drops": 390655,
   "records": 19,
@@ -2018,7 +2044,7 @@ curl -sS http://127.0.0.1:8080/api/v1/sensors/topology
   "scope_sensor_param": "sensor",
   "scope_location_param": "location",
   "local_sensor_label": "local",
-  "scope_note": "sensor= and location= match the sensor id stored on a classification. …"
+  "scope_note": "sensor= and location= match the sensor id stored on every flow and classification. …"
 }
 ```
 
@@ -2048,18 +2074,19 @@ Per location:
 #### `flow_attribution` — read this before offering a scope
 
 The whole point of §19.15 is that clicking a sensor or location scopes the other
-views. Whether that is possible depends on the sensor's mode:
+views. Every sensor that reports an id is scopeable since issue #126; this field
+says by which mechanism, and names the one case that still is not:
 
 | value | meaning |
 |---|---|
-| `records` | A `flow`- or `feature`-mode sensor. The collector tags its records with the sensor id and the pipeline stores it, so `sensor=`/`location=` really do filter its flows and classifications. |
-| `none` | A `raw`-mode sensor. Its packets merge into the daemon's single packet channel and one flow table before a flow record exists, so its rows are labelled `"local"` — indistinguishable from a local NIC or a PCAP replay. A `sensor=` scope would match **nothing**. |
+| `records` | A `flow`- or `feature`-mode sensor. The collector tags its records with the sensor id and the pipeline stores it, so `sensor=`/`location=` filter its flows and classifications. |
+| `packets` | A `raw`-mode sensor. Its packets are stamped with its id as they are decoded, and the daemon's flow table is keyed by the observation point, so the flows it builds are attributed to that sensor — and are never merged with another sensor's identical 5-tuple. |
+| `none` | The peer reported **no sensor id**. Its rows are indistinguishable from the daemon's own capture and land in `"local"`, so a `sensor=` scope on it would match **nothing**. |
 
-Fixing the `none` case means putting sensor identity on the packet path *and* in
-`flow.Key` (otherwise two sensors' identical 5-tuples merge into one flow), which
-is a data-plane change and is deferred — see ADR 0026. Until then the API states
-the limitation instead of hiding it, and the SPA offers a `counters only`
-affordance for those sensors rather than a filter that returns an empty list.
+`packets` replaced `none` for raw-mode sensors in #126
+([ADR 0030](adr/0030-flow-attribution-scoped-by-observation-point.md)); a client
+should treat *anything but `none`* as scopeable rather than testing for
+`records`. `attributable_sensors` counts exactly that.
 
 ### The `sensor=` and `location=` scope
 
@@ -2069,10 +2096,11 @@ Two additions to the shared filter vocabulary (issue #46), accepted anywhere the
 `/api/v1/hosts/{ip}/classifications`, `/api/v1/review/queue`,
 `/api/v1/reports/*` and `/api/v1/matrix`.
 
-- **`sensor=<id>`** — matches `Classification.Sensor` verbatim. Not validated
-  against the connected set, on purpose: a sensor that has disconnected still owns
-  its stored rows, and **`sensor=local` is a legitimate scope** covering every
-  locally-built row (local NIC, PCAP replay, and every raw-mode sensor).
+- **`sensor=<id>`** — matches the `sensor` stored on a flow and its classification,
+  verbatim. Not validated against the connected set, on purpose: a sensor that has
+  disconnected still owns its stored rows, and **`sensor=local` is a legitimate
+  scope** — since #126 it covers exactly the daemon's own capture (local NIC, PCAP
+  replay, and any peer that reported no id), no longer raw-mode sensors.
 - **`location=<name>`** — resolved through the *currently connected* sensors,
   because a location lives on the live SYNPOIP session and is not stored on a row.
   Matched exactly as `GET /api/v1/sensors/topology` spelled it.
@@ -2090,10 +2118,11 @@ curl -sS 'http://127.0.0.1:8080/api/v1/classifications?sensor=local&class=brute_
 curl -sS 'http://127.0.0.1:8080/api/v1/matrix?location=atlantis'
 ```
 
-`GET /api/v1/flows` applies the scope by joining each flow to its verdict from the
-newest 5000 classifications, because `storage.FlowRecord` carries no sensor id of
-its own. A flow whose verdict has aged out of that window therefore drops out of a
-*scoped* list; an unscoped `GET /api/v1/flows` is unchanged.
+`GET /api/v1/flows` answers the scope from the flow's own `sensor` field (#126).
+A row that carries none — written by an embedder, or stored by an older build —
+still falls back to a join against the newest 5000 classifications and therefore
+drops out of a *scoped* list once its verdict ages out of that window. An
+unscoped `GET /api/v1/flows` is unchanged.
 
 ### GET /api/v1/matrix
 
