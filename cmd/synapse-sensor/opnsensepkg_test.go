@@ -578,3 +578,42 @@ func TestControllersDoNotCallNonexistentBaseMethods(t *testing.T) {
 		t.Fatalf("walk %s: %v", controllers, err)
 	}
 }
+
+// daemon(8) creates its pidfile AFTER dropping privileges to -u, so the pidfile
+// must live somewhere the unprivileged service user can write. Pointing it
+// straight at /var/run (root:wheel) failed on a live gateway with
+//
+//	daemon: pidfile ``/var/run/synapseids_sensor.pid'': Permission denied
+//
+// and rc.subr reported only "failed to start", with the sensor never running.
+func TestPidfileLivesInADirectoryTheServiceUserOwns(t *testing.T) {
+	rc := readScript(t, "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor")
+
+	m := regexp.MustCompile(`(?m)^pidfile="([^"]+)"`).FindStringSubmatch(rc)
+	if m == nil {
+		t.Fatal("rc.d script has no pidfile= assignment")
+	}
+	pidfile := m[1]
+
+	// A literal path directly under /var/run cannot be created by the service
+	// user; it has to sit in a subdirectory the script creates and chowns.
+	if regexp.MustCompile(`^/var/run/[^/]+$`).MatchString(pidfile) {
+		t.Errorf("pidfile %q is directly in /var/run, which is root:wheel; "+
+			"daemon(8) -u cannot create it there", pidfile)
+	}
+	if !strings.Contains(pidfile, "rundir") && !strings.Contains(pidfile, "/synapseids/") {
+		t.Errorf("pidfile %q does not appear to be inside a dedicated directory", pidfile)
+	}
+
+	// start_precmd must create it and hand it to the service user, because
+	// /var/run is cleared at boot.
+	precmd := regexp.MustCompile(`(?s)synapseids_sensor_precmd\(\)\s*\{(.*?)\n\}`).FindStringSubmatch(rc)
+	if precmd == nil {
+		t.Fatal("could not find synapseids_sensor_precmd()")
+	}
+	for _, want := range []string{"rundir", "mkdir", "chown"} {
+		if !strings.Contains(precmd[1], want) {
+			t.Errorf("start_precmd does not %s the pid directory; it will not exist after a reboot", want)
+		}
+	}
+}

@@ -82,7 +82,14 @@ synapseids_sensor_cert="${synapseids_sensor_etcdir}/sensor-cert.pem"
 synapseids_sensor_key="${synapseids_sensor_etcdir}/sensor-key.pem"
 synapseids_sensor_log="${synapseids_sensor_logdir}/sensor.log"
 
-pidfile="/var/run/synapseids_sensor.pid"
+# daemon(8) creates this file AFTER dropping privileges to -u, so it must live
+# somewhere ${synapseids_sensor_user} can write. /var/run itself is root:wheel,
+# which produced:
+#     daemon: pidfile ``/var/run/synapseids_sensor.pid'': Permission denied
+# The directory is created by start_precmd on every start because /var/run is
+# cleared at boot.
+synapseids_sensor_rundir="/var/run/synapseids"
+pidfile="${synapseids_sensor_rundir}/sensor.pid"
 procname="${synapseids_sensor_bin}"
 command="/usr/sbin/daemon"
 
@@ -302,6 +309,16 @@ synapseids_sensor_precmd()
         echo "synapseids_sensor: ${synapseids_sensor_bin} is missing or not executable."
         return 1
     fi
+
+    # -- pid directory -----------------------------------------------------
+    # Must exist and be writable by the unprivileged user before daemon(8) drops
+    # privileges, or the start fails with "pidfile: Permission denied".
+    if [ ! -d "${synapseids_sensor_rundir}" ]; then
+        mkdir -p "${synapseids_sensor_rundir}" || return 1
+    fi
+    chown "${synapseids_sensor_user}:${synapseids_sensor_user}" \
+        "${synapseids_sensor_rundir}" 2>/dev/null
+    chmod 0755 "${synapseids_sensor_rundir}" 2>/dev/null
 
     # -- log directory -----------------------------------------------------
     if [ ! -d "${synapseids_sensor_logdir}" ]; then
