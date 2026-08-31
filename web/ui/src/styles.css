@@ -860,6 +860,118 @@ button.src-rm:hover:not(:disabled) {
   white-space: pre-wrap;
 }
 
+/* --------------------------------------------------- datasets (§19.10) */
+
+.ds-honesty {
+  line-height: 1.6;
+}
+.ds-honesty code {
+  color: var(--ink);
+}
+
+.ds-cards {
+  margin-bottom: 12px;
+}
+
+.ds-table td {
+  vertical-align: top;
+}
+.ds-distcell {
+  min-width: 260px;
+}
+
+/* Stacked label-distribution bar plus its legend. */
+.ds-dist {
+  display: grid;
+  gap: 4px;
+}
+.ds-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel2);
+}
+.ds-bar .seg {
+  height: 100%;
+  min-width: 2px;
+}
+.ds-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.ds-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ds-chip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* Where the labels came from. Model predictions are the honest default and
+   are coloured as a caution, not as a fact (PROJECT.md §14, issue #42). */
+.ds-label-src {
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--edge);
+  white-space: nowrap;
+}
+.ds-label-src.model {
+  color: var(--suspicious);
+  border-color: var(--suspicious);
+}
+.ds-label-src.human {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ds-actions {
+  white-space: nowrap;
+}
+.ds-actions > * {
+  margin-right: 4px;
+}
+.ds-dl {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 1px 8px;
+  text-decoration: none;
+}
+.ds-dl:hover {
+  background: var(--accent);
+  color: #04222a;
+}
+
+.ds-warnrow td {
+  color: var(--suspicious);
+  padding-top: 0;
+}
+.ds-warnrow ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.ds-subhead {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--dim);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.ds-selnote {
+  margin-bottom: 8px;
+}
+
 @media (max-width: 720px) {
   .app-body {
     grid-template-columns: 1fr;

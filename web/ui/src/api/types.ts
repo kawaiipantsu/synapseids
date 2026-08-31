@@ -194,3 +194,81 @@ export interface WsEvent<T = unknown> {
   seq: number
   data: T
 }
+
+// ---- datasets (PROJECT.md §14, §19.10; issue #33) ------------------------
+
+/** dataset.TimeRange — RFC3339 UTC, "" when the dataset is empty of times. */
+export interface DatasetTimeRange {
+  from: string
+  to: string
+}
+
+/** dataset.Selection — the predicates that picked a dataset's rows. The four
+ *  that also exist on GET /api/v1/classifications (class, model,
+ *  min_confidence, disagreement) mean exactly the same thing there. */
+export interface DatasetSelection {
+  from?: string
+  to?: string
+  class?: string
+  model?: string
+  proto?: string
+  initiator_ip?: string
+  responder_ip?: string
+  min_confidence?: number
+  disagreement?: boolean
+  limit?: number
+  scan?: number
+}
+
+/** dataset.Dataset — the §14 manifest plus where it lives on disk. */
+export interface Dataset {
+  id: string
+  version: string
+  name: string
+  description: string
+  location: string
+  tags: string[]
+  created_at: string
+  source_capture_ids: string[]
+  time_range: DatasetTimeRange
+  feature_schema: string
+  output_schema: string
+  flow_count: number
+  label_counts: Record<string, number>
+  /** "model_prediction:<model ids>" today. "human_review" becomes possible
+   *  when the review loop (issue #42) lands — see the banner on the page. */
+  labeling_source: string
+  parent_datasets: string[]
+  /** "sha256:<lowercase hex>" over the schema identity + the CSV bytes. */
+  content_hash: string
+  selection: DatasetSelection
+  warnings?: string[]
+  csv_file: string
+  csv_bytes: number
+  feature_count: number
+  columns: string[]
+  dir: string
+}
+
+/** GET /api/v1/datasets */
+export interface DatasetList {
+  datasets: Dataset[]
+  /** the 48 feature column names + "label", in frozen schema order */
+  columns: string[]
+  label_column: string
+  min_rows: number
+}
+
+/** POST /api/v1/datasets body. */
+export interface DatasetCreateInput {
+  id: string
+  version?: string
+  name?: string
+  description?: string
+  location?: string
+  tags?: string[]
+  source_capture_ids?: string[]
+  /** "<id>@<version>" — records that dataset in parent_datasets. */
+  derive_from?: string
+  selection: DatasetSelection
+}

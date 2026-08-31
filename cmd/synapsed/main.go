@@ -23,6 +23,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/capturewire"
 	"github.com/kawaiipantsu/synapseids/internal/config"
+	"github.com/kawaiipantsu/synapseids/internal/dataset"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
@@ -130,6 +131,12 @@ func run(args []string) int {
 		}
 	}
 
+	// The dataset manager scans datasets.directory once at startup so the API
+	// can list what is already on disk. It is off every packet path: a dataset
+	// is only ever built by an explicit POST /api/v1/datasets (PROJECT.md §14,
+	// §22; ADR 0015). It reads from the same store the pipeline writes to.
+	dsm := dataset.Open(cfg.Datasets.Directory, store, log.Printf)
+
 	flowOpt := flow.Options{
 		IdleTimeout:      cfg.Capture.FlowIdleTimeout.D(),
 		MaxLifetime:      cfg.Capture.FlowMaxLifetime.D(),
@@ -183,7 +190,7 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, rc, rc, capMgr)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

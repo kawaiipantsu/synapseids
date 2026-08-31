@@ -320,6 +320,196 @@ the status change and writes a `ModelDeactivated` audit line. `200` returns
 - `404` — `id` is not a registered model.
 - `503` — the daemon is running without a registry.
 
+### GET /api/v1/datasets
+
+Every dataset version's manifest, newest `created_at` first (PROJECT.md §14,
+§19.10). No params. Always `200` — an empty `datasets` array when nothing has
+been cut, never `503`.
+
+```json
+{
+  "datasets": [
+    {
+      "id": "thugs/lab-attacks-2026-08",
+      "version": "v1",
+      "name": "Lab attacks, August 2026",
+      "description": "portscan.pcap + a real nmap scan and MySQL brute-force run.",
+      "location": "thugs-lab",
+      "tags": ["lab", "phase4", "replay"],
+      "created_at": "2026-08-31T11:52:39Z",
+      "source_capture_ids": ["replay:testdata/pcap/portscan.pcap"],
+      "time_range": { "from": "2026-08-31T08:41:11Z", "to": "2026-08-31T13:00:00Z" },
+      "feature_schema": "flow-features-v1",
+      "output_schema": "traffic-classes-v1",
+      "flow_count": 1148,
+      "label_counts": { "normal": 817, "brute_force": 304, "scan": 24, "web_attack": 2, "dos_ddos": 1 },
+      "labeling_source": "model_prediction:heuristic-v1",
+      "parent_datasets": [],
+      "content_hash": "sha256:7bb0e46490e50e8c03fbbd68c19805e914c547ada62419e75a981af6ecf2ddff",
+      "selection": {},
+      "warnings": ["2 of 7 traffic-classes-v1 classes have no rows (botnet_c2, suspicious) — the model cannot learn them"],
+      "csv_file": "dataset.csv",
+      "csv_bytes": 426379,
+      "feature_count": 48,
+      "columns": ["flow_duration", "…", "snapshot_index", "label"],
+      "dir": "/var/lib/synapseids/datasets/thugs/lab-attacks-2026-08/v1"
+    }
+  ],
+  "columns": ["flow_duration", "…", "snapshot_index", "label"],
+  "label_column": "label",
+  "min_rows": 20
+}
+```
+
+`labeling_source` is not decoration. Phase 4 has no human review loop
+(issue #42), so every dataset built today is labelled by the daemon's **own
+model predictions** and records `model_prediction:<sorted model ids>`. Nothing in
+`internal/dataset` can write `human_review`; that value becomes possible only
+once reviewed labels exist. Do not present these labels as ground truth.
+
+`content_hash` is `sha256` over a domain separator, the two schema names and the
+exact `dataset.csv` bytes. Two datasets built from the same rows and labels hash
+identically regardless of id, version, name or creation time.
+
+#### Addressing one dataset: the `{ref}` segment
+
+A dataset id may contain one `/` (PROJECT.md §14 writes
+`thugs/lab-attacks-2026-08`), so a single version is addressed by **one
+url-escaped path segment** holding `<id>@<version>`:
+
+```text
+GET /api/v1/datasets/thugs%2Flab-attacks-2026-08%40v1
+```
+
+`net/http`'s `ServeMux` matches wildcards against the escaped path and unescapes
+the segment for the handler, so `%2F` stays inside one segment and arrives
+intact. **Deployment caveat:** a reverse proxy that normalises `%2F` into `/`
+before forwarding will break these two routes (nginx needs no change; some
+configurations of others do). That only arises off loopback, which these routes
+are not ready for anyway — see issue #58.
+
+A malformed ref → `400 … reference "…" must be "<id>@<version>"`.
+
+### GET /api/v1/datasets/{ref}
+
+One manifest plus every version of the same id, newest first.
+
+```json
+{ "dataset": { "…": "as above" }, "versions": [ { "…": "manifest" } ] }
+```
+
+- `400` — the ref is not `<id>@<version>`.
+- `404` — unknown dataset version.
+- `503` — the daemon is running without a dataset manager.
+
+### POST /api/v1/datasets
+
+Materialise a selection over the stored classifications into a new, immutable
+dataset version on disk. Body is JSON, unknown fields rejected, 64 KiB cap.
+
+```json
+{
+  "id": "thugs/lab-attacks-2026-08",
+  "version": "v1",
+  "name": "Lab attacks, August 2026",
+  "description": "replayed lab corpus",
+  "location": "thugs-lab",
+  "tags": ["lab", "phase4"],
+  "source_capture_ids": ["replay:/pcaps/nmap_scan.pcap"],
+  "derive_from": "thugs/lab-attacks-2026-08@v1",
+  "selection": {
+    "from": "2026-08-31T00:00:00Z",
+    "to": "2026-08-31T23:59:59Z",
+    "class": "scan",
+    "model": "heuristic-v1",
+    "proto": "tcp",
+    "initiator_ip": "10.0.0.5",
+    "responder_ip": "10.0.0.9",
+    "min_confidence": 0.8,
+    "disagreement": false,
+    "limit": 5000,
+    "scan": 200000
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Required. One or two `/`-separated lowercase slug segments of `[a-z0-9._-]`, each 1–64 chars, each starting and ending with a letter or digit. No `@`, no `..`, no traversal. |
+| `version` | Optional. Same slug rules, no `/`. Omitted → `v1`, or `v<max+1>` if versions of this id already exist. |
+| `name` | Optional; defaults to `id`. |
+| `derive_from` | Optional `<id>@<version>`. Records that dataset (and its own ancestors) in `parent_datasets`. The rows still come from a fresh selection over the flow store — dataset-to-dataset merge with weighting is the training recipe, not this route. |
+| `selection` | Optional; the zero value means "everything the store holds". |
+
+**Selection fields.** `class`, `model`, `min_confidence` and `disagreement` mean
+exactly what they mean on `GET /api/v1/classifications`, including
+`min_confidence > 1` being read as a `0..100` percentage — so an operator can
+preview a cut in the Flow Log and then build it with the same words. `from`/`to`
+are inclusive RFC3339 bounds on the classification timestamp. `proto` matches
+`TCP`/`UDP`/`ICMP`/`ICMPv6`/`IP` case-insensitively. `initiator_ip`/`responder_ip`
+match the stored tuple exactly. `limit` caps the result at the newest N matching
+flows. `scan` is how many recent verdicts to walk (default 200 000, capped at
+2 000 000).
+
+A flow contributes exactly **one row**; where it was classified more than once
+(a long flow's periodic snapshots) the newest verdict wins. Rows are sorted by
+flow id, which is what makes `content_hash` reproducible.
+
+Responses:
+
+- `201` — `{"dataset": {…manifest…}}`.
+- `400` — bad body, bad `id`/`version`, bad `derive_from` ref, unknown `class` or
+  `proto`, unparseable `from`/`to`, inverted time range, `min_confidence` outside
+  `0..1`. The error text is the daemon's, verbatim.
+- `404` — `derive_from` names a dataset that does not exist.
+- `409` — `(id, version)` already exists. **A version is immutable**; create a new
+  one and let `parent_datasets` record the lineage.
+- `422` — the selection produced nothing a trainer could use: no rows, exactly
+  one class, or fewer than `min_rows` (20) rows. The message says which.
+- `503` — the daemon is running without a dataset manager.
+
+A dataset that *is* built may still carry `warnings`: class imbalance above 90 %
+for one class, classes with no rows, exact duplicate rows, verdicts whose flow
+record had already been evicted from the bounded store, and non-finite feature
+values replaced by the schema's `default_missing`.
+
+### GET /api/v1/datasets/{ref}/download
+
+The `dataset.csv` itself, so a trainer host can fetch a dataset over the API
+instead of needing the daemon's filesystem.
+
+```text
+Content-Type: text/csv; charset=utf-8
+Content-Disposition: attachment; filename="thugs_lab-attacks-2026-08-v1.csv"
+X-Synapse-Dataset-Hash: sha256:7bb0e464…
+X-Synapse-Feature-Schema: flow-features-v1
+X-Content-Type-Options: nosniff
+```
+
+The header row is the 48 `flow-features-v1` column names in frozen schema order
+followed by `label`; every data row is 48 floats and a `traffic-classes-v1` class
+name. This is exactly what `trainer/synapse_trainer/dataset.py` `load_csv` reads,
+with no adaptation. `400` / `404` / `503` as above.
+
+### DELETE /api/v1/datasets/{ref}
+
+Remove a dataset version. Immutability protects a version's contents, not its
+existence — an operator who cut from the wrong window must be able to undo it.
+Audited. `200 {"deleted": "<id>@<version>"}`, or `400` / `404` / `503` as above.
+
+Any model trained on the deleted dataset keeps the `content_hash` in its
+metadata, but the rows themselves are gone unless they are rebuilt.
+
+### Dataset routes are state-changing and unauthenticated
+
+`POST` and `DELETE /api/v1/datasets` inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same
+as `POST /api/v1/replay`, `POST /api/v1/captures` and model activation. Create,
+derive and delete are written to `models.directory/audit.log` with
+`subject_type: "dataset"`. There is deliberately no `DatasetCreated` event on the
+live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
+(see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
+
 ### GET /api/v1/schemas/features
 
 The frozen `flow-features-v1` document, served verbatim from the embedded
