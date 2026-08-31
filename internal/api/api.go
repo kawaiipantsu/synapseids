@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/audit"
@@ -107,6 +108,13 @@ type Server struct {
 	rv      *review.Store
 	hub     *wshub.Hub
 	start   time.Time
+
+	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
+	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
+	// model.onnx, so it must not run per request; a registered bundle is
+	// immutable, which makes the content hash a sound key. See flows.go.
+	normMu    sync.Mutex
+	normCache map[string]cachedNormalizer
 }
 
 // New builds a Server. reg may be nil (the /api/v1/models* routes then report an
@@ -139,6 +147,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/v1/flows/{id}", s.handleFlow)
+	mux.HandleFunc("GET /api/v1/flows/{id}/explain", s.handleFlowExplain)
+	mux.HandleFunc("GET /api/v1/flows/{id}/snapshots", s.handleFlowSnapshots)
 	mux.HandleFunc("GET /api/v1/classifications", s.handleClassifications)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)

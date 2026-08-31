@@ -94,7 +94,26 @@ schema so it carries its own name, calculation and unit:
 
 <p align="center"><img src="assets/screenshots/webui-flow-inspector-features.png" alt="The Flow Inspector scrolled to the raw flow-features-v1 table, listing each feature index, name, calculation, value and unit" width="100%"></p>
 
-<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Human-review status is live (<code>GET /api/v1/review/{flow_id}</code>, §16). Normalized inputs and snapshot history are still labelled Phase-2 stubs.</sub>
+<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Human-review status is live (<code>GET /api/v1/review/{flow_id}</code>, §16).</sub>
+
+The drawer also explains the verdict rather than just stating it. For the Phase-1
+heuristic the account is **exact** — `GET /api/v1/flows/{id}/explain` lists the
+rules that fired and the feature values their conditions compared, so
+`BRUTE_FORCE 92.2%` reads as "because `destination_port=3306`,
+`packets_forward=7`, `packets_backward=6`, `tcp_fin_count=2`,
+`flow_duration=0.00086s`". Alongside it: what each model actually received (the
+heuristic reads raw values and says so; a trained model shows raw → its own
+bundle's normalizer → normalized), and `GET /api/v1/flows/{id}/snapshots` for how
+a long flow's counters and verdict evolved across its periodic snapshots.
+
+Two things it deliberately does **not** show. There is **no baseline column** —
+behavioural baselines are Phase 7, so `baseline.available` is `false` with no
+value field, because a fabricated expected range would turn "never checked" into
+"checked and clean". And there is **no per-feature attribution for trained
+models** — that needs gradients or SHAP, and a rough linear proxy drawn in an
+explanation panel reads as an explanation, so the panel says the attribution is
+not implemented instead. The anomaly score is a labelled Phase-7 gap.
+See [ADR 0025](docs/adr/0025-flow-inspector-explanation-and-snapshots.md).
 
 ### Live capture sources
 

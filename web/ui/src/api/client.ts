@@ -38,6 +38,8 @@ import type {
   ReviewStatsResponse,
   ReviewWriteInput,
 } from './types'
+// Flow Inspector additions (§19.3, issue #38) — own block, own merge surface.
+import type { FlowExplain, FlowSnapshots } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -61,6 +63,20 @@ export function getFlows(limit = 100): Promise<FlowRecord[]> {
 
 export function getFlow(id: number): Promise<FlowRecord> {
   return getJSON<FlowRecord>(`/api/v1/flows/${id}`)
+}
+
+/**
+ * GET /api/v1/flows/{id}/explain — per-model inputs and the verdict's rationale
+ * (§19.3, issue #38). A sibling of the flow-detail route rather than part of it,
+ * so `getFlow`'s shape is unchanged.
+ */
+export function getFlowExplain(id: number): Promise<FlowExplain> {
+  return getJSON<FlowExplain>(`/api/v1/flows/${id}/explain`)
+}
+
+/** GET /api/v1/flows/{id}/snapshots — the retained version history of a flow. */
+export function getFlowSnapshots(id: number): Promise<FlowSnapshots> {
+  return getJSON<FlowSnapshots>(`/api/v1/flows/${id}/snapshots`)
 }
 
 export function getClassifications(limit = 100): Promise<Classification[]> {

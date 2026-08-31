@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Flow Inspector explains the verdict, and shows a flow's history** (issue
+  #38, EPIC Phase 5;
+  [ADR 0025](docs/adr/0025-flow-inspector-explanation-and-snapshots.md)). The last
+  four §19.3 items that were still labelled stubs in the drawer — normalized model
+  inputs, historical snapshots, the anomaly score, and the explanation panel —
+  are now either built or honestly labelled.
+  - **`GET /api/v1/flows/{id}/explain`** — why this flow got this verdict.
+    `models[]` is built from the **stored** classification, i.e. the models that
+    actually scored it, not whatever is loaded now; a model since swapped out is
+    reported `loaded: false` with its verdict intact and its rationale not
+    reconstructed.
+  - **The heuristic explanation is exact, not an approximation.**
+    `Heuristic.Classify` and the new `Heuristic.Explain` share one private
+    `evaluate(v, explain bool)`, so the fired-rule list is produced by the *same*
+    evaluation that produced the verdict and cannot drift from it. Each
+    `FiredRule` carries a stable id (`scan.unanswered_syn`,
+    `brute_force.auth_port_rounds`, …), a human sentence, and **the feature values
+    its condition compared**, each with its `flow-features-v1` name and unit. This
+    turns `SCAN 99.3%` into "because `tcp_syn_count=1`, `packets_backward=0`,
+    `flow_duration=0s`". `class_weights` reports the real pre-softmax weights, and
+    a test asserts they soft-max back to `Classify`'s scores bit-for-bit.
+  - **No per-feature attribution for trained models, stated plainly.**
+    `*ONNXModel` deliberately does not implement the new `inference.Explainer`:
+    exact attribution needs gradients or SHAP, `internal/nn` exposes no weights,
+    and a first-layer linear proxy rendered in a panel captioned "explanation"
+    reads as an explanation regardless of the caption. The API returns
+    `kind: "unavailable"` with the reason, pointing at the full class-probability
+    vector as that model's complete output. A test asserts `*ONNXModel` is *not*
+    an `Explainer`, so it cannot acquire a fake one by accident.
+  - **Normalized inputs are per model, from that model's own bundle** — because
+    normalization is a per-model concern and the pipeline scores the *raw* vector
+    (PROJECT.md §8). `kind: "raw"` for the heuristic says "this model reads raw
+    values" in words rather than rendering an identity table that would imply a
+    step which does not happen; `kind: "normalized"` carries raw→normalized pairs
+    for all 48 features, resolved through `registry.Active()` → `model.Load` →
+    `Bundle.Normalizer()` and cached per `<model id>@<content hash>` (a registered
+    bundle is immutable, and `model.Load` hashes `model.onnx`); `kind: "unknown"`
+    shows nothing and says why.
+  - **`GET /api/v1/flows/{id}/snapshots`** — the retained version history of one
+    flow, oldest first, each version paired with the verdict computed from it via
+    an exact `Classification.TS` ↔ `FlowRecord.LastSeen` join. A version whose
+    verdict aged out reports `verdict: null` and the response calls it a retention
+    gap, never "not classified".
+  - **`storage.Store` gains `FlowHistory(id)`, and `Mem` stops discarding
+    snapshots.** `flow.Table` has always emitted a `ReasonSnapshot` record per
+    interval for a long-lived flow and `pipeline` has always stored every one, but
+    `Mem.byID` was one entry per flow id — last write wins — so nothing could
+    address earlier versions. History is now bounded twice: globally by the flow
+    ring (each retained version owns exactly one live ring slot, so total versions
+    can never exceed `max_flows` and memory is unchanged) and per flow by
+    `storage.FlowHistoryCap` (**64**, oldest dropped first, counted in the new
+    `status.storage.flow_versions_dropped`). On a 28 MB real capture that is 1176
+    addressable flow versions where it was 1124.
+  - **No baseline column, and no anomaly number.** §19.3's example shows a
+    "Current vs Baseline" table, but behavioural baselines and anomaly scoring are
+    Phase 7 (§13). Both are reported as `{available: false, note}` — two keys and
+    **no value field** — matching how `insight` and the reports already label the
+    gap. A fabricated expected range would turn "never checked" into "checked and
+    clean". A test asserts on the raw JSON that neither object carries anything
+    else and that `anomaly_score` / `baseline_value` / `baseline_range` /
+    `training_baseline` appear nowhere in the response. The anomaly score also
+    gets its own labelled section in the drawer, which it previously lacked
+    entirely — it had been folded into the explanation stub.
+  - **SPA** — the three stubs in the Flow Inspector drawer are replaced by a
+    per-model normalized-inputs view, a snapshot timeline with a verdict per row,
+    and the explanation panel; the long tables collapse behind `<details>` since
+    the drawer was already dense, while the fired rules stay open. "No rule fired"
+    is boxed as a finding rather than left as dim text that reads like a failed
+    load. Own commented blocks at the end of `types.ts` and `styles.css`.
+
+### Fixed
+
+- **A spurious `404` from `GET /api/v1/flows/{id}` for a long-lived flow that was
+  still retained** (found while building #38). `flow.Table` increments
+  `SnapshotIndex` on the *live* entry, so a flow's terminal record inherits the
+  last snapshot's index. `storage.Mem` identified a stored version by
+  `(flow id, SnapshotIndex)` and deleted its `byID` entry when an *older*
+  duplicate-index snapshot was overwritten in the ring — dropping a flow whose
+  terminal record was still present. Versions are now keyed by an internal
+  monotonic sequence number, which cannot collide. Regression-tested.
+  - Note that `SnapshotIndex` still does not reset to `0` on close, contrary to
+    the frozen schema text for feature 47. Nothing depends on its uniqueness any
+    more and `/snapshots` surfaces the duplicate in a note, but feature 47 feeds
+    the golden vectors and every dataset CSV, so correcting it is a separate
+    reviewed change rather than a side effect of this one.
+
 - **The daemon-side SYNPOIP collector, and real sensor identity** (issues #43 and
   #103, EPIC Phase 6;
   [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)).
