@@ -137,6 +137,25 @@ class SettingsController extends ApiMutableModelControllerBase
             $enabled ? 'synapseidssensor restart' : 'synapseidssensor stop'
         ));
 
+        // A sensor that refuses to start is an EXPECTED state on a firewall that
+        // has not been granted /dev/bpf* access yet, or whose interface has not
+        // resolved. By this point the configuration IS saved -- the template and
+        // fixperms steps above have already run -- so the failure is about the
+        // service, not the settings.
+        //
+        // The problem is that configd's type:script actions return only
+        // "Error (1)". The rc script prints a precise reason (which device, which
+        // lookup, the exact devfs incantation) and all of it is discarded, so the
+        // operator sees a bare error and has to SSH in to find out why. That is
+        // what made a simple missing devfs rule take several rounds to identify
+        // on a real gateway.
+        //
+        // The selftest action is type:script_output, so its text does come back.
+        // Attach it on failure: one line per check, naming the cause.
+        if (stripos($steps['service'], 'error') !== false) {
+            $steps['selftest'] = trim($backend->configdRun('synapseidssensor selftest'));
+        }
+
         return $steps;
     }
 }
