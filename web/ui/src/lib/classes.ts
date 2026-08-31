@@ -35,3 +35,21 @@ export function roleInitial(role: string): string {
 }
 
 export const LOW_CONFIDENCE = 0.6
+
+/**
+ * Detection severity, drawn from the same seven-colour palette as the classes
+ * (issue #117) so a Detections row and a Flow Log row read as one system: an
+ * escalation from the muted `normal` slate through the `suspicious` amber to the
+ * `dos` red. A severity outside the enum falls back to `--dim` rather than
+ * borrowing a colour that would imply a rank it does not have.
+ */
+export const SEVERITY_VAR: Record<string, string> = {
+  low: 'var(--normal)',
+  medium: 'var(--suspicious)',
+  high: 'var(--brute)',
+  critical: 'var(--dos)',
+}
+
+export function severityColor(name: string): string {
+  return SEVERITY_VAR[name] ?? 'var(--dim)'
+}

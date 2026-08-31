@@ -3,6 +3,7 @@ import { getClassifications, getTimeline, type BucketWidth } from '../api/client
 import { useStream } from '../api/stream'
 import type { Classification, TimelineSeries } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
+import { IssueLink } from '../components/IssueLink'
 import { TimelineChart, type Range } from '../components/TimelineChart'
 import { CLASS_NAMES, classColor } from '../lib/classes'
 import { fmtDateTime, fmtInt, fmtPct } from '../lib/format'
@@ -193,8 +194,12 @@ export function Timeline() {
       </div>
 
       <div className="sect stub">
-        <span className="tag">Phase 7</span> The anomaly-score series (§19.6) needs the anomaly model.
-        The API says <code>anomaly_available: false</code> rather than plotting a fabricated zero line.
+        <span className="tag">
+          <IssueLink n={47} />
+        </span>{' '}
+        The anomaly-score series (§19.6) needs the anomaly autoencoder, tracked by{' '}
+        <IssueLink n={47} />. The API says <code>anomaly_available: false</code> rather than plotting
+        a fabricated zero line.
       </div>
 
       {selected ? <FlowInspector cls={selected} onClose={() => setSelected(null)} /> : null}

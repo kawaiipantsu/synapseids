@@ -14,6 +14,8 @@
 /web/ui/node_modules/
 /web/ui/.vite/
 /web/ui/*.tsbuildinfo
+# `npm test` compiles src/ + test/ here and runs them under node --test.
+/web/ui/.test-build/
 
 # Coverage
 coverage.out

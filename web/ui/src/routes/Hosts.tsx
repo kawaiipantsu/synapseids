@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getHosts, hostReportURL } from '../api/client'
 import type { HostProfile } from '../api/types'
 import { useStream } from '../api/stream'
+import { IssueLink, IssueLinks } from '../components/IssueLink'
 import { classColor } from '../lib/classes'
 import { fmtAgo, fmtBytes, fmtInt } from '../lib/format'
 import { navigateWith } from '../lib/hashRouter'
@@ -239,9 +240,13 @@ export function Hosts() {
       </div>
 
       <div className="sect stub">
-        <span className="tag">Phase 7</span> Behavioural baseline and anomaly trend (§19.5) are not
-        computed. The API reports <code>baseline_available: false</code> and{' '}
-        <code>anomaly_available: false</code> rather than showing an invented number.
+        <span className="tag">
+          <IssueLinks issues={[47, 63]} />
+        </span>{' '}
+        Behavioural baseline and anomaly trend (§19.5) are not computed: the anomaly model is{' '}
+        <IssueLink n={47} /> and per-host baselines/embeddings are <IssueLink n={63} />. The API
+        reports <code>baseline_available: false</code> and <code>anomaly_available: false</code>{' '}
+        rather than showing an invented number.
       </div>
     </div>
   )

@@ -11,10 +11,11 @@ import {
 import { useStream } from '../api/stream'
 import type { Classification, FlowRecord, HostProfile, TimelineSeries } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
+import { IssueLink, IssueLinks } from '../components/IssueLink'
 import { TimelineChart, type Range } from '../components/TimelineChart'
 import { CLASS_NAMES, classColor } from '../lib/classes'
 import { fmtAgo, fmtBytes, fmtDateTime, fmtDuration, fmtInt, fmtPct } from '../lib/format'
-import { navigateWith, useHashQuery } from '../lib/hashRouter'
+import { Link, navigateWith, useHashQuery } from '../lib/hashRouter'
 import { usePersistedState } from '../lib/persist'
 
 // Investigation mode (PROJECT.md §19.4, issue #40): the whole view pivots around
@@ -476,15 +477,23 @@ export function Investigate() {
           </div>
 
           <div className="sect stub">
-            <span className="tag">Phase 7</span> Behavioural baseline, anomaly history and unusual-feature
-            callouts (§19.4) need the anomaly/drift work. The API reports{' '}
-            <code>baseline_available: false</code> and <code>anomaly_available: false</code>; nothing here
-            invents a baseline to compare against.
+            <span className="tag">
+              <IssueLinks issues={[47, 63]} />
+            </span>{' '}
+            Behavioural baseline, anomaly history and unusual-feature callouts (§19.4) need the
+            anomaly model (<IssueLink n={47} />) and per-host baselines (<IssueLink n={63} />), plus
+            drift (<IssueLink n={49} />). The API reports <code>baseline_available: false</code> and{' '}
+            <code>anomaly_available: false</code>; nothing here invents a baseline to compare
+            against.
           </div>
           <div className="sect stub">
-            <span className="tag">Phase 5</span> Related detections (§19.4) need an{' '}
-            <code>/api/v1/detections</code> resource. Nothing emits <code>AlertCreated</code> yet, so the
-            Detections view stays a placeholder.
+            <span className="tag">
+              <IssueLink n={117} />
+            </span>{' '}
+            Related detections (§19.4) need the <code>/api/v1/detections</code> resource from{' '}
+            <IssueLink n={117} />. The <Link to="/detections">LIVE ▸ Detections</Link> view is built
+            and will show them the moment that endpoint answers; until then it reports the endpoint
+            as unavailable rather than guessing.
           </div>
         </>
       ) : null}

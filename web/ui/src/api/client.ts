@@ -42,6 +42,14 @@ import type {
 import type { FlowExplain, FlowSnapshots } from './types'
 // Traffic matrix + sensor topology (§19.15, issues #68/#46) — own block.
 import type { MatrixSort, SensorStatus, SensorTopology, TrafficMatrix } from './types'
+// Detections (§19.1/§19.4, issue #117) — own block, own merge surface.
+import type {
+  Detection,
+  DetectionList,
+  DetectionQuery,
+  DetectionResult,
+  DetectionsResult,
+} from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -614,4 +622,105 @@ export function getScopedFlows(p: SensorScopeParams & { limit?: number }): Promi
   scopeInto(q, p)
   const s = q.toString()
   return getJSON<FlowRecord[]>('/api/v1/flows' + (s ? '?' + s : ''))
+}
+
+
+// ---- detections / alerts (§19.1, §19.4; issue #117) ------------------------
+// Self-contained block at the end of the file.
+//
+// These are the only two calls in this client that treat a 404 as a *state*
+// rather than a failure. GET /api/v1/detections is landing on a sibling branch,
+// so on a build without it the SPA must say "not available in this build" — not
+// spin forever and not log a red error, both of which read as "SynapseIDS is
+// broken" rather than "this feature is not here yet" (PROJECT.md §16). The same
+// code lights up unchanged once the endpoint exists.
+//
+// Nothing here invents a detection. `unavailable` carries no rows at all, and
+// `ok` with zero rows is deliberately a different state.
+
+/** Serialise the fixed /api/v1/detections query, dropping unset values. */
+export function detectionQuery(q: DetectionQuery = {}): string {
+  const p = new URLSearchParams()
+  if (q.limit != null) p.set('limit', String(q.limit))
+  if (q.class) p.set('class', q.class)
+  if (q.severity) p.set('severity', q.severity)
+  if (q.min_confidence != null && q.min_confidence > 0) {
+    p.set('min_confidence', String(q.min_confidence))
+  }
+  if (q.since) p.set('since', q.since)
+  const s = p.toString()
+  return s ? '?' + s : ''
+}
+
+const DETECTIONS_ABSENT =
+  'GET /api/v1/detections is not available in this build — the detections resource is tracked as issue #117.'
+
+/** The empty-but-valid list a well-formed response degrades to. */
+function normalizeList(body: unknown): DetectionList {
+  const b = (body ?? {}) as Partial<DetectionList>
+  const rows = Array.isArray(b.detections) ? b.detections : []
+  return {
+    detections: rows,
+    total: Number(b.total ?? rows.length),
+    returned: Number(b.returned ?? rows.length),
+    evicted: Number(b.evicted ?? 0),
+  }
+}
+
+/**
+ * GET /api/v1/detections. Never rejects: the three outcomes an operator can
+ * act on are returned as data.
+ */
+export async function getDetections(q: DetectionQuery = {}): Promise<DetectionsResult> {
+  const url = '/api/v1/detections' + detectionQuery(q)
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { accept: 'application/json' } })
+  } catch (e: unknown) {
+    return { state: 'error', message: e instanceof Error ? e.message : String(e) }
+  }
+  if (res.status === 404) return { state: 'unavailable', message: DETECTIONS_ABSENT }
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).trim()
+    return {
+      state: 'error',
+      message: `${url} → ${res.status} ${res.statusText}${body ? `: ${body}` : ''}`,
+    }
+  }
+  try {
+    return { state: 'ok', list: normalizeList(await res.json()) }
+  } catch (e: unknown) {
+    return { state: 'error', message: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** GET /api/v1/detections/{id}. Same three states as the list. */
+export async function getDetection(id: number): Promise<DetectionResult> {
+  const url = `/api/v1/detections/${id}`
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { accept: 'application/json' } })
+  } catch (e: unknown) {
+    return { state: 'error', message: e instanceof Error ? e.message : String(e) }
+  }
+  // A 404 here is ambiguous — no resource, or no such detection — so the
+  // message says both rather than picking one.
+  if (res.status === 404) {
+    return {
+      state: 'unavailable',
+      message: `no detection ${id}, or ${DETECTIONS_ABSENT}`,
+    }
+  }
+  if (!res.ok) {
+    const body = (await res.text().catch(() => '')).trim()
+    return {
+      state: 'error',
+      message: `${url} → ${res.status} ${res.statusText}${body ? `: ${body}` : ''}`,
+    }
+  }
+  try {
+    return { state: 'ok', detection: (await res.json()) as Detection }
+  } catch (e: unknown) {
+    return { state: 'error', message: e instanceof Error ? e.message : String(e) }
+  }
 }
