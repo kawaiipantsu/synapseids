@@ -1272,15 +1272,19 @@ export interface SensorStatus {
 }
 
 /**
- * Whether this sensor's flows can be scoped (api.AttributionRecords / None).
+ * How this sensor's flows carry its identity — and so whether they can be
+ * scoped (api.AttributionRecords / Packets / None).
  *
  * "records" — a flow/feature-mode sensor: its records arrive tagged, so
  *             `sensor=`/`location=` really do filter its flows.
- * "none"    — a raw-mode sensor: its packets merge into the local flow table
- *             before a record exists, so its rows are labelled "local" and a
- *             sensor filter would match nothing. Scope to its counters instead.
+ * "packets" — a raw-mode sensor: its packets are stamped with its id on the way
+ *             into the daemon and the flow table is keyed by it, so its flows
+ *             are scopeable too (issue #126). Before that fix this was "none".
+ * "none"    — the peer reported no sensor id, so nothing can select its rows:
+ *             they land in "local" with the daemon's own capture. Scope to its
+ *             counters instead.
  */
-export type FlowAttribution = 'records' | 'none'
+export type FlowAttribution = 'records' | 'packets' | 'none'
 
 /** api.TopologySensor — a sensor row plus its attribution verdict. */
 export interface TopologySensor extends SensorStatus {

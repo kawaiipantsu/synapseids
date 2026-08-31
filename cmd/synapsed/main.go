@@ -206,7 +206,11 @@ func run(args []string) int {
 		MaxFlows:         cfg.Capture.MaxFlows,
 	}
 	var flowID atomic.Uint64
-	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID)
+	// One view of every flow table the daemon runs. Both pipelines report into
+	// it, so /api/v1/status describes the table that is actually doing the work
+	// rather than whichever one happened to be wired (issue #125).
+	flowStats := newFlowStatsHub(flowOpt.MaxFlows)
+	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID, flowStats)
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -292,8 +296,9 @@ func run(args []string) int {
 	// (issue #32). The capture pipeline goroutine below always runs for the same
 	// reason — a runtime-added source needs a consumer on m.out.
 	//
-	// rc also implements api.FlowStatsProvider: it owns the running replay
-	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
+	// flowStats is the api.FlowStatsProvider: it sums the flow tables of both
+	// pipelines, so a sensor-fed daemon reports the counters of the table its
+	// packets actually built (PROJECT.md §22, §24; issue #125).
 	// collector is a *capture.Collector, so passing it directly would hand api a
 	// TYPED nil when no collector block is configured: the interface value is
 	// non-nil (it carries a type) and every "if sp != nil" guard passes, then the
@@ -305,7 +310,7 @@ func run(args []string) int {
 	// alerts, ins, trs and rvs are handed over as concrete pointers rather than
 	// through an interface, which is exactly what makes them immune to that bug;
 	// every one of *alert.Store's methods is nil-receiver safe as well.
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, sensors, rvs, alerts)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, flowStats, capMgr, ins, trs, sensors, rvs, alerts)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -322,6 +327,9 @@ func run(args []string) int {
 			Observer: ins,
 			Alerts:   alerts,
 			Records:  sensorRecords,
+			// This is the table that serves live NICs and every raw-mode sensor.
+			// Leaving it unreported was issue #125.
+			OnStats: flowStats.Reporter("capture"),
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)

@@ -173,6 +173,13 @@ func (s *sessionSource) readLoop(ctx context.Context, out chan<- packet.Packet) 
 				atomic.AddUint64(&s.stats.decodeErr, 1)
 				continue
 			}
+			// Stamp the observation point here, where it is known first hand:
+			// this session *is* that sensor. Decode cannot do it (nothing in a
+			// frame may be trusted to say where it was seen) and a consumer
+			// further downstream would be guessing. route.sensor is fixed for the
+			// life of the session, so this is a string-header copy on the packet
+			// path and nothing more (issue #126, PROJECT.md §22).
+			pk.Sensor = s.route.sensor
 			atomic.AddUint64(&s.stats.decoded, 1)
 			select {
 			case out <- pk:
@@ -228,6 +235,14 @@ func (s *sessionSource) Stats() Stats {
 
 // ConnLatencyMS reports the accept-time TLS + SYNPOIP handshake cost.
 func (s *sessionSource) ConnLatencyMS() int64 { return s.latencyMS }
+
+// SensorIdentity reports the observation point this session speaks for: the id
+// and location the sensor put in its SYNPOIP accept. Both are "" for an
+// anonymous peer, which is then attributed like local capture. The Manager
+// stamps the id on every packet this source yields (issue #126).
+func (s *sessionSource) SensorIdentity() (string, string) {
+	return s.route.sensor, s.route.location
+}
 
 // DynamicFilter reports the sensor-advertised capture filter.
 func (s *sessionSource) DynamicFilter() (string, bool) {

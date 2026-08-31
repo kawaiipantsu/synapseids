@@ -87,7 +87,26 @@ func (r Record) WithAccumulators(a Accumulators) Record {
 // initiator/responder endpoints. A record rebuilt from the wire carries the
 // endpoints but not the normalized Key; this restores it deterministically via
 // the same rule KeyOf applies to a packet.
+//
+// The observation scope (Key.Sensor) is preserved, not derived: no endpoint can
+// say where the flow was seen. For a record off the wire it is whatever the
+// caller has already stamped — the daemon sets it from the SYNPOIP session's
+// sensor id once the record is decoded (issue #126).
 func (r Record) WithDerivedKey() Record {
+	sensor := r.Key.Sensor
 	r.Key, _ = KeyOfEndpoints(r.InitiatorIP, r.InitiatorPort, r.ResponderIP, r.ResponderPort, r.Proto)
+	r.Key.Sensor = sensor
 	return r
 }
+
+// WithSensor returns a copy of r scoped to the observation point sensor. It is
+// how a record that did not come from a local Table — one decoded from a
+// `flow`-mode sensor's frame — is attributed to the sensor that produced it.
+func (r Record) WithSensor(sensor string) Record {
+	r.Key.Sensor = sensor
+	return r
+}
+
+// Sensor reports the observation point this record was built at: a sensor id, or
+// "" for traffic the daemon captured itself.
+func (r Record) Sensor() string { return r.Key.Sensor }
