@@ -39,7 +39,7 @@ func (s stubCaptures) Remove(string) bool                                   { re
 func serverWithCaptures(cp CaptureStatusProvider) http.Handler {
 	return New(config.Default(), events.New(), storage.NewMem(100, 100),
 		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
-		nil, nil, nil, nil, cp, nil).Handler()
+		nil, nil, nil, nil, nil, cp, nil).Handler()
 }
 
 // serverWithManager wires a real, idle capture.Manager into the API so the
@@ -50,7 +50,7 @@ func serverWithManager() http.Handler {
 	m := capture.NewManager()
 	h := New(config.Default(), events.New(), storage.NewMem(100, 100),
 		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
-		nil, nil, nil, nil, m, nil).Handler()
+		nil, nil, nil, nil, nil, m, nil).Handler()
 	return h
 }
 

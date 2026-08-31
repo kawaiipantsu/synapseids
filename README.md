@@ -316,7 +316,17 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+
+`{ref}` is a url-escaped `<id>@<version>` — a dataset id may contain one `/`
+(`thugs/lab-attacks-2026-08`), so the whole reference travels as one segment.
+Cutting a dataset materialises the selected flows to
+`datasets.directory/<id>/<version>/{dataset.csv,manifest.json}`; the CSV is the
+48 `flow-features-v1` columns plus `label`, which is exactly what the Python
+trainer's `load_csv` reads. **Phase-4 datasets are labelled by the daemon's own
+model predictions, not by human review** (issue #42) — every manifest says so in
+`labeling_source`. See [`docs/api.md`](docs/api.md) and
+[ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md).
 
 <br/>
 

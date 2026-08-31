@@ -4,6 +4,7 @@ import { Placeholder } from '../components/Placeholder'
 import { Architecture } from './Architecture'
 import { CaptureSources } from './CaptureSources'
 import { Dashboard } from './Dashboard'
+import { Datasets } from './Datasets'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
@@ -79,14 +80,9 @@ export const ROUTES: RouteDef[] = [
     live: false,
     element: P(4, 'Training', 'EPIC: Phase 4 — Dataset/Training Workflow', 'Live training dashboard (§19.8): epoch/loss/accuracy/F1, per-class metrics and confusion matrix, updated over the event bus.'),
   },
-  {
-    group: 'ML',
-    path: '/datasets',
-    label: 'Datasets',
-    tag: 'P4',
-    live: false,
-    element: P(4, 'Datasets', 'EPIC: Phase 4 — Dataset/Training Workflow', 'Dataset manager and explorer (§19.10–19.11): label distributions, source captures, merge/derive, imbalance warnings, feature distributions.'),
-  },
+  // The Dataset Manager (§19.10) is live. The Dataset Explorer (§19.11 —
+  // feature distributions, correlations, PCA) is issue #37 and is not here.
+  { group: 'ML', path: '/datasets', label: 'Datasets', tag: 'live', live: true, element: <Datasets /> },
   {
     group: 'ML',
     path: '/architecture',

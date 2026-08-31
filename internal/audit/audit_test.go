@@ -71,7 +71,56 @@ func TestLogAppendsAcrossReopen(t *testing.T) {
 func TestNilLoggerIsNoOp(t *testing.T) {
 	var l *audit.Logger
 	l.Log(audit.EventModelActivated, audit.ActorLocal, "m", "detail") // must not panic
+	l.LogSubject(audit.EventDatasetCreated, audit.ActorLocal, audit.SubjectDataset, "a@v1", "d")
 	if l.Path() != "" {
 		t.Fatalf("nil logger Path() = %q", l.Path())
+	}
+}
+
+// The model lines keep their shape (model_id populated, subject_type "model")
+// while dataset lines use the generic subject fields (PROJECT.md §21).
+func TestSubjectTypes(t *testing.T) {
+	dir := t.TempDir()
+	l := audit.New(dir, nil)
+	l.Log(audit.EventModelActivated, audit.ActorLocal, "m-1", "hash=sha256:abc")
+	l.LogSubject(audit.EventDatasetCreated, audit.ActorLocal, audit.SubjectDataset,
+		"thugs/lab@v1", "hash=sha256:def flows=40")
+	l.LogSubject(audit.EventDatasetDerived, audit.ActorLocal, audit.SubjectDataset, "thugs/lab@v2", "")
+	l.LogSubject(audit.EventDatasetDeleted, audit.ActorLocal, audit.SubjectDataset, "thugs/lab@v1", "")
+
+	blob, err := os.ReadFile(filepath.Join(dir, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs []audit.Record
+	for _, line := range strings.Split(strings.TrimSpace(string(blob)), "\n") {
+		var r audit.Record
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("line %q is not JSON: %v", line, err)
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) != 4 {
+		t.Fatalf("got %d records, want 4", len(recs))
+	}
+
+	if recs[0].SubjectType != audit.SubjectModel || recs[0].Subject != "m-1" || recs[0].ModelID != "m-1" {
+		t.Errorf("model record = %+v", recs[0])
+	}
+	for _, r := range recs[1:] {
+		if r.SubjectType != audit.SubjectDataset {
+			t.Errorf("dataset record has subject_type %q", r.SubjectType)
+		}
+		if !strings.HasPrefix(r.Subject, "thugs/lab@") {
+			t.Errorf("dataset record subject = %q", r.Subject)
+		}
+		if r.ModelID != "" {
+			t.Errorf("dataset record set model_id = %q", r.ModelID)
+		}
+	}
+	if recs[1].Event != audit.EventDatasetCreated ||
+		recs[2].Event != audit.EventDatasetDerived ||
+		recs[3].Event != audit.EventDatasetDeleted {
+		t.Errorf("dataset events = %s, %s, %s", recs[1].Event, recs[2].Event, recs[3].Event)
 	}
 }

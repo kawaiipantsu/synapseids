@@ -20,6 +20,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/config"
+	"github.com/kawaiipantsu/synapseids/internal/dataset"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
@@ -94,6 +95,7 @@ type Server struct {
 	rt      *inference.Runtime
 	reg     *registry.Registry
 	audit   *audit.Logger
+	ds      *dataset.Manager
 	rc      ReplayController
 	fs      FlowStatsProvider
 	cap     CaptureStatusProvider
@@ -104,14 +106,15 @@ type Server struct {
 
 // New builds a Server. reg may be nil (the /api/v1/models* routes then report an
 // empty registry / 503 on the state-changing ones); aud may be nil (audit
-// logging becomes a no-op); rc may be nil (replay endpoints then return 503); fs
-// may be nil (/api/v1/status then reports a zeroed flow table with the
-// configured cap); cp may be nil (/api/v1/captures then returns an empty list);
-// ix may be nil (/api/v1/hosts then returns an empty list and /api/v1/timeline
-// an empty series — *insight.Index is nil-safe on every read).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index) *Server {
+// logging becomes a no-op); ds may be nil (/api/v1/datasets then returns an
+// empty list and the other dataset routes 503); rc may be nil (replay endpoints
+// then return 503); fs may be nil (/api/v1/status then reports a zeroed flow
+// table with the configured cap); cp may be nil (/api/v1/captures then returns
+// an empty list); ix may be nil (/api/v1/hosts then returns an empty list and
+// /api/v1/timeline an empty series — *insight.Index is nil-safe on every read).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, ds *dataset.Manager, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index) *Server {
 	return &Server{
-		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, rc: rc, fs: fs, cap: cp,
+		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, ds: ds, rc: rc, fs: fs, cap: cp,
 		insight: ix,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
 		start:   time.Now(),
@@ -135,6 +138,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
 	mux.HandleFunc("POST /api/v1/models/{id}/activate", s.handleModelActivate)
 	mux.HandleFunc("POST /api/v1/models/{id}/deactivate", s.handleModelDeactivate)
+	mux.HandleFunc("GET /api/v1/datasets", s.handleDatasets)
+	mux.HandleFunc("POST /api/v1/datasets", s.handleDatasetCreate)
+	mux.HandleFunc("GET /api/v1/datasets/{ref}", s.handleDataset)
+	mux.HandleFunc("DELETE /api/v1/datasets/{ref}", s.handleDatasetDelete)
+	mux.HandleFunc("GET /api/v1/datasets/{ref}/download", s.handleDatasetDownload)
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)

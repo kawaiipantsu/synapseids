@@ -206,6 +206,51 @@ func TestUnknownFieldRejected(t *testing.T) {
 		t.Fatalf("unknown field should be rejected")
 	}
 }
+func TestDatasetsDirectory(t *testing.T) {
+	if got := Default().Datasets.Directory; got != "./data/datasets" {
+		t.Fatalf("default datasets.directory = %q, want ./data/datasets", got)
+	}
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	mustWrite(t, p, []byte(`{"datasets":{"directory":"/srv/synapse/datasets"}}`))
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Datasets.Directory != "/srv/synapse/datasets" {
+		t.Fatalf("datasets.directory not read from file: %q", c.Datasets.Directory)
+	}
+
+	t.Setenv("SYNAPSE_DATASETS_DIR", "/env/datasets")
+	if c, err = Load(p); err != nil {
+		t.Fatalf("Load w/ env: %v", err)
+	}
+	if c.Datasets.Directory != "/env/datasets" {
+		t.Fatalf("SYNAPSE_DATASETS_DIR ignored: %q", c.Datasets.Directory)
+	}
+
+	// The env override also applies with no file at all.
+	if c, err = Load(""); err != nil {
+		t.Fatalf(`Load(""): %v`, err)
+	}
+	if c.Datasets.Directory != "/env/datasets" {
+		t.Fatalf("SYNAPSE_DATASETS_DIR ignored with no file: %q", c.Datasets.Directory)
+	}
+}
+
+func TestDatasetsDirectoryMustNotBeEmpty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	mustWrite(t, p, []byte(`{"datasets":{"directory":"   "}}`))
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("an empty datasets.directory must be rejected")
+	}
+	if !strings.Contains(err.Error(), "datasets.directory") {
+		t.Fatalf("error does not name the field: %v", err)
+	}
+}
+
 func TestPCAPOverIPSourceLoadAndValidate(t *testing.T) {
 	dir := t.TempDir()
 

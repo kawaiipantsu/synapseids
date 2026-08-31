@@ -54,6 +54,7 @@ type Config struct {
 	Storage   Storage   `json:"storage"`
 	Capture   Capture   `json:"capture"`
 	Models    Models    `json:"models"`
+	Datasets  Datasets  `json:"datasets"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
 }
@@ -132,6 +133,13 @@ type Models struct {
 	Primary   string `json:"primary"`
 }
 
+// Datasets points at the root of the on-disk dataset tree. Each dataset version
+// is an immutable directory below it holding dataset.csv + manifest.json
+// (PROJECT.md §14; ADR 0015).
+type Datasets struct {
+	Directory string `json:"directory"`
+}
+
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
 type Live struct {
 	WebSocketBatch  Duration `json:"websocket_batch"`
@@ -156,8 +164,9 @@ func Default() Config {
 			SnapshotInterval: Duration(60 * time.Second),
 			MaxFlows:         200000,
 		},
-		Models: Models{Directory: "./data/models"},
-		Live:   Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
+		Models:   Models{Directory: "./data/models"},
+		Datasets: Datasets{Directory: "./data/datasets"},
+		Live:     Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
 			Classifications: Duration(90 * 24 * time.Hour),
@@ -168,8 +177,9 @@ func Default() Config {
 // Load reads the configuration from path (JSON), overlaying it on Default. An
 // empty path returns Default with environment overrides applied. Environment
 // variables (SYNAPSE_LISTEN, SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH,
-// SYNAPSE_MODELS_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS, SYNAPSE_CAPTURE_IFACE)
-// always win so secrets and deployment paths stay out of the file.
+// SYNAPSE_MODELS_DIR, SYNAPSE_DATASETS_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS,
+// SYNAPSE_CAPTURE_IFACE) always win so secrets and deployment paths stay out of
+// the file.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -205,6 +215,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("SYNAPSE_MODELS_DIR"); v != "" {
 		c.Models.Directory = v
+	}
+	if v := os.Getenv("SYNAPSE_DATASETS_DIR"); v != "" {
+		c.Datasets.Directory = v
 	}
 	if v := os.Getenv("SYNAPSE_MAX_FLOWS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -257,6 +270,9 @@ func (c Config) validate() error {
 	}
 	if c.Live.ClientQueueSize < 1 {
 		return fmt.Errorf("config: live.client_queue_size must be >= 1")
+	}
+	if strings.TrimSpace(c.Datasets.Directory) == "" {
+		return fmt.Errorf("config: datasets.directory is empty")
 	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {

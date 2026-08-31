@@ -199,6 +199,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     labelled stubs instead of an invented baseline or a fabricated zero line.
   - No event type was added — the `event-envelope-v1` enum stays frozen (§28.5-6);
     everything is derived from the records the pipeline already produces.
+- **Dataset manager — versioned, immutable, content-hashed datasets** (issue #33,
+  EPIC Phase 4; [ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md)).
+  An operator can now turn stored flow classifications into a labelled dataset
+  the Python trainer consumes directly, and the `ML ▸ Datasets` view is live.
+  - `internal/dataset` — a new package. A dataset version is a directory:
+    `datasets.directory/<id>/<version>/{dataset.csv, manifest.json}`. An id may
+    contain one `/` (PROJECT.md §14 writes `thugs/lab-attacks-2026-08`), so it is
+    one or two path segments and the version is the last. The layout **is** the
+    index — `Open` walks the tree and there is no second `registry.json`-style
+    file that could drift from the manifests. A missing directory starts empty
+    and a corrupt manifest is logged and skipped, never fatal (§21). Both files
+    are staged in a temp directory and `rename`d into place together, so a reader
+    never sees a half-written version.
+  - `manifest.json` carries **every §14 field**: `id`, `name`, `description`,
+    `location`, `tags[]`, `created_at` (RFC3339 UTC), `source_capture_ids[]`,
+    `time_range{from,to}`, `feature_schema`, `output_schema`, `flow_count`,
+    `label_counts{}`, `labeling_source`, `parent_datasets[]` and `content_hash`,
+    plus the selection that produced it, any warnings, and the column list.
+  - **The CSV is the trainer contract, verbatim.** The header is the 48
+    `flow-features-v1` names in frozen schema order then `label`; one row per
+    flow, sorted by flow id; values are Go's shortest round-tripping float form.
+    `trainer/synapse_trainer/dataset.py` `load_csv` reads it with no adaptation,
+    and because `load_csv` accepts a directory containing `dataset.csv`, a
+    version directory can be handed to the trainer as-is. A round-trip test
+    asserts the header and row shape from Go always, and additionally runs the
+    real `load_csv` when `python3` + `numpy` are importable (it says so out loud
+    rather than skipping silently when they are not).
+  - **Content hash** — `sha256` over a domain separator, both schema names and
+    the exact `dataset.csv` bytes, recorded as `sha256:<lowercase hex>`. It
+    therefore covers the rows, the labels and the column identity and *nothing
+    else*: two datasets built from the same rows and labels hash identically
+    regardless of id, version, name, tags or creation time. A test builds the
+    same store twice into two roots under two names and asserts the hashes match.
+  - **Immutability.** A written version is never modified. `Create` refuses an
+    existing `(id, version)` — including a directory on disk whose manifest
+    failed to parse, so unreadable operator data can never be clobbered. A
+    correction is a **new version** naming its predecessor in `parent_datasets`;
+    an omitted version auto-assigns `v<max+1>`. `Derive` records the parent and
+    inherits its whole ancestor chain. `Delete` is allowed and audited —
+    immutability protects a version's contents, not its existence.
+  - **Ids are validated, not sanitised.** One or two `/`-separated lowercase slug
+    segments of `[a-z0-9._-]`, each 1–64 chars, each starting and ending with a
+    letter or digit. Path traversal is impossible **by construction**: `..`
+    cannot form because a segment may not start with `.`, and no other character
+    survives. `Delete` re-derives its path from the validated id rather than
+    trusting the manifest's `dir`.
+  - **A useless selection is an error, not a file.** Zero rows, exactly one
+    class, or fewer than 20 rows are each refused with a message saying which and
+    why. Datasets that *are* built carry warnings for class imbalance above 90 %,
+    classes with no rows, exact duplicate rows, verdicts whose flow record had
+    already been evicted from the bounded ring, and non-finite feature values
+    replaced by the schema's `default_missing` (§14, §19.10).
+  - **`labeling_source` is honest and cannot be made to lie.** Phase 4 has no
+    human review loop (issue #42), so every dataset built today is labelled by
+    the daemon's **own model predictions** and records
+    `model_prediction:<sorted model ids>`. There is no override field, and no
+    code path in `internal/dataset` can write `human_review`. The SPA states this
+    in a banner and renders the value as a caution badge on every row.
+  - `GET /api/v1/datasets` — every manifest, newest first, plus the column list,
+    the label column name and the row floor. Always `200`, empty array when
+    nothing is cut.
+  - `POST /api/v1/datasets` — body is the §14 metadata plus a selection (unknown
+    fields rejected, 64 KiB cap). `201` with the manifest; `400` bad body / id /
+    version / filter / timestamp; `404` unknown `derive_from`; `409` duplicate
+    `(id, version)`; `422` an unusable selection; `503` no manager wired. The
+    selection reuses the `GET /api/v1/classifications` vocabulary — `class`,
+    `model`, `min_confidence` (a value `> 1` read as a 0..100 percentage, as the
+    flow log's slider sends it) and `disagreement` mean exactly the same thing —
+    plus `from`, `to`, `proto`, `initiator_ip`, `responder_ip`, `limit`, `scan`.
+  - `GET /api/v1/datasets/{ref}` · `DELETE /api/v1/datasets/{ref}` ·
+    `GET /api/v1/datasets/{ref}/download` (streams `text/csv` with
+    `Content-Disposition` and the content hash in `X-Synapse-Dataset-Hash`).
+    `{ref}` is a **url-escaped `<id>@<version>`**: an id containing `/` would
+    otherwise make `{id}/{version}` ambiguous. `net/http`'s `ServeMux` matches
+    wildcards against the escaped path, so `%2F` stays in one segment and arrives
+    intact (verified by test). A reverse proxy that normalises `%2F` breaks this;
+    documented in `docs/api.md`.
+  - **`POST` and `DELETE` are state-changing and unauthenticated**, inheriting
+    the repo's loopback-by-default posture (§21) and carrying
+    `TODO(#58): gate behind auth/RBAC`, like replay, captures and model
+    activation.
+  - `internal/audit` — `Record` gains a generic `subject_type` + `subject` pair
+    and a `LogSubject` entry point, so one append-only log carries model *and*
+    dataset lifecycle (§21, §28.15). `Log(event, actor, modelID, detail)` is
+    unchanged for existing callers and still writes `model_id`, so anything
+    reading the log by `model_id` keeps working. New events:
+    `DatasetCreated` / `DatasetDerived` / `DatasetDeleted`. There is deliberately
+    **no bus event** — `event-envelope-v1`'s type enum is frozen and has no
+    `Dataset*` member, so adding one is an `event-envelope-v2` decision (§28.5).
+  - `config` — new `datasets.directory` (default `./data/datasets`) with a
+    `SYNAPSE_DATASETS_DIR` override; an empty value is rejected by `validate()`.
+  - **SPA `ML ▸ Datasets`** replaces the Phase-4 placeholder: the version list
+    with flow counts, a stacked label-distribution bar, the labeling source, age,
+    short content hash, parents and CSV size; per-row download, derive-prefill
+    and delete; a create form driven by the same selection filters; per-dataset
+    build warnings inline; and a banner stating plainly that these labels are
+    model predictions, not ground truth. The Dataset **Explorer** (§19.11 —
+    feature distributions, correlations, PCA) is issue #37 and is not built here.
 
 
 - **Capture-source UI + runtime source management** (issue #32, EPIC Phase 3 —

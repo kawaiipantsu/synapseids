@@ -9,6 +9,9 @@ import type {
   Classification,
   ClassSchema,
   DaemonStatus,
+  Dataset,
+  DatasetCreateInput,
+  DatasetList,
   FeatureSchema,
   FlowRecord,
   HostProfile,
@@ -87,6 +90,60 @@ export async function deleteCapture(name: string): Promise<CaptureMutationResult
   return {
     ok: res.ok,
     message: res.ok ? 'removed' : text || `${res.status} ${res.statusText}`,
+    status: res.status,
+  }
+}
+
+// ---- datasets (§14, §19.10, issue #33) ----------------------------------
+
+/** The escaped path segment for one dataset version. A dataset id may contain
+ *  one "/", so the whole "<id>@<version>" reference is encoded into a single
+ *  segment; the daemon's ServeMux unescapes it back intact. */
+export function datasetRef(id: string, version: string): string {
+  return encodeURIComponent(`${id}@${version}`)
+}
+
+export function datasetDownloadURL(id: string, version: string): string {
+  return `/api/v1/datasets/${datasetRef(id, version)}/download`
+}
+
+export function getDatasets(): Promise<DatasetList> {
+  return getJSON<DatasetList>('/api/v1/datasets')
+}
+
+export interface DatasetMutationResult {
+  ok: boolean
+  /** the server's error text verbatim on failure, a short note on success */
+  message: string
+  status: number
+  dataset?: Dataset
+}
+
+export async function createDataset(body: DatasetCreateInput): Promise<DatasetMutationResult> {
+  const res = await fetch('/api/v1/datasets', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = (await res.text().catch(() => '')).trim()
+  if (res.ok) {
+    let dataset: Dataset | undefined
+    try {
+      dataset = (JSON.parse(text) as { dataset: Dataset }).dataset
+    } catch {
+      dataset = undefined
+    }
+    return { ok: true, message: 'created', status: res.status, dataset }
+  }
+  return { ok: false, message: text || `${res.status} ${res.statusText}`, status: res.status }
+}
+
+export async function deleteDataset(id: string, version: string): Promise<DatasetMutationResult> {
+  const res = await fetch(`/api/v1/datasets/${datasetRef(id, version)}`, { method: 'DELETE' })
+  const text = (await res.text().catch(() => '')).trim()
+  return {
+    ok: res.ok,
+    message: res.ok ? 'deleted' : text || `${res.status} ${res.statusText}`,
     status: res.status,
   }
 }
