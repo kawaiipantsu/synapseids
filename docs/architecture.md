@@ -76,10 +76,11 @@ respected.
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
 | `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
-| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, and `BundleMeta` + `ValidateBundle` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
-| `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p`. No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
+| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle` and `Architecture` + `ValidateArchitecture` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
+| `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p` and the fitted `Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`). No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
 | `nn` | Dependency-free, CGO-free ONNX executor for the feed-forward MLPs the trainer emits: a hand-rolled protobuf-wire reader plus a batch-1, all-`float32`, deterministic graph runner over a fixed op subset (`Gemm`, `MatMul`, `Add`, `Relu`/`LeakyRelu`/`Sigmoid`/`Tanh`, `BatchNormalization`, `Dropout`, `Softmax`, `Identity`, `Flatten`, `Reshape`, `Constant`). Unknown op → load error; malformed model → error, never a panic. `Load`/`LoadFile`/`Model.Run`. See [ADR 0005](adr/0005-go-onnx-inference-runtime.md). | stdlib only | everything else internal |
 | `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
+| `model` | `Load(dir)` for the five-file bundle; `Bundle` (inactive — `Meta` / `Normalizer` / `Metrics` / `Recipe` / `ONNXPath` / `Hash`); `Validate()`, the pre-activation gate; `Scan(dir, primary, logf)`, the startup sweep. `Executor` seam for the Phase-2 ONNX runtime. Activates nothing. | `features`, `schema` | `inference`, `pipeline`, `api`, `flow`, `packet`, `capture`, `storage`, `events` |
 | `events` | In-process fan-out `Bus`: `Publish` (non-blocking), `Subscribe(depth)`, per-sub + bus drop counters, monotonic `seq`. Event type constants. | stdlib only | every other internal package (kept a leaf) |
 | `storage` | `Store` interface, `FlowRecord` / `Classification` DTOs, `FlowRecordFrom`, and `Mem` (fixed-capacity ring buffers, oldest evicted + counted). | `features`, `flow`, `inference` | `capture`, `events`, `api`, `pipeline` |
 | `wshub` | Dependency-free RFC 6455 server (`Upgrade`, text frames, ping/pong, disconnect detection) and `Hub` (per-client bounded send queue, drops slow clients). | stdlib only | `api`, `events`, `pipeline` |
@@ -92,8 +93,11 @@ respected.
 
 `cmd/synapsed` composes `config` + `events` + `storage.Mem` + `inference.Runtime`
 + `api.Server` and owns the `replayController` (which is the only caller of
-`pipeline.Run`). `cmd/synapse` is a pure HTTP client of the API. `cmd/synapse-sensor`
-is a version-only placeholder (Phase 6).
+`pipeline.Run`). At startup it also calls `model.Scan` over `models.directory` to
+load and validate any bundles present — a logging-only diagnostic that adds
+nothing to the runtime (see [Model bundles](#model-bundles)). `cmd/synapse` is a
+pure HTTP client of the API. `cmd/synapse-sensor` is a version-only placeholder
+(Phase 6).
 
 ## Flow lifecycle
 
@@ -203,7 +207,7 @@ The envelope schema is embedded but is not served over HTTP (only
 ## Web UI
 
 The operator console is a TypeScript + React 18 SPA, bundled with Vite 5
-([ADR 0004](adr/0004-react-spa-and-committed-build-output.md), PROJECT.md §19,
+([ADR 0008](adr/0008-react-spa-and-committed-build-output.md), PROJECT.md §19,
 §27). It is a pure REST + WebSocket client — like `synapse`, it never computes a
 feature.
 
@@ -223,6 +227,45 @@ feature.
   (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), and Replay
   control. Every other §19 route is a "Planned — Phase N" placeholder.
 
+## Model bundles
+
+`internal/model` (issue #25) loads a trained-model bundle and checks it against
+the frozen contracts before anything could activate it (PROJECT.md §11, §28.6,
+§28.10). See [ADR 0006](adr/0006-model-bundle-format-and-validation.md) for the
+exact `metadata.json` / `normalizer.json` shapes.
+
+A bundle is a directory of five files: `model.onnx` (opaque here — only hashed),
+`metadata.json` (the §11 descriptor), `normalizer.json` (the fitted per-feature
+input transform), and `metrics.json` + `training-recipe.json` (required to be
+present and parse, otherwise uninterpreted).
+
+- **`model.Load(dir)`** reads all five, parses the four JSON files, recomputes
+  `sha256:<hex>` over the `model.onnx` bytes, and returns an **inactive**
+  `*Bundle` (`Meta` / `Normalizer` / `Metrics` / `Recipe` / `ONNXPath` /
+  `Hash`). Loading never activates.
+- **`Bundle.Validate()`** is the gate. It rejects — naming the field — a missing
+  or non-JSON file; a `feature_schema` / sizes mismatch (`schema.ValidateBundle`);
+  a missing or wrong-sized `architecture` (`schema.ValidateArchitecture`); an
+  empty `family`, non-positive `parameter_count`, or non-RFC3339 `created_at`; a
+  `model_hash` without the `sha256:` prefix or not equal to the recomputed hash;
+  or a `normalizer.json` with the wrong schema, an unknown method, or (for
+  `standard` / `minmax`) not exactly 48 ascending in-order entries with
+  `std > 0` / `min < max`.
+- **The normalizer bridge.** `Bundle.Normalizer()` returns `features.Identity`
+  for method `identity`, or a fitted `features.Affine` for `standard`
+  (`(x-mean)/max(std,1e-9)`) / `minmax` (`(x-min)/max(max-min,1e-9)`). This is a
+  **per-model** transform on the trained-model path only — the heuristic still
+  reads raw features and `pipeline.Run` never installs a normalizer.
+- **`model.Scan(dir, primary, log.Printf)`** runs once at `synapsed` startup
+  (skipped if `dir` is absent). It `Load`+`Validate`s every immediate
+  subdirectory and logs `loaded model "<dir>" (family …, N params) — INACTIVE`
+  or `rejected model bundle "<dir>": <reason>`. Nothing is added to
+  `inference.Runtime`; a valid bundle named by `models.primary` only gets a line
+  saying activation is a separate explicit step, still to be wired.
+- **`model.Executor`** (`Run([]float32) ([]float32, error)`) and `Bundle.Bind`
+  are the unused seam for the Phase-2 ONNX runtime (issue #24); validation stays
+  runtime-free.
+
 ## What is not here yet
 
 Phase 1 is the vertical slice. Everything below is deliberately absent and
@@ -231,7 +274,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Missing | Present instead | Tracked |
 |---|---|---|
 | Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
-| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `inference.Heuristic` is still the wired `RolePrimary`, and `Runtime` + `schema.ValidateBundle` already accept more models. Reading a `model-bundle/` from disk and registering/activating it is still to come. | see EPIC: Phase 2 |
+| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
 | The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |

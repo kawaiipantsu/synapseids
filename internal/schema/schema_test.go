@@ -40,3 +40,28 @@ func TestValidateBundle(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateArchitecture(t *testing.T) {
+	ok := Architecture{
+		InputSize: 48, OutputSize: 7,
+		Hidden: []HiddenLayer{{Width: 64, Activation: "relu", Dropout: 0.3, BatchNorm: true}},
+	}
+	if err := ValidateArchitecture(ok); err != nil {
+		t.Fatalf("valid architecture rejected: %v", err)
+	}
+	if (Architecture{}).IsZero() != true {
+		t.Fatalf("empty Architecture must report IsZero")
+	}
+	if ok.IsZero() {
+		t.Fatalf("populated Architecture must not report IsZero")
+	}
+	for _, bad := range []Architecture{
+		{InputSize: 47, OutputSize: 7},
+		{InputSize: 48, OutputSize: 6},
+		{InputSize: 0, OutputSize: 0},
+	} {
+		if err := ValidateArchitecture(bad); err == nil {
+			t.Errorf("incompatible architecture accepted: %+v", bad)
+		}
+	}
+}
