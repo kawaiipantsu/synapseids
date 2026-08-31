@@ -22,6 +22,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
@@ -87,29 +88,33 @@ type CaptureStatusProvider interface {
 
 // Server bundles the HTTP handler, the live hub and the event pump.
 type Server struct {
-	cfg   config.Config
-	bus   *events.Bus
-	store storage.Store
-	rt    *inference.Runtime
-	reg   *registry.Registry
-	audit *audit.Logger
-	rc    ReplayController
-	fs    FlowStatsProvider
-	cap   CaptureStatusProvider
-	hub   *wshub.Hub
-	start time.Time
+	cfg     config.Config
+	bus     *events.Bus
+	store   storage.Store
+	rt      *inference.Runtime
+	reg     *registry.Registry
+	audit   *audit.Logger
+	rc      ReplayController
+	fs      FlowStatsProvider
+	cap     CaptureStatusProvider
+	insight *insight.Index
+	hub     *wshub.Hub
+	start   time.Time
 }
 
 // New builds a Server. reg may be nil (the /api/v1/models* routes then report an
 // empty registry / 503 on the state-changing ones); aud may be nil (audit
 // logging becomes a no-op); rc may be nil (replay endpoints then return 503); fs
 // may be nil (/api/v1/status then reports a zeroed flow table with the
-// configured cap); cp may be nil (/api/v1/captures then returns an empty list).
-func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider) *Server {
+// configured cap); cp may be nil (/api/v1/captures then returns an empty list);
+// ix may be nil (/api/v1/hosts then returns an empty list and /api/v1/timeline
+// an empty series — *insight.Index is nil-safe on every read).
+func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.Runtime, reg *registry.Registry, aud *audit.Logger, rc ReplayController, fs FlowStatsProvider, cp CaptureStatusProvider, ix *insight.Index) *Server {
 	return &Server{
 		cfg: cfg, bus: bus, store: store, rt: rt, reg: reg, audit: aud, rc: rc, fs: fs, cap: cp,
-		hub:   wshub.NewHub(cfg.Live.ClientQueueSize),
-		start: time.Now(),
+		insight: ix,
+		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
+		start:   time.Now(),
 	}
 }
 
@@ -120,6 +125,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/v1/flows/{id}", s.handleFlow)
 	mux.HandleFunc("GET /api/v1/classifications", s.handleClassifications)
+	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
+	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
+	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
+	mux.HandleFunc("GET /api/v1/hosts/{ip}/classifications", s.handleHostClassifications)
+	mux.HandleFunc("GET /api/v1/timeline", s.handleTimeline)
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
 	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
@@ -249,6 +259,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			"client_drops": ws.Drops,
 		},
 		"flow":           fs,
+		"insight":        s.insight.Stats(),
 		"models":         s.modelList(),
 		"replay":         rs,
 		"feature_schema": schema.FlowFeaturesV1().Schema,
@@ -257,7 +268,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.RecentFlows(limitParam(r, 100, 2000)))
+	writeJSON(w, http.StatusOK, s.store.RecentFlows(limitParam(r, 2000)))
 }
 
 func (s *Server) handleFlow(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +293,7 @@ const classFilterScan = 5000
 
 func (s *Server) handleClassifications(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit := limitParam(r, 100, 5000)
+	limit := limitParam(r, 5000)
 
 	f, ok := parseClassFilters(w, q)
 	if !ok {
@@ -470,14 +481,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
-func limitParam(r *http.Request, def, max int) int {
+// defaultLimit is the page size every collection route uses when the caller
+// does not send limit=. Each route supplies its own upper bound.
+const defaultLimit = 100
+
+// limitParam reads limit=, clamping it to [1, max]. An absent, unparseable or
+// non-positive value falls back to defaultLimit.
+func limitParam(r *http.Request, max int) int {
 	q := r.URL.Query().Get("limit")
 	if q == "" {
-		return def
+		return defaultLimit
 	}
 	n, err := strconv.Atoi(q)
 	if err != nil || n < 1 {
-		return def
+		return defaultLimit
 	}
 	if n > max {
 		return max

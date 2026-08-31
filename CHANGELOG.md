@@ -145,6 +145,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the plugin has never been loaded by an OPNsense MVC runtime; no real WAN
     traffic has been captured. `docs/opnsense-sensor.md` lists the exact
     commands a maintainer must run on real hardware.
+- **Host profiles, Investigation mode and the classification timeline**
+  (issues #39, #40, #41, EPIC Phase 5;
+  [ADR 0016](docs/adr/0016-host-and-time-aggregation-for-investigation.md)).
+  One backend serves all three: `internal/insight`, a bounded read model that the
+  pipeline feeds with a single non-blocking send per flow record.
+  - **`internal/insight`** — incrementally maintained observed-host profiles
+    (§19.5) and fixed-width classification-timeline rings (§19.6). Fed through a
+    new nil-safe `pipeline.Options.Observer` hook, so aggregation stays off the
+    packet path: `Observe` costs **88 ns with zero allocations** and takes no
+    lock, a single aggregator goroutine owns every map, and a bounded ingest
+    queue drops-and-counts rather than stalling ingestion (§22). A test asserts
+    the zero-allocation property so a regression fails the build.
+  - **Everything is capped and every discard is counted**, and the counters are
+    on `GET /api/v1/status` under `insight`: 2048 hosts (least-recently-active
+    quarter evicted in batches → `hosts_evicted`), 128 distinct ports and peers
+    per host (lowest-count half discarded → `keys_pruned`), 16 recent-flow
+    references per host, 900×1s / 720×10s / 1440×1m timeline buckets
+    (→ `timeline_late`), an 8192-deep ingest queue (→ `dropped`). Host maps are
+    keyed by packet-derived, untrusted strings, so this is a §21 requirement, not
+    tidiness.
+  - `GET /api/v1/hosts` — host profiles, newest-active first. `limit` (default
+    100, cap 2000), `q=` substring filter, `sort=last_seen|flows|bytes`
+    (`400 bad sort` otherwise).
+  - `GET /api/v1/hosts/{ip}` — one profile with its detail lists (up to 16 top
+    ports, 16 top peers, 16 recent flow references). The path value is re-parsed
+    with `net/netip` and canonicalised: a non-literal is `400`, an unobserved
+    address `404`.
+  - `GET /api/v1/hosts/{ip}/flows` and `.../classifications` — that host's
+    records, honouring the **same** `class` / `model` / `min_confidence` /
+    `disagreement` parameters as `GET /api/v1/classifications`, plus RFC3339
+    `from` / `to`.
+  - `GET /api/v1/timeline` — `{bucket_sec, buckets:[{ts, total, by_class{},
+    disagreements}], anomaly_available}` with `bucket=1s|10s|1m`, `from` / `to`,
+    `class` and `host`. The series is dense (a quiet interval is an explicit zero
+    bucket). Unscoped queries come from the incremental ring; `class=` / `host=`
+    scoped ones are bucketed on demand from the recent classification window,
+    because a ring per host would be unbounded.
+  - **SPA — three views.** `#/hosts` is a sortable, filterable host table (class
+    mix as a stacked bar, click through to Investigate). `#/investigate?host=<ip>`
+    pivots the whole page around one address: volume/packet tiles, first/last
+    seen, disagreement count, top peers and service ports, class mix, protocols,
+    a host-scoped timeline and filterable verdict + flow lists. `#/timeline` is
+    the daemon-wide stacked timeline with a disagreement overlay. **Dragging a
+    range on either chart filters the lists beneath it.** New `useHashQuery` /
+    `navigateWith` router helpers carry `?host=` in the hash.
+  - **Deliberately not built:** `#/detections` keeps its "Planned — Phase 5"
+    placeholder — there is no detections store and nothing publishes
+    `AlertCreated`, so half-building it would be worse than leaving it.
+  - **Deliberately not faked:** behavioural baseline, anomaly trend and anomaly
+    history (§19.4-6) are Phase 7. The API always reports
+    `baseline_available: false` / `anomaly_available: false` and the SPA renders
+    labelled stubs instead of an invented baseline or a fabricated zero line.
+  - No event type was added — the `event-envelope-v1` enum stays frozen (§28.5-6);
+    everything is derived from the records the pipeline already produces.
 
 
 - **Capture-source UI + runtime source management** (issue #32, EPIC Phase 3 —
@@ -545,6 +599,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `api.New` takes a tenth parameter, `*insight.Index`. It may be nil, in which
+  case `/api/v1/hosts` returns `[]` and `/api/v1/timeline` an empty series.
+- `internal/api`'s `limitParam` helper dropped its always-`100` `def` argument in
+  favour of a `defaultLimit` constant (behaviour unchanged; `unparam` flagged it
+  once the new routes became callers).
 - `README.md`'s "What it looks like" section now shows those screenshots instead
   of the ASCII box-art mock-ups it carried while the SPA was still a placeholder;
   the "Illustrative" disclaimers are gone because the images are real output.

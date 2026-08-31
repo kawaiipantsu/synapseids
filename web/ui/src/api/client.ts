@@ -5,12 +5,15 @@
 import type {
   CaptureSourceInput,
   CaptureSourceStatus,
+  ClassFilterParams,
   Classification,
   ClassSchema,
   DaemonStatus,
   FeatureSchema,
   FlowRecord,
+  HostProfile,
   ModelInfo,
+  TimelineSeries,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -138,4 +141,77 @@ export function estimateArchitecture(arch: unknown): Promise<ArchEstimate> {
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify(arch),
   })
+}
+
+// ---- investigation: hosts and timeline (§19.4-6, issues #39/#40/#41) ------
+
+/** Serialise the shared classification filters, dropping unset values. The
+ *  parameter names match GET /api/v1/classifications exactly. */
+function filterQuery(f: ClassFilterParams = {}): string {
+  const q = new URLSearchParams()
+  if (f.limit != null) q.set('limit', String(f.limit))
+  if (f.class) q.set('class', f.class)
+  if (f.model) q.set('model', f.model)
+  if (f.min_confidence != null && f.min_confidence > 0) {
+    q.set('min_confidence', String(f.min_confidence))
+  }
+  if (f.disagreement) q.set('disagreement', 'true')
+  if (f.from) q.set('from', f.from)
+  if (f.to) q.set('to', f.to)
+  const s = q.toString()
+  return s ? '?' + s : ''
+}
+
+export interface HostListParams {
+  limit?: number
+  /** case-sensitive substring match on the address */
+  q?: string
+  sort?: 'last_seen' | 'flows' | 'bytes'
+}
+
+export function getHosts(p: HostListParams = {}): Promise<HostProfile[]> {
+  const q = new URLSearchParams()
+  if (p.limit != null) q.set('limit', String(p.limit))
+  if (p.q) q.set('q', p.q)
+  if (p.sort) q.set('sort', p.sort)
+  const s = q.toString()
+  return getJSON<HostProfile[]>('/api/v1/hosts' + (s ? '?' + s : ''))
+}
+
+export function getHost(ip: string): Promise<HostProfile> {
+  return getJSON<HostProfile>('/api/v1/hosts/' + encodeURIComponent(ip))
+}
+
+export function getHostFlows(ip: string, f: ClassFilterParams = {}): Promise<FlowRecord[]> {
+  return getJSON<FlowRecord[]>('/api/v1/hosts/' + encodeURIComponent(ip) + '/flows' + filterQuery(f))
+}
+
+export function getHostClassifications(
+  ip: string,
+  f: ClassFilterParams = {},
+): Promise<Classification[]> {
+  return getJSON<Classification[]>(
+    '/api/v1/hosts/' + encodeURIComponent(ip) + '/classifications' + filterQuery(f),
+  )
+}
+
+export type BucketWidth = '1s' | '10s' | '1m'
+
+export interface TimelineParams {
+  bucket?: BucketWidth
+  from?: string
+  to?: string
+  class?: string
+  host?: string
+}
+
+export function getTimeline(p: TimelineParams = {}): Promise<TimelineSeries> {
+  const q = new URLSearchParams()
+  if (p.bucket) q.set('bucket', p.bucket)
+  if (p.from) q.set('from', p.from)
+  if (p.to) q.set('to', p.to)
+  if (p.class) q.set('class', p.class)
+  if (p.host) q.set('host', p.host)
+  const s = q.toString()
+  return getJSON<TimelineSeries>('/api/v1/timeline' + (s ? '?' + s : ''))
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
@@ -24,6 +25,7 @@ type replayController struct {
 	bus     *events.Bus
 	store   storage.Store
 	rt      *inference.Runtime
+	insight *insight.Index
 	flowOpt flow.Options
 	sensor  string
 	flowID  *atomic.Uint64
@@ -35,8 +37,8 @@ type replayController struct {
 	flowStats flow.Stats // latest flow-table snapshot from the running pipeline
 }
 
-func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, fo flow.Options, sensor string, flowID *atomic.Uint64) *replayController {
-	return &replayController{bus: bus, store: store, rt: rt, flowOpt: fo, sensor: sensor, flowID: flowID}
+func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, fo flow.Options, sensor string, flowID *atomic.Uint64) *replayController {
+	return &replayController{bus: bus, store: store, rt: rt, insight: ins, flowOpt: fo, sensor: sensor, flowID: flowID}
 }
 
 // Start opens path and begins replaying it at speed. It fails if a replay is
@@ -69,8 +71,9 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 	go func() {
 		st, runErr := pipeline.Run(ctx, src, c.rt, c.bus, c.store, pipeline.Options{
 			Flow: c.flowOpt, Sensor: c.sensor,
-			IDGen:   func() uint64 { return c.flowID.Add(1) },
-			OnStats: c.setFlowStats,
+			IDGen:    func() uint64 { return c.flowID.Add(1) },
+			OnStats:  c.setFlowStats,
+			Observer: c.insight,
 		})
 		c.mu.Lock()
 		c.status.Running = false
