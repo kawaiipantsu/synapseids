@@ -50,3 +50,8 @@ trainer/**/__pycache__/
 trainer/*.egg-info/
 trainer/build/
 trainer/dist/
+
+# Claude Code local state (agent worktrees, session settings). Tool-local, never
+# repo content — it otherwise shows up as an untracked path and fails
+# `make release-check`'s clean-tree gate.
+.claude/
