@@ -322,11 +322,19 @@ func (m *Manager) Get(name string) (SourceStatus, bool) {
 	return ms.status(), true
 }
 
+// latencyReporter is implemented by sources whose connection setup has a
+// measurable cost (a TLS dial for pcap-over-ip); a local NIC does not implement
+// it and connection_latency_ms stays 0.
+type latencyReporter interface{ ConnLatencyMS() int64 }
+
+// filterReporter is implemented by sources that only learn their effective
+// filter after connecting (the sensor advertises it in the handshake).
+type filterReporter interface{ DynamicFilter() (string, bool) }
+
 func (ms *managedSource) status() SourceStatus {
 	st := ms.src.Stats()
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	return SourceStatus{
+	ss := SourceStatus{
 		Name:         ms.name,
 		Kind:         ms.meta.Kind,
 		State:        ms.state,
@@ -341,6 +349,17 @@ func (ms *managedSource) status() SourceStatus {
 		Filter:       ms.meta.Filter,
 		Error:        ms.errText,
 	}
+	ms.mu.Unlock()
+
+	if lr, ok := ms.src.(latencyReporter); ok {
+		ss.ConnLatencyMS = lr.ConnLatencyMS()
+	}
+	if fr, ok := ms.src.(filterReporter); ok {
+		if f, known := fr.DynamicFilter(); known && f != "" {
+			ss.Filter = f
+		}
+	}
+	return ss
 }
 
 // Stats reports the aggregate counters across every source, so Manager can stand

@@ -138,11 +138,13 @@ func run(args []string) int {
 	var flowID atomic.Uint64
 	rc := newReplayController(bus, store, rt, flowOpt, "local", &flowID)
 
-	// Live capture: open every configured NIC source and hand it to the Manager,
+	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
 	// (PROJECT.md §22). A source that cannot open (missing capability, no such
-	// interface) is logged and skipped — the daemon keeps serving the API in a
-	// degraded mode, never crashes (PROJECT.md §21).
+	// interface, bad TLS material) is logged and skipped — the daemon keeps
+	// serving the API in a degraded mode, never crashes (PROJECT.md §21). A
+	// pcap-over-ip source that opens but cannot reach its sensor surfaces later
+	// as a Manager row in state "error"; there is no auto-reconnect yet.
 	capMgr := capture.NewManager()
 	live := 0
 	for _, cs := range cfg.Capture.Sources {
@@ -163,10 +165,15 @@ func run(args []string) int {
 		live++
 		bus.Publish(events.CaptureSourceConnected, map[string]any{
 			"name": cs.Name, "kind": cs.Kind, "interface": cs.Interface,
-			"destination": cs.Destination, "filter": cs.Filter,
+			"destination": cs.Destination, "addr": cs.Addr, "filter": cs.Filter,
 		})
-		log.Printf("capture: source %q (%s) live on %s (snaplen=%d filter=%q)",
-			cs.Name, cs.Kind, target, cs.Snaplen, cs.Filter)
+		if cs.Kind == "pcap-over-ip" {
+			log.Printf("capture: source %q pcap-over-ip to %s (server_name=%q insecure_tls=%t mtls=%t)",
+				cs.Name, cs.Addr, cs.ServerName, cs.InsecureTLS, cs.ClientCertFile != "")
+		} else {
+			log.Printf("capture: source %q (%s) live on %s (snaplen=%d filter=%q)",
+				cs.Name, cs.Kind, target, cs.Snaplen, cs.Filter)
+		}
 	}
 	if len(cfg.Capture.Sources) > 0 && live == 0 {
 		log.Printf("capture: no live source could start — continuing API-only (degraded)")
@@ -261,6 +268,27 @@ func newCaptureSource(cs config.CaptureSource) (capture.Source, string, error) {
 			return nil, "", err
 		}
 		return src, cs.Destination + " " + cs.Interface, nil
+	case "pcap-over-ip":
+		tok, err := resolvePOIPToken(cs)
+		if err != nil {
+			return nil, "", err
+		}
+		src, err := capture.NewPCAPOverIP(capture.POIPConfig{
+			Addr:               cs.Addr,
+			Token:              tok,
+			ServerName:         cs.ServerName,
+			CAFile:             cs.CAFile,
+			ClientCertFile:     cs.ClientCertFile,
+			ClientKeyFile:      cs.ClientKeyFile,
+			InsecureSkipVerify: cs.InsecureTLS,
+			Authorized:         cs.Authorized,
+			SensorID:           cs.Name,
+			Logf:               log.Printf,
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		return src, cs.Addr, nil
 	default:
 		return nil, "", fmt.Errorf("unknown kind %q", cs.Kind)
 	}
@@ -275,4 +303,18 @@ func hasNICInterface(srcs []config.CaptureSource, iface string) bool {
 		}
 	}
 	return false
+}
+
+// resolvePOIPToken loads the bearer token for a pcap-over-ip source from its
+// token_file, else from SYNAPSE_POIP_TOKEN. An empty result is only valid when
+// the source set authorized:true (config.validate has already enforced that).
+func resolvePOIPToken(cs config.CaptureSource) (string, error) {
+	if cs.TokenFile != "" {
+		b, err := os.ReadFile(cs.TokenFile)
+		if err != nil {
+			return "", fmt.Errorf("token_file: %w", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return strings.TrimSpace(os.Getenv("SYNAPSE_POIP_TOKEN")), nil
 }

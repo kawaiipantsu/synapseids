@@ -168,3 +168,35 @@ func TestUnknownFieldRejected(t *testing.T) {
 		t.Fatalf("unknown field should be rejected")
 	}
 }
+func TestPCAPOverIPSourceLoadAndValidate(t *testing.T) {
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "good.json")
+	mustWrite(t, good, []byte(`{"capture":{"sources":[
+		{"name":"hq","kind":"pcap-over-ip","addr":"127.0.0.1:4789","token_file":"/etc/synapse/poip.tok"},
+		{"name":"remote","kind":"pcap-over-ip","addr":"sensor.hq:4789","authorized":true,"insecure_tls":true}
+	]}}`))
+	c, err := Load(good)
+	if err != nil {
+		t.Fatalf("Load good pcap-over-ip sources: %v", err)
+	}
+	if len(c.Capture.Sources) != 2 || c.Capture.Sources[0].Addr != "127.0.0.1:4789" || !c.Capture.Sources[1].Authorized {
+		t.Fatalf("sources not parsed: %+v", c.Capture.Sources)
+	}
+
+	for name, body := range map[string]string{
+		"no-addr":         `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip"}]}}`,
+		"addr-no-port":    `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"sensor","authorized":true}]}}`,
+		"inline-token":    `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"127.0.0.1:1","token":"secret"}]}}`,
+		"insecure-noauth": `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"127.0.0.1:1","token_file":"t","insecure_tls":true}]}}`,
+		"remote-noauth":   `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"10.0.0.5:4789","token_file":"t"}]}}`,
+		"no-token-noauth": `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"127.0.0.1:1"}]}}`,
+		"half-mtls":       `{"capture":{"sources":[{"name":"a","kind":"pcap-over-ip","addr":"127.0.0.1:1","token_file":"t","client_cert_file":"c"}]}}`,
+	} {
+		p := filepath.Join(dir, name+".json")
+		mustWrite(t, p, []byte(body))
+		if _, err := Load(p); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}

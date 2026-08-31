@@ -59,8 +59,8 @@ which runs the identical pipeline.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | string | — | Unique label shown in `GET /api/v1/captures`. Required. |
-| `kind` | string | — | `"nic"` (local `AF_PACKET` interface), `"tcpdump"` (local `tcpdump -w -` subprocess) or `"ssh"` (authorized remote `ssh … tcpdump -w -`). Required. |
-| `interface` | string | — | For `nic`/`tcpdump`: local NIC name (`eth0`, `lo`, …). For `ssh`: the **remote** interface. Required for all three. |
+| `kind` | string | — | `"nic"` (local `AF_PACKET` interface), `"tcpdump"` (local `tcpdump -w -` subprocess), `"ssh"` (authorized remote `ssh … tcpdump -w -`) or `"pcap-over-ip"` (a framed authenticated TLS stream from a remote sensor, see below). Required. |
+| `interface` | string | — | For `nic`/`tcpdump`: local NIC name (`eth0`, `lo`, …). For `ssh`: the **remote** interface. Required for `nic`/`tcpdump`/`ssh`; unused by `pcap-over-ip`. |
 | `promiscuous` | bool | `false` | `nic` only. Put the interface into promiscuous mode. Needs `CAP_NET_ADMIN`. |
 | `snaplen` | int | `0` → `262144` | Bytes copied per frame. `0` uses the default; max `262144`. |
 | `filter` | string | `""` | **Meaning is per-kind.** `nic`: `""` (everything) or a built-in cBPF preset — `ip`, `ip6`, `ip-any`, `not-arp`. `tcpdump`/`ssh`: a raw tcpdump filter expression (`"tcp port 80 or udp"`), tokenised and passed as arguments, never through a shell. |
@@ -95,6 +95,34 @@ Example:
   { "name": "edge-fw", "kind": "ssh", "destination": "sensor@10.0.0.9", "interface": "eth0",
     "filter": "not port 22", "identity_file": "/etc/synapseids/id_ed25519",
     "known_hosts": "accept-new", "authorized": true }
+]
+```
+
+### `capture.sources[]` (kind `pcap-over-ip`)
+
+A framed, authenticated TLS stream from a remote sensor (the **SYNPOIP**
+protocol — `internal/capture/pcapoverip/PROTOCOL.md`,
+`docs/adr/0012-pcap-over-ip-transport.md`). Full worked example and cert-generation
+steps: `contrib/config/synapse.pcap-over-ip.json` + `contrib/config/pcap-over-ip.md`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `addr` | string | — | Sensor `host:port`. Required. |
+| `token_file` | string (path) | `""` | File holding the bearer token. An inline `token` is **refused** (PROJECT.md §23); `SYNAPSE_POIP_TOKEN` in the environment is the alternative. |
+| `server_name` | string | host of `addr` | TLS SNI / certificate name to verify. |
+| `ca_file` | string (path) | `""` | PEM bundle verifying the sensor certificate. Empty = system roots. |
+| `client_cert_file` / `client_key_file` | string (path) | `""` | Client certificate for mutual TLS. Both or neither. |
+| `insecure_tls` | bool | `false` | Skip sensor certificate verification. Logs a loud warning; requires `authorized`. |
+| `authorized` | bool | `false` | Operator asserts authority to monitor `addr` (§21) and accepts any `insecure_tls` / token-less choice (§28.18). **Required** for a non-loopback `addr`, for `insecure_tls`, or with no token. |
+
+No auto-reconnect yet: a dropped stream shows `state: "error"` in
+`GET /api/v1/captures` until `synapsed` restarts.
+
+```json
+"sources": [
+  { "name": "hq-sensor", "kind": "pcap-over-ip", "addr": "10.20.0.9:4789",
+    "server_name": "hq-sensor.internal", "token_file": "/etc/synapseids/pcap-over-ip.token",
+    "ca_file": "/etc/synapseids/hq-sensor-ca.pem", "authorized": true }
 ]
 ```
 
@@ -142,9 +170,13 @@ external backstop.
 - `capture.flow_idle_timeout <= 0` or `capture.flow_max_lifetime <= 0`
 - `capture.max_flows < 1`
 - a `capture.sources[]` entry with an empty/duplicate `name`; `snaplen` outside
-  `[0, 262144]`; an unknown `kind` (not `nic` / `tcpdump` / `ssh`); a `nic` /
-  `tcpdump` entry with an empty `interface`; a `nic` entry with an unknown
-  `filter` preset; an `ssh` entry with an empty `destination` or `interface`,
-  `authorized` not `true`, or a `known_hosts` other than `strict` / `accept-new`
+  `[0, 262144]`; an unknown `kind` (not `nic` / `tcpdump` / `ssh` / `pcap-over-ip`);
+  a `nic` / `tcpdump` entry with an empty `interface`; a `nic` entry with an
+  unknown `filter` preset; an `ssh` entry with an empty `destination` or
+  `interface`, `authorized` not `true`, or a `known_hosts` other than `strict` /
+  `accept-new`
+- a `pcap-over-ip` source with no `addr`, an inline `token`, only one of
+  `client_cert_file` / `client_key_file`, or — without `authorized: true` — a
+  non-loopback `addr`, `insecure_tls`, or no `token_file`
 - `live.client_queue_size < 1`
 - any unknown key is present in the file

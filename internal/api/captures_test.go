@@ -137,3 +137,30 @@ func TestCaptureByNameWithoutProvider(t *testing.T) {
 		t.Fatalf("no provider should 404 on by-name, got %d", rr.Code)
 	}
 }
+func TestCapturesShowsPCAPOverIPSource(t *testing.T) {
+	row := capture.SourceStatus{
+		Name: "hq-sensor", Kind: "pcap-over-ip", State: capture.StateRunning,
+		Packets: 512, Decoded: 512, Bytes: 400000,
+		Filter: "ip", ConnLatencyMS: 42,
+		LastPacket: time.Unix(1700000123, 0).UTC(),
+	}
+	rr := httptest.NewRecorder()
+	serverWithCaptures(stubCaptures{rows: []capture.SourceStatus{row}}).
+		ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/captures", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code %d", rr.Code)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 || raw[0]["kind"] != "pcap-over-ip" {
+		t.Fatalf("kind not surfaced: %v", raw)
+	}
+	if raw[0]["connection_latency_ms"].(float64) != 42 {
+		t.Fatalf("connection_latency_ms not surfaced: %v", raw[0]["connection_latency_ms"])
+	}
+	if raw[0]["filter"] != "ip" {
+		t.Fatalf("filter not surfaced: %v", raw[0]["filter"])
+	}
+}

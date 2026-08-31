@@ -1,0 +1,40 @@
+{
+  "server": {
+    "listen": "127.0.0.1:8080",
+    "web_root": ""
+  },
+  "storage": {
+    "driver": "memory",
+    "path": "/var/lib/synapseids/synapse.db",
+    "max_flows": 50000
+  },
+  "capture": {
+    "flow_idle_timeout": "30s",
+    "flow_max_lifetime": "5m",
+    "snapshot_interval": "60s",
+    "max_flows": 200000,
+    "sources": [
+      {
+        "name": "hq-sensor",
+        "kind": "pcap-over-ip",
+        "addr": "10.20.0.9:4789",
+        "server_name": "hq-sensor.internal",
+        "token_file": "/etc/synapseids/pcap-over-ip.token",
+        "ca_file": "/etc/synapseids/hq-sensor-ca.pem",
+        "authorized": true
+      }
+    ]
+  },
+  "models": {
+    "directory": "/var/lib/synapseids/models",
+    "primary": ""
+  },
+  "live": {
+    "websocket_batch": "100ms",
+    "client_queue_size": 5000
+  },
+  "retention": {
+    "flows": "720h",
+    "classifications": "2160h"
+  }
+}

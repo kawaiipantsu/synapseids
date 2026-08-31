@@ -248,6 +248,27 @@ curl -s 'http://127.0.0.1:8080/api/v1/classifications?limit=50' | jq .
 
 Live capture (Phase 3): `synapsed --capture eth0` opens an `AF_PACKET` raw socket and runs the interface through the same pipeline a replay uses; `GET /api/v1/captures` then shows it counting packets, bytes, pps/bps and kernel drops. Equivalent JSON config: `capture.sources: [{ "name": "eth0", "kind": "nic", "interface": "eth0", "promiscuous": true, "filter": "" }]` (`filter` is `""` or a built-in cBPF preset — `ip`, `ip6`, `ip-any`, `not-arp`); or set `SYNAPSE_CAPTURE_IFACE`. Needs `CAP_NET_RAW` (and `CAP_NET_ADMIN` for promiscuous mode) — not root; the `contrib/systemd` unit grants both. A source that cannot open is logged and skipped, and the API keeps serving.
 
+PCAP-over-IP (Phase 3): a `capture.sources` entry of `kind: "pcap-over-ip"` consumes a framed, authenticated TLS stream from a remote sensor over the **SYNPOIP** protocol ([`internal/capture/pcapoverip/PROTOCOL.md`](internal/capture/pcapoverip/PROTOCOL.md), [ADR 0012](docs/adr/0012-pcap-over-ip-transport.md)):
+
+```jsonc
+{ "name": "hq-sensor", "kind": "pcap-over-ip",
+  "addr": "10.20.0.9:4789",
+  "token_file": "/etc/synapse/poip.token",  // never inline a token (§23); or set SYNAPSE_POIP_TOKEN
+  "ca_file": "/etc/synapse/sensor-ca.pem",   // pin the sensor cert; omit to use system roots
+  "authorized": true }                       // required for a non-loopback addr, insecure_tls, or no token (§21/§28.18)
+```
+
+Optional: `server_name` (TLS SNI / cert name), `client_cert_file` + `client_key_file` (mutual TLS), `insecure_tls` (skip verification — logs a loud warning, needs `authorized`). There is **no auto-reconnect** yet: a dropped stream shows `state: "error"` in `GET /api/v1/captures` until the daemon restarts.
+
+Run a sensor to stream a capture file over the wire (the seam the Phase 6 `synapse-sensor` grows from):
+
+```bash
+# generates + fingerprints a self-signed cert when --cert/--key are omitted
+synapse-sensor pcap-over-ip --listen :4789 --from ./capture.pcap --token-file ./poip.token --speed 1
+# mutual TLS: also pass --client-ca ./clients-ca.pem
+```
+
+A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 --from testdata/pcap/portscan.pcap --token-file poip.token` then point a `pcap-over-ip` source (with `insecure_tls` + `authorized`) at `127.0.0.1:4789`: `GET /api/v1/captures` counts the packets with a real `connection_latency_ms`, and `GET /api/v1/classifications` returns the port-scan flows as `scan`. See `contrib/config/synapse.pcap-over-ip.json`.
 `capture.sources[]` also takes `kind: "tcpdump"` and `kind: "ssh"` (issues #29/#30). For these two, `filter` is a **raw tcpdump filter expression** (e.g. `"tcp port 80 or udp"`), tokenised and passed as arguments — never through a shell.
 
 ```jsonc
