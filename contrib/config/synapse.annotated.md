@@ -135,6 +135,45 @@ No auto-reconnect yet: a dropped stream shows `state: "error"` in
 ]
 ```
 
+### `capture.collector`
+
+The daemon-side SYNPOIP **listener** for sensors that dial *in*
+(`synapse-sensor pcap-over-ip --connect`) — a firewall behind NAT, typically.
+Each accepted sensor becomes its own capture source (`kind:
+"pcap-over-ip-listen"`, `origin: "collector"`) and appears on
+`GET /api/v1/sensors`. It is its own block rather than a `sources[]` kind because
+it is a listener that registers a source per peer, not a source that dials one
+target. See `docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md`
+and `contrib/config/synapse.collector.json`.
+
+**Off by default** — `listen: ""` means no extra listening socket.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `listen` | string | `""` | TLS listen `host:port`. Empty **disables** the collector. Env: `SYNAPSE_COLLECTOR_LISTEN`. |
+| `cert_file` / `key_file` | string (path) | `""` | The daemon's **server** certificate and key — in this direction the daemon is the TLS server. Both **required** when `listen` is set. `synapse-sensor gen-cert` writes a self-signed pair for testing. |
+| `token_file` | string (path) | `""` | File holding the bearer token the collector **presents** in its ClientHello; the sensor verifies it with `crypto/subtle`. An inline `token` is **refused** (PROJECT.md §23); `SYNAPSE_COLLECTOR_TOKEN` is the alternative. |
+| `client_ca_file` | string (path) | `""` | PEM bundle. When set, mutual TLS is **required** — and this is the only thing that authenticates the sensor. Strongly recommended for any non-loopback `listen`. |
+| `max_sensors` | int | `0` (= 32) | Cap on concurrent **registered** sensors. Past it a connection is refused before any handshake work (PROJECT.md §21). A second, looser bound (`max_sensors + 16`) caps connections still handshaking. |
+| `authorized` | bool | `false` | **Required** to enable the collector: the operator asserts they are authorised to ingest traffic from the sensors that will connect (§21, §28.18). |
+
+Because the SYNPOIP roles do not invert with the TCP direction (PROTOCOL.md §6),
+the token proves the *daemon* to the sensor and the client certificate proves the
+*sensor* to the daemon. A missing or unreadable certificate is logged once and
+`synapsed` keeps serving the API without the collector.
+
+```json
+"collector": {
+  "listen": "0.0.0.0:4789",
+  "cert_file": "/etc/synapseids/collector.crt",
+  "key_file": "/etc/synapseids/collector.key",
+  "token_file": "/etc/synapseids/collector.token",
+  "client_ca_file": "/etc/synapseids/sensors-ca.pem",
+  "max_sensors": 32,
+  "authorized": true
+}
+```
+
 ## `models`
 
 Model selection (PROJECT.md §11–§12). Parsed and validated now; **bundle loading
