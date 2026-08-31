@@ -294,7 +294,9 @@ feature.
   serves it with `/api` and `/api/v1/stream` proxied to `127.0.0.1:8080`;
   `make web-check` is `tsc --noEmit`; `make web-test` runs the SPA unit tests
   under node's built-in runner (`web/ui/test/`, `web/ui/tsconfig.test.json`) —
-  no test framework is installed, only `@types/node`.
+  no test framework is installed, only `@types/node`. Like every other target
+  here it is **not** wired into CI, which stays Node-free by design; run it
+  locally alongside `make web` when touching `web/ui/`.
 - **Build output** is `web/dist/` — content-hashed JS/CSS plus `index.html`,
   **committed to the repo** and embedded by `web/web.go` (`//go:embed all:dist`).
   `go build`, `make build-linux` and CI never run Node. Rebuild and commit
