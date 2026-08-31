@@ -76,6 +76,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   TS + React + Vite 5 stack, uPlot, hash routing and the committed-`web/dist/`
   decision.
 
+- **`internal/nn`** — a dependency-free, CGO-free executor for the feed-forward
+  neural networks the trainer produces (PROJECT.md §10, EPIC Phase 2). A
+  hand-rolled reader for the ONNX protobuf-wire subset (`ModelProto` /
+  `GraphProto` / `NodeProto`, `float32` and little-endian `raw_data`
+  `TensorProto` initializers, `ValueInfoProto` shapes — no protobuf library)
+  feeds a deterministic, batch-1, all-`float32` graph executor. Supported ops:
+  `Gemm` (α/β, transA/transB), `MatMul`, `Add` (broadcast — residual blocks
+  work), `Relu`, `LeakyRelu`, `Sigmoid`, `Tanh`, `BatchNormalization`
+  (inference-time affine fold), `Dropout` (identity), `Softmax`, `Identity`,
+  `Flatten`, `Reshape` (constant shape) and `Constant` (folded to an
+  initializer). Any other op is a hard load-time error (`nn: unsupported op
+  %q`); a malformed model returns an error, never a panic. Public API: `Load`,
+  `LoadFile`, `Model.Run`, `Model.InputSize` / `OutputSize` / `OpCounts`. See
+  [ADR 0005](docs/adr/0005-go-onnx-inference-runtime.md).
+- **`inference.ONNXModel`** — adapts a loaded `nn.Model` to the `Classifier`
+  interface, so trained models score through the same `Runtime` as the heuristic
+  and each model's output is recorded (PROJECT.md §12). Takes an optional
+  per-model `Normalizer` (`func(features.Vector) [48]float64`) supplied from the
+  bundle's `normalizer.json`; with none, raw feature values are fed, matching
+  the heuristic path. The distribution is defensively clamped and renormalised.
+- **`internal/nn/onnxbuild`** — a small ONNX `ModelProto` writer used only by
+  tests and by `internal/nn/testdata/gen`, which regenerates the committed
+  `internal/nn/testdata/model.onnx` fixture (`go run
+  ./internal/nn/testdata/gen`).
+
 ### Changed
 
 - `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng

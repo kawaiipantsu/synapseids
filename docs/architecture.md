@@ -59,9 +59,11 @@ that diagram are not in the tree yet (see [What is not here yet](#what-is-not-he
   already filled in. `synapse` and the `web/` SPA do the same over HTTP.
 - **Normalization is a per-model concern** (PROJECT.md §11). `pipeline.Run`
   hands `inference.Runtime` the **raw** vector. The Phase-1 `Heuristic` reads raw
-  values directly. A trained model (Phase 2) applies the `normalizer.json` from
-  its own bundle; `internal/features` ships `Identity` and `Log1p` helpers but
-  the pipeline does not call them.
+  values directly. A trained model applies the `normalizer.json` from its own
+  bundle: `inference.ONNXModel` takes that as an optional `Normalizer` and
+  applies it before handing the vector to the `internal/nn` executor. When none
+  is supplied it feeds raw values, exactly like the heuristic. `internal/features`
+  ships `Identity` and `Log1p` helpers but the pipeline does not call them.
 
 ## Package responsibilities
 
@@ -76,7 +78,8 @@ respected.
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
 | `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, and `BundleMeta` + `ValidateBundle` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p`. No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
-| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), and the rule-based `Heuristic` model. | `features`, `schema` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
+| `nn` | Dependency-free, CGO-free ONNX executor for the feed-forward MLPs the trainer emits: a hand-rolled protobuf-wire reader plus a batch-1, all-`float32`, deterministic graph runner over a fixed op subset (`Gemm`, `MatMul`, `Add`, `Relu`/`LeakyRelu`/`Sigmoid`/`Tanh`, `BatchNormalization`, `Dropout`, `Softmax`, `Identity`, `Flatten`, `Reshape`, `Constant`). Unknown op → load error; malformed model → error, never a panic. `Load`/`LoadFile`/`Model.Run`. See [ADR 0005](adr/0005-go-onnx-inference-runtime.md). | stdlib only | everything else internal |
+| `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
 | `events` | In-process fan-out `Bus`: `Publish` (non-blocking), `Subscribe(depth)`, per-sub + bus drop counters, monotonic `seq`. Event type constants. | stdlib only | every other internal package (kept a leaf) |
 | `storage` | `Store` interface, `FlowRecord` / `Classification` DTOs, `FlowRecordFrom`, and `Mem` (fixed-capacity ring buffers, oldest evicted + counted). | `features`, `flow`, `inference` | `capture`, `events`, `api`, `pipeline` |
 | `wshub` | Dependency-free RFC 6455 server (`Upgrade`, text frames, ping/pong, disconnect detection) and `Hub` (per-client bounded send queue, drops slow clients). | stdlib only | `api`, `events`, `pipeline` |
@@ -228,7 +231,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Missing | Present instead | Tracked |
 |---|---|---|
 | Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
-| ONNX / trained neural-network models | `inference.Heuristic` (rule-based) as `RolePrimary`; `Runtime` and `schema.ValidateBundle` already accept more models | see EPIC: Phase 2 |
+| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `inference.Heuristic` is still the wired `RolePrimary`, and `Runtime` + `schema.ValidateBundle` already accept more models. Reading a `model-bundle/` from disk and registering/activating it is still to come. | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
 | The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
