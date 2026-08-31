@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `internal/capture` now reads **minimal pcapng** as well as classic pcap
+  (GitHub issue #73). The hand-rolled reader handles a single Section Header
+  Block (either byte order), Interface Description Blocks (link type, snap
+  length, `if_tsresol` timestamp resolution), Enhanced Packet Blocks and Simple
+  Packet Blocks, for Ethernet or RAW link types. Every declared block length is
+  bounded before allocation and the trailing length is verified. Multi-section
+  files, mid-file endianness changes and non-Ethernet/RAW link types are still
+  refused with the existing `editcap -F pcap` hint.
+- `testdata/pcap/http.pcapng` — a hand-encoded pcapng twin of `http.pcap`,
+  produced by `testdata/gen` and covered by a test that asserts it decodes to
+  the same packets, flows and `flow-features-v1` vectors as the classic file.
+
+### Changed
+
+- `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
+  capture)"; the replay-start `409` and the capture docs describe the wider
+  accepted set.
+
 ## [0.1.0] - 2026-08-31
 
 First tagged release: the Phase 1 vertical slice plus the full build, packaging

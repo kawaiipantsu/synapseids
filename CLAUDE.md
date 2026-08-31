@@ -78,8 +78,10 @@ cmd/synapsed ─▶ internal/pipeline ─▶ (per flow) features.Extract ─▶ 
   `packet.Packet`. Bounds-checked; malformed input is counted and skipped, never a
   panic (§28.11). Nothing downstream sees raw bytes.
 - **`internal/capture`** — `Source` interface + adapters. `pcapfile` is a
-  hand-rolled classic-pcap reader (pcapng is refused with guidance). `replay`
-  paces any Source to wall-clock × {0.5,1,2,10,max}.
+  hand-rolled classic-pcap reader plus a minimal read-only pcapng reader
+  (`pcapng.go`: one section, Ethernet/RAW, SHB/IDB/EPB/SPB; multi-section or
+  exotic-link pcapng is refused with an `editcap` hint). `replay` paces any
+  Source to wall-clock × {0.5,1,2,10,max}.
 - **`internal/flow`** — `Key` is the direction-normalized 5-tuple. `Table` owns
   lifetime: close on FIN-both / RST / idle / max-lifetime / capture-end; periodic
   `snapshot` records for long flows; a bounded flow cap with oldest-idle eviction;
