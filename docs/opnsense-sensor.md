@@ -217,7 +217,7 @@ tail -f /var/log/synapseids/sensor.log
 | `reports link type DLT n` | SynapseIDS decodes only Ethernet (DLT 1) and raw IP (DLT 12/101). |
 | The service starts but the daemon shows no packets | check the direction: `in` only captures inbound. Check the filter preset. Check the firewall rule allowing the daemon to reach the sensor port. |
 | `pcapoverip: server rejected connection (unauthorized)` | the daemon's token and the sensor's token differ. |
-| Rising `drops` in `/api/v1/captures` | the kernel discarded frames before the sensor read them (`BIOCGSTATS` `bs_drop`). Raise the snaplen down or the buffer up, or narrow the filter. |
+| Rising `drops` in `/api/v1/captures` | the kernel discarded frames before the sensor read them (`BIOCGSTATS` `bs_drop`). Confirm on the box with `netstat -B`: if `Sblen`/`Hblen` are at their maximum the kernel is batching fine and the *sensor* is not draining. Lower the snaplen, narrow the filter — or stop re-streaming every byte and switch to `--mode flow` / `--mode feature`. A `raw` sensor on a saturated uplink ships as much traffic as it sees. |
 | The Services page does not appear after install | `service configd restart`, then reload the web UI. The package's post-install does this, but a partial install may not have. |
 
 ## What is not verified
@@ -238,8 +238,14 @@ Nobody has run any of this on FreeBSD or OPNsense. Concretely:
   exercised against real generated key material
   (`contrib/opnsense/tools/check-plugin.sh`) — but no Phalcon and no configd has
   loaded any of it.
-- **No real WAN traffic has been captured**, so throughput, drop behaviour and
-  timestamp accuracy under load are unmeasured.
+- **Real WAN traffic has now been captured once**, and it found a real bug: a
+  5 GB download through a `raw`-mode sensor dropped 63% of frames in the kernel
+  (`netstat -B`: `Recv 1455970 / Drop 916190`, both buffers full, 81% CPU)
+  because the sensor wrote one TLS record and one syscall per packet. That is
+  fixed — outbound frames are batched, 10.6× cheaper per frame over TLS, see
+  [ADR 0029](adr/0029-synpoip-batched-sensor-writes.md) — but the post-fix drop
+  rate on the same box has not been re-measured, and timestamp accuracy under
+  load is still unmeasured.
 
 A maintainer with a real box should, in order:
 

@@ -344,6 +344,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `raw`-mode sensor lost 63% of frames to BPF kernel drops because it wrote
+  one TLS record — and one syscall — per captured packet** (issue #127;
+  [ADR 0029](docs/adr/0029-synpoip-batched-sensor-writes.md)). On an OPNsense WAN
+  sensor a single 5 GB download produced `netstat -B` `Recv 1455970 / Drop 916190`
+  with both BPF buffers full and `synapse-sensor` at 81% CPU. The kernel was
+  batching correctly; the consumer could not drain. `pcapoverip`'s server loop
+  armed a write deadline and called `WriteFrame` — itself two `Write`s — per
+  frame, and crypto/tls emits a record per `Write`, so 1.45 M packets became
+  ~2.9 M TLS records, ~2.9 M syscalls, 1.45 M deadline updates and 1.45 M
+  ~1.5 KB allocations. AES was never the cost; the box has AES-NI.
+  - Outbound frames now coalesce into a 64 KiB `bufio.Writer` per connection and
+    flush as a unit. **The bytes on the wire are byte-for-byte identical** — only
+    the TLS record and syscall boundaries move. No wire format, protocol version
+    or schema changed, and the existing transport tests pass unmodified.
+  - **A quiet link still never sits on a packet.** After each frame the loop does
+    a non-blocking check for another; with nothing ready it flushes immediately
+    (PROJECT.md §17, §22). Proved end to end over real TLS with the keepalive and
+    write timeout set to 10 minutes, so nothing else *can* deliver the frame:
+    measured 29–55 µs from sensor to daemon on an idle link. A batch is bounded
+    by age (`WriteTimeout/2`) and by frame count as well, so no traffic shape can
+    leave data in the buffer or starve the keepalive.
+  - Control frames flush, and so does every return path including the error ones:
+    a lost goodbye or a truncated final frame would be a correctness bug.
+  - **10 000 × 1514-byte frames: 20 000 `Write` calls and 10 000 deadline updates
+    become 235 and 10; 20 002 allocations become 4; the wire bytes are asserted
+    unchanged at 15 270 000.** Through a real `*tls.Conn` on loopback the same
+    frames take 7.0 ms instead of 74.3 ms — **10.6× the sensor throughput per
+    CPU-second** (`BenchmarkSensorWrites*`).
+  - The collector's **read** side was checked and deliberately left unbuffered:
+    crypto/tls already batches reads into a 16 KiB record buffer, so a
+    `bufio.Reader` there cuts `Read` calls 20 000 → 234 and changes wall clock by
+    nothing (6.9 ms vs 7.7 ms) while adding a copy of every packet byte. The
+    measurements are kept as tests so the next person gets numbers, not
+    intuition.
+  - This makes `raw` mode cost what it should; it does not make `raw` the right
+    mode for a saturated uplink, which still re-streams every captured byte.
+    `--mode flow` / `--mode feature` remain the structural answer.
 - **`install.sh` rejected valid `SHA256SUMS` files** and aborted with "no entry in
   SHA256SUMS". The pattern `\./\{0,1\}` requires a literal dot and makes only the
   *slash* optional, so a `<hash>  <name>` line — what a hand-rolled LAN mirror
