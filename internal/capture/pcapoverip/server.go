@@ -69,8 +69,14 @@ type ServerConfig struct {
 	// HandshakeTimeout bounds how long a client has to complete the handshake.
 	// 0 uses DefaultHandshakeTimeout.
 	HandshakeTimeout time.Duration
-	// WriteTimeout bounds a single frame write. 0 uses DefaultWriteTimeout.
+	// WriteTimeout bounds one batch of frame writes. 0 uses
+	// DefaultWriteTimeout.
 	WriteTimeout time.Duration
+	// WriteBufferSize is the outbound batching buffer per connection. 0 uses
+	// DefaultWriteBufferSize. Frames are coalesced into it while the source is
+	// backlogged and flushed the moment it is not, so the buffer only ever
+	// trades syscalls for throughput, never latency (see ADR 0029).
+	WriteBufferSize int
 	// Logf, if set, logs one line per connection lifecycle event. It must never
 	// be given the bearer token.
 	Logf func(string, ...any)
@@ -93,6 +99,9 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	}
 	if c.WriteTimeout <= 0 {
 		c.WriteTimeout = DefaultWriteTimeout
+	}
+	if c.WriteBufferSize <= 0 {
+		c.WriteBufferSize = DefaultWriteBufferSize
 	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
@@ -211,19 +220,43 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 	ka := time.NewTicker(cfg.KeepaliveInterval)
 	defer ka.Stop()
 
+	// Outbound frames are batched into one buffer and flushed as soon as the
+	// source has nothing else ready (ADR 0029). The wire bytes are identical;
+	// only the TLS record and syscall boundaries move. The deferred flush is the
+	// backstop for any path that returns without one — it runs before the
+	// deferred conn.Close above it.
+	w := newFrameWriter(conn, cfg.WriteBufferSize, cfg.WriteTimeout)
+	defer func() { _ = w.flush() }()
+
 	var sent uint64
+	fail := func(werr error) bool {
+		cfg.Logf("pcapoverip: %s: session %s write: %v", remote, sid, werr)
+		cancel()
+		return false
+	}
+	// write queues a data frame; it may sit in the buffer until flush.
 	write := func(ft FrameType, payload []byte) bool {
-		_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
-		if werr := WriteFrame(conn, ft, payload); werr != nil {
-			cfg.Logf("pcapoverip: %s: session %s write: %v", remote, sid, werr)
-			cancel()
-			return false
+		if werr := w.writeFrame(ft, payload); werr != nil {
+			return fail(werr)
+		}
+		return true
+	}
+	// control queues a control frame and flushes it, together with everything
+	// already queued behind it.
+	control := func(ft FrameType, payload []byte) bool {
+		if werr := w.writeControl(ft, payload); werr != nil {
+			return fail(werr)
+		}
+		return true
+	}
+	flush := func() bool {
+		if werr := w.flush(); werr != nil {
+			return fail(werr)
 		}
 		return true
 	}
 	bye := func(reason string) {
-		_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
-		_ = WriteFrame(conn, FrameGoodbye, []byte(reason))
+		_ = w.writeControl(FrameGoodbye, []byte(reason))
 	}
 
 	// Record modes take the aggregation path: the flow engine (and, for
@@ -241,7 +274,7 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 				return
 
 			case <-ka.C:
-				if !write(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
+				if !control(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
 					return
 				}
 
@@ -262,47 +295,104 @@ func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Stre
 					return
 				}
 				sent++
+
+				// Coalesce whatever the aggregator already has queued, then
+				// flush. A record burst (a flow table flushing many closed flows
+				// at once) becomes one batch; a single record on a quiet link is
+				// still on the wire before this iteration ends.
+			drainRecords:
+				for !w.full() {
+					select {
+					case f, fok = <-frames:
+						if !fok {
+							bye("end of capture")
+							cfg.Logf("pcapoverip: %s: session %s end of capture (%d %s record(s))", remote, sid, sent, cfg.Mode)
+							return
+						}
+						if !write(f.Type, f.Payload) {
+							return
+						}
+						sent++
+					default:
+						break drainRecords
+					}
+				}
+				if !flush() {
+					return
+				}
 			}
 		}
 	}
 
 	records, errc := stream(connCtx)
 
+	// writePacket queues one raw record, skipping an over-cap frame as before.
+	// false means the write failed and the session is over.
+	writePacket := func(rec Record) bool {
+		if len(rec.Raw) > MaxFramePayload-8 {
+			return true // a single frame larger than the ceiling is dropped, not fatal
+		}
+		if werr := w.writePacketFrame(rec.TS.UnixNano(), rec.Raw); werr != nil {
+			return fail(werr)
+		}
+		sent++
+		return true
+	}
+
 	for {
 		select {
 		case <-connCtx.Done():
-			_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
-			_ = WriteFrame(conn, FrameGoodbye, []byte("server closing"))
+			bye("server closing")
 			cfg.Logf("pcapoverip: %s: session %s closed (%d packets)", remote, sid, sent)
 			return
 
 		case <-ka.C:
-			if !write(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
+			if !control(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
 				return
 			}
 
 		case rerr := <-errc:
 			if rerr != nil && !errors.Is(rerr, context.Canceled) {
-				_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
-				_ = WriteFrame(conn, FrameGoodbye, []byte("source error: "+rerr.Error()))
+				bye("source error: " + rerr.Error())
 				cfg.Logf("pcapoverip: %s: session %s source error: %v", remote, sid, rerr)
 				return
 			}
 
 		case rec, ok := <-records:
 			if !ok {
-				_ = conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
-				_ = WriteFrame(conn, FrameGoodbye, []byte("end of capture"))
+				bye("end of capture")
 				cfg.Logf("pcapoverip: %s: session %s end of capture (%d packets)", remote, sid, sent)
 				return
 			}
-			if len(rec.Raw) > MaxFramePayload-8 {
-				continue // a single frame larger than the ceiling is dropped, not fatal
-			}
-			if !write(FramePacket, PacketFramePayload(rec.TS.UnixNano(), rec.Raw)) {
+			if !writePacket(rec) {
 				return
 			}
-			sent++
+
+			// Batch while the source is backlogged; flush the moment it is not.
+			// The non-blocking receive is the whole policy: it succeeds only if a
+			// record is *already* waiting (buffered or a blocked sender), so a
+			// quiet link never sits on a packet, and a saturated one turns a
+			// burst into one flush instead of one syscall pair per frame
+			// (PROJECT.md §17, §22; ADR 0029).
+		drainPackets:
+			for !w.full() {
+				select {
+				case rec, ok = <-records:
+					if !ok {
+						bye("end of capture")
+						cfg.Logf("pcapoverip: %s: session %s end of capture (%d packets)", remote, sid, sent)
+						return
+					}
+					if !writePacket(rec) {
+						return
+					}
+				default:
+					break drainPackets
+				}
+			}
+			if !flush() {
+				return
+			}
 		}
 	}
 }

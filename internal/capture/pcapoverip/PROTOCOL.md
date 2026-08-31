@@ -193,6 +193,13 @@ drops the connection and never allocates the claimed size (crafted-input
 defence, PROJECT.md §21, §28.11). `262144` is the same snaplen ceiling the pcap
 file readers enforce; the `+64` is slack for the timestamp prefix.
 
+Frames are a **byte stream**. A sender may coalesce any number of frames into one
+write, one TLS record or one segment, and may split one frame across several; a
+receiver must read by `length` and never infer a frame boundary from a read or a
+record boundary. The reference sensor does batch: it fills a 64 KiB buffer while
+its source is backlogged and flushes as soon as it is not, which is a pure
+transmission-timing choice and changes no byte of this format (ADR 0029).
+
 ### 3.1 `0x01` packet
 
 | field       | type     | notes                                   |
@@ -326,7 +333,7 @@ not used to gate the session.
 | handshake timeout   | 10 s    | ClientHello send + ServerResponse read                  |
 | keepalive interval  | 15 s    | cadence of `0x02` frames                                |
 | read-idle timeout   | 60 s    | no frame of any type within the window → terminal error |
-| write timeout       | 10 s    | a single frame write deadline                           |
+| write timeout       | 10 s    | deadline for one batch of frames (the sensor arms it once per flush, and ends a batch after half of it) |
 
 All are configurable on both ends.
 
