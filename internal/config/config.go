@@ -70,12 +70,26 @@ type Storage struct {
 	MaxFlows int    `json:"max_flows"` // ring capacity for the memory driver
 }
 
-// Capture holds flow-engine timing (PROJECT.md §7).
+// Capture holds flow-engine timing (PROJECT.md §7) and the live capture sources
+// (PROJECT.md §6, §19.14).
 type Capture struct {
-	FlowIdleTimeout  Duration `json:"flow_idle_timeout"`
-	FlowMaxLifetime  Duration `json:"flow_max_lifetime"`
-	SnapshotInterval Duration `json:"snapshot_interval"`
-	MaxFlows         int      `json:"max_flows"` // upper bound on the live flow table
+	FlowIdleTimeout  Duration        `json:"flow_idle_timeout"`
+	FlowMaxLifetime  Duration        `json:"flow_max_lifetime"`
+	SnapshotInterval Duration        `json:"snapshot_interval"`
+	MaxFlows         int             `json:"max_flows"` // upper bound on the live flow table
+	Sources          []CaptureSource `json:"sources"`   // live inputs opened at startup
+}
+
+// CaptureSource declares one live capture input. Phase 3 supports kind "nic"
+// (a local AF_PACKET interface); tcpdump/SSH/PCAP-over-IP kinds are tracked
+// separately (PROJECT.md §6).
+type CaptureSource struct {
+	Name        string `json:"name"`        // unique label, shown in /api/v1/captures
+	Kind        string `json:"kind"`        // "nic"
+	Interface   string `json:"interface"`   // NIC name for kind "nic" (e.g. "eth0", "lo")
+	Promiscuous bool   `json:"promiscuous"` // needs CAP_NET_ADMIN
+	Snaplen     int    `json:"snaplen"`     // per-frame bytes; 0 = default (262144)
+	Filter      string `json:"filter"`      // "" or a capture.BuiltinFilters name
 }
 
 // Models points at the model directory and names the primary model.
@@ -120,8 +134,8 @@ func Default() Config {
 // Load reads the configuration from path (JSON), overlaying it on Default. An
 // empty path returns Default with environment overrides applied. Environment
 // variables (SYNAPSE_LISTEN, SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH,
-// SYNAPSE_MODELS_DIR, SYNAPSE_WEB_ROOT) always win so secrets and deployment
-// paths stay out of the file.
+// SYNAPSE_MODELS_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS, SYNAPSE_CAPTURE_IFACE)
+// always win so secrets and deployment paths stay out of the file.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -163,6 +177,27 @@ func applyEnv(c *Config) {
 			c.Capture.MaxFlows = n
 		}
 	}
+	// SYNAPSE_CAPTURE_IFACE adds one promiscuous NIC source unless the interface
+	// is already configured, so a deployment can enable live capture without
+	// editing the file (PROJECT.md §23).
+	if v := os.Getenv("SYNAPSE_CAPTURE_IFACE"); v != "" {
+		if !hasNICInterface(c.Capture.Sources, v) {
+			c.Capture.Sources = append(c.Capture.Sources, CaptureSource{
+				Name: v, Kind: "nic", Interface: v, Promiscuous: true,
+			})
+		}
+	}
+}
+
+// hasNICInterface reports whether srcs already contains a "nic" source bound to
+// iface.
+func hasNICInterface(srcs []CaptureSource, iface string) bool {
+	for _, s := range srcs {
+		if s.Kind == "nic" && s.Interface == iface {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) validate() error {
@@ -189,7 +224,45 @@ func (c Config) validate() error {
 	if c.Live.ClientQueueSize < 1 {
 		return fmt.Errorf("config: live.client_queue_size must be >= 1")
 	}
+	seen := make(map[string]bool, len(c.Capture.Sources))
+	for i, s := range c.Capture.Sources {
+		switch {
+		case s.Name == "":
+			return fmt.Errorf("config: capture.sources[%d].name is empty", i)
+		case seen[s.Name]:
+			return fmt.Errorf("config: capture.sources[%d]: duplicate name %q", i, s.Name)
+		case s.Kind != "nic":
+			return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (only \"nic\" is supported in Phase 3)", i, s.Name, s.Kind)
+		case s.Interface == "":
+			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
+		case s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen:
+			return fmt.Errorf("config: capture.sources[%d] (%s): snaplen %d out of range [0,%d]", i, s.Name, s.Snaplen, maxCaptureSnaplen)
+		case !captureFilterKnown(s.Filter):
+			return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+		}
+		seen[s.Name] = true
+	}
 	return nil
+}
+
+// maxCaptureSnaplen and captureFilterNames mirror capture.DefaultSnaplen and
+// capture.BuiltinFilters. They are duplicated here on purpose: config is a leaf
+// package that must not import capture (see docs/architecture.md). Keep the two
+// in sync.
+const maxCaptureSnaplen = 262144
+
+var captureFilterNames = []string{"ip", "ip6", "ip-any", "not-arp"}
+
+func captureFilterKnown(name string) bool {
+	if name == "" {
+		return true
+	}
+	for _, f := range captureFilterNames {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // LoopbackOnly reports whether the management listener is bound to a loopback

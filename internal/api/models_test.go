@@ -31,7 +31,7 @@ func modelServer(t *testing.T) (*Server, string) {
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	reg := registry.Open(dir, quiet)
 	aud := audit.New(dir, quiet)
-	srv := New(cfg, events.New(), storage.NewMem(100, 100), rt, reg, aud, nil, nil)
+	srv := New(cfg, events.New(), storage.NewMem(100, 100), rt, reg, aud, nil, nil, nil)
 	return srv, dir
 }
 

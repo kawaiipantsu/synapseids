@@ -244,7 +244,9 @@ curl -s http://127.0.0.1:8080/api/v1/status | jq .
 curl -s 'http://127.0.0.1:8080/api/v1/classifications?limit=50' | jq .
 ```
 
-**`synapsed`** — `--config FILE` (JSON config), `--listen HOST:PORT` (default `127.0.0.1:8080`), `--version`. Binding off loopback logs a warning; put an authenticating proxy in front.
+**`synapsed`** — `--config FILE` (JSON config), `--listen HOST:PORT` (default `127.0.0.1:8080`), `--capture IFACE` (repeatable — capture live traffic from a NIC, Phase 3), `--version`. Binding off loopback logs a warning; put an authenticating proxy in front.
+
+Live capture (Phase 3): `synapsed --capture eth0` opens an `AF_PACKET` raw socket and runs the interface through the same pipeline a replay uses; `GET /api/v1/captures` then shows it counting packets, bytes, pps/bps and kernel drops. Equivalent JSON config: `capture.sources: [{ "name": "eth0", "kind": "nic", "interface": "eth0", "promiscuous": true, "filter": "" }]` (`filter` is `""` or a built-in cBPF preset — `ip`, `ip6`, `ip-any`, `not-arp`); or set `SYNAPSE_CAPTURE_IFACE`. Needs `CAP_NET_RAW` (and `CAP_NET_ADMIN` for promiscuous mode) — not root; the `contrib/systemd` unit grants both. A source that cannot open is logged and skipped, and the API keeps serving.
 
 **`synapse`** talks to a running `synapsed` and holds no logic of its own:
 
@@ -264,7 +266,7 @@ curl -s 'http://127.0.0.1:8080/api/v1/classifications?limit=50' | jq .
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `captures` · `captures/{name}` · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 <br/>
 

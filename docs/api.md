@@ -330,6 +330,51 @@ The frozen `flow-features-v1` document, served verbatim from the embedded
 The frozen `traffic-classes-v1` document, verbatim from
 `schemas/outputs/traffic-classes-v1.json`. `200`, `application/json`.
 
+### GET /api/v1/captures
+
+Live capture sources managed by the `capture.Manager` (PROJECT.md §19.14). No
+params. Always `200` — an empty array `[]` when no live capture is configured
+(the daemon is replay-only), never `503`.
+
+```json
+[
+  {
+    "name": "lo",
+    "kind": "nic",
+    "state": "running",
+    "packets": 6074,
+    "decoded": 6074,
+    "decode_errors": 0,
+    "bytes": 4177656,
+    "drops": 6,
+    "pps": 3212.0,
+    "bps": 1262408.6,
+    "last_packet": "2026-08-31T09:15:25.737730002Z",
+    "filter": "(all)",
+    "error": "",
+    "connection_latency_ms": 0
+  }
+]
+```
+
+- `state` — `running`, `error` (see `error` for the message; other sources keep
+  running), or `stopped` (the source was exhausted or removed).
+- `pps` / `bps` — rolling packets- and bytes-per-second, sampled by the Manager
+  once a second off the packet path.
+- `drops` — kernel packet drops (`AF_PACKET` `PACKET_STATISTICS` `tp_drops`),
+  accumulated. A non-zero, growing value means the sensor cannot keep up
+  (PROJECT.md §22, §24).
+- `filter` — the source's current capture filter; `(all)` = everything.
+- `connection_latency_ms` — 0 for a local NIC; meaningful only for remote
+  sources (SSH/PCAP-over-IP, later).
+
+### GET /api/v1/captures/{name}
+
+One source, same object as above. `404` `capture source not found` if the name
+is unknown or no live capture is configured.
+
+Runtime add/remove of sources (`POST` / `DELETE`) is tracked with the
+capture-sources UI (#32).
 ### POST /api/v1/architecture/estimate
 
 Parameter, size and FLOP math for a candidate `flow-classifier-v1` hidden stack

@@ -52,6 +52,32 @@ which runs the identical pipeline.
 | `capture.flow_max_lifetime` | duration | `5m` | `5m` | Hard cap on a single flow's wall-clock lifetime; the flow is closed even if still active. Must be `> 0`. |
 | `capture.snapshot_interval` | duration | `60s` | `60s` | Long-lived flows emit a periodic snapshot record on this cadence so classification does not wait for the flow to close (PROJECT.md §7). |
 | `capture.max_flows` | int | `200000` | `200000` | Upper bound on the live flow table (concurrent tracked flows). Must be `>= 1`. When full, the oldest idle flow is evicted. Env: `SYNAPSE_MAX_FLOWS` (ignored unless `> 0`). |
+| `capture.sources` | array | `[]` | `[]` | Live capture inputs opened at startup (Phase 3). Each is an object — see below. `--capture IFACE` and `SYNAPSE_CAPTURE_IFACE` append a promiscuous NIC source without editing the file. A source that fails to open is logged and skipped; the daemon keeps serving the API. |
+
+### `capture.sources[]` (kind `nic`)
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | — | Unique label shown in `GET /api/v1/captures`. Required. |
+| `kind` | string | — | `"nic"` — the only kind in Phase 3 (tcpdump-stream / SSH / PCAP-over-IP are tracked separately). Required. |
+| `interface` | string | — | Local NIC name (`eth0`, `lo`, …). Required for `nic`. |
+| `promiscuous` | bool | `false` | Put the interface into promiscuous mode. Needs `CAP_NET_ADMIN`. |
+| `snaplen` | int | `0` → `262144` | Bytes copied per frame. `0` uses the default; max `262144`. |
+| `filter` | string | `""` | `""` captures everything, or a built-in cBPF preset: `ip`, `ip6`, `ip-any`, `not-arp`. A full tcpdump-style filter-expression compiler is a follow-up. |
+
+Opening any NIC source needs `CAP_NET_RAW`; promiscuous mode also needs
+`CAP_NET_ADMIN`. Running as root is **not** required — grant the capabilities
+(`setcap cap_net_raw,cap_net_admin+eip /usr/bin/synapsed`, or use the
+`contrib/systemd` unit, which sets `AmbientCapabilities`). On a permission error
+the daemon logs a line naming the capability and continues API-only.
+
+Example:
+
+```json
+"sources": [
+  { "name": "wan", "kind": "nic", "interface": "eth0", "promiscuous": true, "snaplen": 0, "filter": "ip-any" }
+]
+```
 
 ## `models`
 
@@ -96,5 +122,7 @@ external backstop.
 - `storage.driver` is `sqlite` (explicitly rejected as unimplemented)
 - `capture.flow_idle_timeout <= 0` or `capture.flow_max_lifetime <= 0`
 - `capture.max_flows < 1`
+- a `capture.sources[]` entry with an empty/duplicate `name`, `kind != "nic"`,
+  an empty `interface`, `snaplen` outside `[0, 262144]`, or an unknown `filter`
 - `live.client_queue_size < 1`
 - any unknown key is present in the file
