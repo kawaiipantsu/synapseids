@@ -145,11 +145,20 @@ func (h *Heuristic) evaluate(v features.Vector, explain bool) (map[int]float64, 
 			"packets_per_second", "small_packet_ratio", "packet_direction_ratio",
 			"packets_forward", "packets_backward")
 	}
-	if isUDP && pps >= 500 && dirRatio >= 0.95 {
+	// The totalPkts guard matters as much as the rate: a flood is defined by
+	// volume, and a rate alone is meaningless on a flow of one or two packets.
+	// Without it this rule fired on every single-packet DNS response on a live
+	// WAN link — at severity critical and 100% confidence — because a
+	// zero-duration flow reported a synthetic 1e6 packets/second. That feature
+	// bug is fixed (flow-features-v1 defines pps as total packets when duration
+	// is 0), but the rule should never have depended on it: two packets a
+	// millisecond apart still clear 500/s honestly.
+	if isUDP && pps >= 500 && dirRatio >= 0.95 && totalPkts >= 100 {
 		w[classDoS] += 1.5 + math.Log1p(pps)
 		fired("dos.udp_flood", classDoS,
 			"a very high-rate, almost entirely one-directional UDP flood",
-			"protocol_udp", "packets_per_second", "packet_direction_ratio")
+			"protocol_udp", "packets_per_second", "packet_direction_ratio",
+			"packets_forward", "packets_backward")
 	}
 
 	// BRUTE FORCE: many short request/response rounds to an auth-ish port,
