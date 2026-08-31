@@ -94,7 +94,7 @@ schema so it carries its own name, calculation and unit:
 
 <p align="center"><img src="assets/screenshots/webui-flow-inspector-features.png" alt="The Flow Inspector scrolled to the raw flow-features-v1 table, listing each feature index, name, calculation, value and unit" width="100%"></p>
 
-<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Normalized inputs, snapshot history and human-review status are labelled Phase-2 stubs.</sub>
+<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Human-review status is live (<code>GET /api/v1/review/{flow_id}</code>, §16). Normalized inputs and snapshot history are still labelled Phase-2 stubs.</sub>
 
 ### Live capture sources
 
@@ -351,17 +351,31 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `models/{id}` · `models/{id}/lineage` · `models/{id}/activate` (POST) · `models/{id}/deactivate` (POST) · `audit` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `datasets/{ref}/stats` (GET) · `training` (GET/POST) · `training/{id}` (GET) · `training/{id}/progress` (POST) · `training/{id}/fail` (POST) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `datasets/{ref}/stats` (GET) · `training` (GET/POST) · `training/{id}` (GET) · `training/{id}/progress` (POST) · `training/{id}/fail` (POST) · `review/queue` (GET) · `review` (GET) · `review/stats` (GET) · `review/{flow_id}` (GET/PUT/POST) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 `{ref}` is a url-escaped `<id>@<version>` — a dataset id may contain one `/`
 (`thugs/lab-attacks-2026-08`), so the whole reference travels as one segment.
 Cutting a dataset materialises the selected flows to
 `datasets.directory/<id>/<version>/{dataset.csv,manifest.json}`; the CSV is the
 48 `flow-features-v1` columns plus `label`, which is exactly what the Python
-trainer's `load_csv` reads. **Phase-4 datasets are labelled by the daemon's own
-model predictions, not by human review** (issue #42) — every manifest says so in
-`labeling_source`. See [`docs/api.md`](docs/api.md) and
-[ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md).
+trainer's `load_csv` reads.
+
+**Two kinds of dataset, and the manifest always says which.** A default cut is
+labelled by the daemon's own model predictions —
+`labeling_source: "model_prediction:<ids>"` — and is never presented as ground
+truth. A cut with `"selection": {"reviewed": true}` is built from the human review
+loop (§16, issue #42) and uses the label an operator confirmed or corrected, so
+its `labeling_source` reads `human_review`. Reviewing is
+`PUT /api/v1/review/{flow_id}` with one of the five §16 states, driven by the
+`LIVE ▸ Review` view; `GET /api/v1/review/queue?sort=uncertainty` ranks the flows
+the model is least sure about (smallest top-1/top-2 margin) first, so a human's
+attention goes where it buys the most (issue #64). **The model's original
+prediction is always retained beside the human label** — `predicted_class`,
+`predicted_score` and `model_id` are captured at review time and there is no code
+path, and no request field, that can change them. See
+[`docs/api.md`](docs/api.md),
+[ADR 0015](docs/adr/0015-versioned-datasets-on-disk.md) and
+[ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md).
 
 <br/>
 

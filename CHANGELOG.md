@@ -141,6 +141,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     activate — §28.10 forbids the mechanism, so the UI offers no switch that
     could become one.
 
+- **Human review queue and curated datasets** (issues #42 and #64, EPIC Phase 5;
+  [ADR 0021](docs/adr/0021-human-review-loop-and-curated-datasets.md)). The
+  `capture → classification → human review → curated dataset` half of
+  PROJECT.md §16's lifecycle now exists end to end. #64's "active-learning review
+  queue" is folded in and closed here as the queue's `uncertainty` ranking. No
+  `event-envelope-v1` change — `ReviewUpdated` was already a member of the frozen
+  enum (§28.5-6).
+  - **The §16 invariant is enforced structurally, not by convention.** "Always
+    retain the original model prediction separately from the human-reviewed
+    label" is a safety property, so the prediction lives in an *unexported*
+    `prediction` value inside `review.Review` with no exported constructor and no
+    setter, and the only mutator — `Put(flowID, state, label, note)` — has no
+    prediction parameter for a caller to fill. The store captures the verdict
+    itself, once, on a flow's first review, and copies it forward untouched
+    afterwards. On the wire, `predicted_class` / `predicted_score` / `model_id`
+    are read-only and the write body rejects them as unknown fields (`400`). A
+    correction can add information; it can never destroy the model's claim.
+  - `internal/review` — the review store. One JSON file per reviewed flow under
+    the new `review.directory` (atomic temp-file+rename, corrupt-file tolerant,
+    loaded on start), fronted by an RWMutex-guarded memory index, mirroring
+    `internal/training`. A record carries the five §16 states
+    (`unreviewed` | `correct` | `incorrect` | `unsure` | `ignored_pattern`), the
+    human label, the frozen prediction, `reviewer` (`"local"` until #58), a note,
+    timestamps and a `history` of superseded decisions so a correction is
+    traceable. Deliberately **not capped**: reviews are human-paced, and
+    hand-labelled ground truth is the most expensive data in the system.
+  - **Per-state rules,** because a state either asserts a class or it does not.
+    `correct` derives its label from the prediction (a differing `human_label` is
+    a `400` pointing at `incorrect`); `incorrect` **requires** a
+    `traffic-classes-v1` class and it must differ from the prediction;
+    `unsure`, `ignored_pattern` and `unreviewed` must carry no label —
+    `ignored_pattern` means "stop showing me this", not "this is class X".
+    Writing `unreviewed` un-reviews a flow and returns it to the queue with its
+    history intact.
+  - **Active-learning ranking (#64).** `GET /api/v1/review/queue?sort=uncertainty`
+    orders by **smallest margin** (`p_top1 - p_top2` over the authoritative
+    model's 7-class vector, normalised by its sum first), reported as
+    `uncertainty = 1 - margin` with normalised Shannon entropy and the two
+    contending class names alongside — so the flows the model is least able to
+    settle reach a human first, and the UI can say why. A uniform vector ranks
+    first (margin 0, entropy 1); a verdict with no usable vector is flagged
+    `scores_available: false` and treated as maximally uncertain rather than
+    hidden. `sort=disagreement` leads with ensemble disagreements;
+    `sort=recent` is the default. A flow leaves the queue on a terminal decision
+    (`correct` / `incorrect` / `ignored_pattern`); **`unsure` stays in**, with its
+    note carried forward.
+  - REST `internal/api/review.go`: `GET /api/v1/review/queue`,
+    `GET /api/v1/review` (filter by `state`), `GET /api/v1/review/stats` (counts
+    per state), `GET /api/v1/review/{flow_id}`, and
+    `PUT`/`POST /api/v1/review/{flow_id}` (`201` first review, `200` correction).
+    `400` on an unknown state or a non-class label — the error echoes the valid
+    set; `404` when the flow has no stored classification, because you cannot
+    review a verdict the bounded ring has already evicted. The queue reuses the
+    shared `parseClassFilters`, so `class` / `model` / `min_confidence` /
+    `disagreement` mean exactly what they mean on `/api/v1/classifications`. The
+    write routes are loopback-only and unauthenticated for now (`TODO(#58)`).
+  - **Curated datasets — the `human_review` gate is open.** `dataset.Selection`
+    gains `reviewed`: the rows come from the review store and the CSV `label`
+    column carries the **operator's** label, so `labeling_source` becomes
+    `human_review`. Only terminal, class-asserting reviews are eligible
+    (`correct` → the confirmed prediction, `incorrect` → the correction);
+    `unsure` and `ignored_pattern` are excluded, the latter opt-in-able via
+    `include_ignored`, which labels those rows with the model's *unconfirmed*
+    prediction and honestly records the cut as
+    `human_review+model_prediction:<ids>` with a warning. Both build paths share
+    one tail, so a curated cut keeps every existing guarantee: immutability, the
+    content hash over the CSV bytes, deterministic row order, `parent_datasets`
+    lineage, and the zero-rows / one-class / 20-row refusals. `disagreement`
+    combined with `reviewed` is refused rather than silently ignored.
+  - **Config:** `review.directory` (default `./data/review`), overridable with
+    `SYNAPSE_REVIEW_DIR`; an empty value is rejected at load.
+  - **Audit and events:** every write appends one
+    `{subject_type:"review", subject:"<flow id>", event:"ReviewUpdated"}` line to
+    `audit.log` — the "human label changes" record PROJECT.md §21 asks for —
+    carrying both the human label and the prediction, and publishes a
+    `ReviewUpdated` envelope on the live bus.
+  - **SPA:** a new `LIVE ▸ Review` view (`#/review`) with the sort selector, a
+    per-state stats strip, and one row per queued flow showing the tuple, the
+    model's prediction with its confidence, the margin/entropy read-out when
+    sorting by uncertainty, and controls for all five states plus a class picker
+    and a note field. The model's prediction sits **next to** the human label at
+    all times and never replaces it — the invariant made visible. A
+    "create curated dataset" action prefills the ML ▸ Datasets form with a
+    `reviewed` selection, and that form gained `reviewed` / `include_ignored`
+    checkboxes. The dataset honesty banner and the `labeling_source` badge now
+    tell the truth for all three cases, and the **Flow Inspector**'s
+    human-review section (§19.3) is live instead of a Phase-2 stub.
+    `#/detections` is untouched — it remains a "Planned — Phase 5" placeholder,
+    since nothing emits `AlertCreated` yet.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature

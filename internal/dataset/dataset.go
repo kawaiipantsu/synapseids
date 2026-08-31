@@ -25,10 +25,11 @@
 // its predecessor in parent_datasets. Delete is the single exception and it is
 // audited by the caller.
 //
-// Honesty about labels: Phase 4 has no human review loop (issue #42), so a
-// dataset built today is labelled by the daemon's own model predictions. That is
-// recorded literally in labeling_source as "model_prediction:<model ids>" and
-// nothing here can write "human_review".
+// Honesty about labels: a default cut is labelled by the daemon's own model
+// predictions, recorded literally in labeling_source as
+// "model_prediction:<model ids>". A cut with Selection.Reviewed set is built from
+// the human review store instead and uses the operator's label, and only that
+// path may write "human_review" (see reviewed.go, PROJECT.md §16, issue #42).
 package dataset
 
 import (
@@ -155,6 +156,7 @@ type Manager struct {
 	mu   sync.RWMutex
 	dir  string
 	src  FlowSource
+	rv   ReviewSource
 	logf Logf
 	byID map[string]*Dataset // keyed by Ref()
 
@@ -167,15 +169,17 @@ type Manager struct {
 
 // Open returns a Manager over dir, scanning it for existing versions. src is the
 // flow store Create reads from and may be nil in a read-only context (Create
-// then fails cleanly). A missing directory is not an error — it is created on
-// the first write. A version directory whose manifest.json is missing or corrupt
-// is logged and skipped rather than failing the daemon, matching
-// registry.Open's posture (PROJECT.md §21).
-func Open(dir string, src FlowSource, logf Logf) *Manager {
+// then fails cleanly). rv is the human review store a Selection.Reviewed cut
+// reads its labels from and may be nil (such a cut then fails cleanly with
+// ErrInvalid). A missing directory is not an error — it is created on the first
+// write. A version directory whose manifest.json is missing or corrupt is logged
+// and skipped rather than failing the daemon, matching registry.Open's posture
+// (PROJECT.md §21).
+func Open(dir string, src FlowSource, rv ReviewSource, logf Logf) *Manager {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	m := &Manager{dir: dir, src: src, logf: logf, byID: map[string]*Dataset{}}
+	m := &Manager{dir: dir, src: src, rv: rv, logf: logf, byID: map[string]*Dataset{}}
 	m.scan()
 	return m
 }
@@ -474,7 +478,7 @@ func (m *Manager) create(spec Spec, parents []string) (*Dataset, error) {
 		return nil, fmt.Errorf("%w: no flow store is wired", ErrInvalid)
 	}
 
-	built, err := build(m.src, spec.Selection)
+	built, err := build(m.src, m.rv, spec.Selection)
 	if err != nil {
 		return nil, err
 	}

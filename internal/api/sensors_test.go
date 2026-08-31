@@ -29,7 +29,7 @@ func (f fakeSensors) Sensor(id string) (capture.SensorStatus, bool) {
 func sensorHandler(sp SensorStatusProvider) http.Handler {
 	rt := inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary))
 	return New(config.Default(), events.New(), storage.NewMem(10, 10), rt,
-		nil, nil, nil, nil, nil, nil, nil, nil, sp).Handler()
+		nil, nil, nil, nil, nil, nil, nil, nil, sp, nil).Handler()
 }
 
 func TestSensorsEmptyWithoutProvider(t *testing.T) {

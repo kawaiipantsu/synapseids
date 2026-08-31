@@ -271,6 +271,51 @@ func TestTrainingDirectory(t *testing.T) {
 	}
 }
 
+// The human review directory (PROJECT.md §16; ADR 0021).
+func TestReviewDirectory(t *testing.T) {
+	if got := Default().Review.Directory; got != "./data/review" {
+		t.Fatalf("default review.directory = %q, want ./data/review", got)
+	}
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	mustWrite(t, p, []byte(`{"review":{"directory":"/srv/synapse/review"}}`))
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Review.Directory != "/srv/synapse/review" {
+		t.Fatalf("review.directory not read from file: %q", c.Review.Directory)
+	}
+
+	t.Setenv("SYNAPSE_REVIEW_DIR", "/env/review")
+	if c, err = Load(p); err != nil {
+		t.Fatalf("Load w/ env: %v", err)
+	}
+	if c.Review.Directory != "/env/review" {
+		t.Fatalf("SYNAPSE_REVIEW_DIR ignored: %q", c.Review.Directory)
+	}
+
+	if c, err = Load(""); err != nil {
+		t.Fatalf(`Load(""): %v`, err)
+	}
+	if c.Review.Directory != "/env/review" {
+		t.Fatalf("SYNAPSE_REVIEW_DIR ignored with no file: %q", c.Review.Directory)
+	}
+}
+
+func TestReviewDirectoryMustNotBeEmpty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	mustWrite(t, p, []byte(`{"review":{"directory":"   "}}`))
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("an empty review.directory must be rejected")
+	}
+	if !strings.Contains(err.Error(), "review.directory") {
+		t.Fatalf("error does not name the field: %v", err)
+	}
+}
+
 func TestTrainingDirectoryMustNotBeEmpty(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.json")
 	mustWrite(t, p, []byte(`{"training":{"directory":"   "}}`))

@@ -24,7 +24,7 @@ import (
 // are not — a skipped contract test that nobody notices is worse than none.
 
 func TestDatasetCSVMatchesTheTrainerContract(t *testing.T) {
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 	d := mustCreate(t, m, spec("trainer/contract"))
 
 	body := readFile(t, filepath.Join(d.Dir, dataset.CSVFileName))
@@ -139,7 +139,7 @@ func TestTrainerLoadsTheDataset(t *testing.T) {
 		return
 	}
 
-	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), quiet)
+	m := dataset.Open(t.TempDir(), twoClassStore(t, 40), nil, quiet)
 	d := mustCreate(t, m, spec("trainer/roundtrip"))
 
 	// load_csv also accepts a directory containing dataset.csv, so hand it the

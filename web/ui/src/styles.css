@@ -1641,3 +1641,249 @@ table.mr-audit td.mr-detail {
 .mr-ev-training {
   color: #7ee0b0;
 }
+
+
+/* ==========================================================================
+   Human review loop (PROJECT.md §16; issues #42, #64) — feature/review-queue
+   --------------------------------------------------------------------------
+   LIVE ▸ Review: the ranked queue, the five review states, the per-row
+   controls, and the Datasets bits that had to learn about human labels. A
+   sibling branch also edits this file; keep additions inside this block.
+
+   The visual rule mirrors the data rule: "model says" and "human says" are two
+   separate columns and never collapse into one (§16).
+   ========================================================================== */
+
+.rv-honesty {
+  margin-bottom: 12px;
+}
+
+/* ---- stats strip ---- */
+.rv-cards .card {
+  min-width: 130px;
+}
+.rv-card h3 {
+  text-transform: lowercase;
+}
+.rv-card-correct .big {
+  color: var(--accent);
+}
+.rv-card-incorrect .big {
+  color: var(--brute);
+}
+.rv-card-unsure .big {
+  color: var(--suspicious);
+}
+.rv-card-ignored_pattern .big {
+  color: var(--dim);
+}
+.rv-card-total {
+  border-color: var(--accent);
+}
+
+/* ---- toolbar ---- */
+.rv-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.rv-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dim);
+}
+.rv-bar input[type='number'] {
+  width: 64px;
+}
+.rv-bar .rv-check {
+  gap: 4px;
+}
+.rv-sorthint {
+  flex: 1 1 320px;
+  min-width: 0;
+  font-size: 11px;
+}
+.rv-cut {
+  white-space: nowrap;
+}
+
+/* ---- the queue table ---- */
+table.rv-table td {
+  vertical-align: top;
+}
+table.rv-table .rv-tuple {
+  white-space: nowrap;
+}
+.rv-row-dis td {
+  border-left-color: var(--c2);
+}
+
+.rv-pill {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 0 5px;
+  color: #06171e;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* One badge per §16 state, coloured by what it means rather than by class. */
+.rv-state {
+  display: inline-block;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.rv-correct {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.rv-incorrect {
+  color: var(--brute);
+  border-color: var(--brute);
+}
+.rv-unsure {
+  color: var(--suspicious);
+  border-color: var(--suspicious);
+}
+.rv-ignored_pattern {
+  color: var(--dim);
+}
+.rv-unreviewed {
+  color: var(--dim);
+}
+
+.rv-model {
+  display: inline-block;
+  white-space: nowrap;
+}
+.rv-dis {
+  color: var(--c2);
+  font-size: 10px;
+}
+.rv-human {
+  min-width: 120px;
+}
+.rv-notetext {
+  max-width: 240px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+/* ---- the uncertainty read-out ---- */
+.rv-unccell {
+  min-width: 150px;
+}
+.rv-unc {
+  display: inline-block;
+  font-size: 11px;
+}
+.rv-unc.none {
+  color: var(--suspicious);
+}
+.rv-unc-bar {
+  display: inline-block;
+  width: 60px;
+  height: 6px;
+  margin-right: 5px;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.rv-unc-bar .fill {
+  display: block;
+  height: 100%;
+  background: var(--suspicious);
+}
+.rv-unc-pair {
+  font-size: 10px;
+}
+
+/* ---- per-row controls ---- */
+.rv-ctlcell {
+  min-width: 300px;
+}
+.rv-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rv-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.rv-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+.rv-btn-correct.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.rv-btn-incorrect.on {
+  border-color: var(--brute);
+  color: var(--brute);
+}
+.rv-btn-unsure.on {
+  border-color: var(--suspicious);
+  color: var(--suspicious);
+}
+.rv-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rv-inputs label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+}
+.rv-inputs .rv-note {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.rv-inputs .rv-note input {
+  width: 100%;
+  min-width: 120px;
+}
+
+/* ---- Datasets: the reviewed cut ---- */
+.ds-label-src.mixed {
+  color: var(--suspicious);
+  border-color: var(--accent);
+}
+.ds-reviewed {
+  margin-top: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 7px 9px;
+  align-items: flex-start;
+}
+.ds-reviewed-sub {
+  margin: 4px 0 0 18px;
+  align-items: flex-start;
+}
+.ds-reviewed span,
+.ds-reviewed-sub span {
+  line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+  .rv-ctlcell,
+  .rv-unccell {
+    min-width: 0;
+  }
+  .rv-sorthint {
+    flex-basis: 100%;
+  }
+}

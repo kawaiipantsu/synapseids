@@ -32,6 +32,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
 	"github.com/kawaiipantsu/synapseids/internal/version"
@@ -155,11 +156,19 @@ func run(args []string) int {
 		}
 	}
 
+	// The human review store loads review.directory once at startup (PROJECT.md
+	// §16; ADR 0021). It is off every packet path — a review only ever happens on
+	// an explicit PUT /api/v1/review/{flow_id}. It reads the prediction it
+	// preserves from the same store the pipeline writes to, and it must exist
+	// before the dataset manager, which reads curated labels from it.
+	rvs := review.Open(cfg.Review.Directory, store, bus, aud, log.Printf)
+
 	// The dataset manager scans datasets.directory once at startup so the API
 	// can list what is already on disk. It is off every packet path: a dataset
 	// is only ever built by an explicit POST /api/v1/datasets (PROJECT.md §14,
-	// §22; ADR 0015). It reads from the same store the pipeline writes to.
-	dsm := dataset.Open(cfg.Datasets.Directory, store, log.Printf)
+	// §22; ADR 0015). It reads from the same store the pipeline writes to, and
+	// from the review store for a `reviewed` (human-labelled) cut.
+	dsm := dataset.Open(cfg.Datasets.Directory, store, rvs, log.Printf)
 
 	// The training run store mirrors external synapse-trainer runs reported over
 	// HTTP (PROJECT.md §19.8; ADR 0019). The daemon never launches a trainer; it
@@ -253,7 +262,7 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, collector)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, collector, rvs)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
