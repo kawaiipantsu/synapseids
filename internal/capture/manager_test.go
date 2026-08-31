@@ -148,6 +148,18 @@ func TestManagerIsolatesErroringSource(t *testing.T) {
 		}
 	}
 
+	// Keep draining while we wait for the state to settle. The bad source may
+	// still have packets in flight, and a forwarder blocked in "m.out <- p" is
+	// correct backpressure — it just cannot reach its error case until someone
+	// reads. Stopping the reader here would deadlock that forwarder (issue #96).
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range out { //nolint:revive // intentional drain for the rest of the test
+		}
+	}()
+	t.Cleanup(func() { <-drained })
+
 	waitFor(t, "bad source in error state", func() bool {
 		st, _ := m.Get("bad")
 		return st.State == StateError && st.Error != ""
