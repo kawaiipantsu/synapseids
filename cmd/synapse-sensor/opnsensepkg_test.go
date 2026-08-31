@@ -485,3 +485,51 @@ func TestRemediesDoNotRequireAPackageRepository(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- configd actions
+
+const actionsConf = "../../contrib/opnsense/src/opnsense/service/conf/actions.d/actions_synapseidssensor.conf"
+
+// Saving the settings page with the sensor disabled runs the [stop] action.
+// rc.subr's default stop warns "not running? (check <pidfile>)" and returns 1 on
+// an already-stopped service, and configd renders a non-zero exit from a
+// type:script action as the GUI's "Unexpected error, check log for details" --
+// so on a real gateway EVERY save failed, while the configuration had in fact
+// been written and the template rendered. Stopping a stopped service is a no-op,
+// not a failure; both lifecycle actions must tolerate it.
+func TestStopAndRestartActionsToleratePreStoppedService(t *testing.T) {
+	conf := readScript(t, actionsConf)
+
+	for _, action := range []string{"stop", "restart"} {
+		cmd := configdActionCommand(t, conf, action)
+		if !strings.Contains(cmd, "onestatus") {
+			t.Errorf("[%s] command does not check onestatus first, so it fails on an "+
+				"already-stopped sensor:\n\t%s", action, cmd)
+		}
+	}
+
+	// configd applies parameter substitution to command:, so a stray % would be
+	// eaten. Assert it for every action, not just the two edited here.
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(line, "command:") && strings.Contains(line, "%") {
+			t.Errorf("action command contains %%, which configd will substitute:\n\t%s", line)
+		}
+	}
+}
+
+// configdActionCommand returns the command: line of the named [action] block.
+func configdActionCommand(t *testing.T, conf, action string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?ms)^\[` + regexp.QuoteMeta(action) + `\]\s*$(.*?)(?:^\[|\z)`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatalf("no [%s] action block found in %s", action, actionsConf)
+	}
+	for _, line := range strings.Split(m[1], "\n") {
+		if strings.HasPrefix(line, "command:") {
+			return strings.TrimPrefix(line, "command:")
+		}
+	}
+	t.Fatalf("[%s] has no command: line", action)
+	return ""
+}
