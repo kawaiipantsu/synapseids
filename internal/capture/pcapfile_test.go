@@ -80,17 +80,18 @@ func TestOpenRejectsNonPCAP(t *testing.T) {
 	}
 }
 
-func TestOpenRejectsPCAPNG(t *testing.T) {
+func TestOpenRejectsTruncatedPCAPNG(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.pcapng")
-	// pcapng Section Header Block magic.
+	// A Section Header Block whose declared total length is nonsense: the pcapng
+	// reader must reject it rather than trust the length.
 	writeFile(t, p, []byte{0x0a, 0x0d, 0x0d, 0x0a, 0, 0, 0, 0x1c, 0x4d, 0x3c, 0x2b, 0x1a})
 	if _, err := OpenPCAPFile(p); err == nil {
-		t.Fatalf("pcapng must be rejected with guidance")
+		t.Fatalf("a malformed pcapng section header must be rejected")
 	}
 }
 
 func TestCommittedFixturesOpen(t *testing.T) {
-	for _, f := range []string{"http.pcap", "portscan.pcap", "udp.pcap"} {
+	for _, f := range []string{"http.pcap", "portscan.pcap", "udp.pcap", "http.pcapng"} {
 		if _, err := OpenPCAPFile(filepath.Join("..", "..", "testdata", "pcap", f)); err != nil {
 			t.Errorf("%s: %v", f, err)
 		}
