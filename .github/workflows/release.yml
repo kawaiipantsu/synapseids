@@ -52,4 +52,4 @@ jobs:
             --title "SynapseIDS $GITHUB_REF_NAME" \
             --notes "$notes" \
             $prerelease \
-            dist/*.tar.gz dist/*.deb dist/SHA256SUMS
+            dist/*.tar.gz dist/*.deb dist/*.pkg dist/SHA256SUMS
