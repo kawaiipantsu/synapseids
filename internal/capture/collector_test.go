@@ -72,16 +72,10 @@ func newCollectorHarness(t *testing.T, cfg CollectorConfig) *collectorHarness {
 		}
 	}()
 
-	// The Collector needs its bound address before sensors can dial. Run binds
-	// the listener; expose it via a tiny indirection: bind here, Close, reuse.
-	lc, err := tls.Listen("tcp", "127.0.0.1:0", cfg.TLSConfig)
-	if err != nil {
-		t.Fatalf("probe listen: %v", err)
-	}
-	h.addr = lc.Addr().String()
-	_ = lc.Close()
-	col.listen = h.addr
-
+	// Let Run bind an ephemeral port itself and read the address back through
+	// the Collector's own Addr(). Binding here, closing, and handing the freed
+	// port to Run is a TOCTOU: under a loaded whole-tree run another listener
+	// can claim it in the gap.
 	go func() {
 		_ = col.Run(ctx, h.mgr)
 		close(h.runDone)
@@ -97,15 +91,10 @@ func newCollectorHarness(t *testing.T, cfg CollectorConfig) *collectorHarness {
 		_ = h.mgr.Close()
 	})
 
-	// Wait for the listener to be up.
-	waitFor(t, "collector listener up", func() bool {
-		c, derr := tls.Dial("tcp", h.addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // liveness probe
-		if derr != nil {
-			return false
-		}
-		_ = c.Close()
-		return true
-	})
+	// Wait for Run to publish the bound address. No probe dial: a probe would
+	// log a spurious "handshake failed: EOF" and briefly occupy a sensor slot.
+	waitFor(t, "collector listener up", func() bool { return col.Addr() != "" })
+	h.addr = col.Addr()
 	return h
 }
 
@@ -257,18 +246,23 @@ func TestCollectorRemovesOnGoodbye(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = runSensor(t, ctx, h.addr, h.clientTLS(t), srvCfg, stream) // returns at end of capture
+	if err := runSensor(t, ctx, h.addr, h.clientTLS(t), srvCfg, stream); err != nil {
+		t.Fatalf("sensor: %v", err) // returns at end of capture
+	}
 
-	waitFor(t, "sensor deregistered after goodbye", func() bool { return len(h.col.Sensors()) == 0 })
-	if _, ok := h.mgr.Get("edge-1"); ok {
-		t.Fatal("row lingered after goodbye")
-	}
-	if h.packets.Load() == 0 {
-		t.Fatal("no packets reached the manager before goodbye")
-	}
-	if h.connects.Load() != 1 || h.disconnAll.Load() != 1 {
-		t.Fatalf("hooks: connects=%d disconnects=%d", h.connects.Load(), h.disconnAll.Load())
-	}
+	// Everything below runSensor is asynchronous: the sensor's whole lifetime
+	// (connect, stream, goodbye) happens inside that call, and the collector
+	// forwards, deregisters and fires its hooks on its own goroutines. Checking
+	// any of it synchronously is a race — and "len(Sensors()) == 0" checked on
+	// its own would pass vacuously, since it is also true before the sensor ever
+	// arrives. Wait for the registration to have *happened* (the OnConnect hook,
+	// which survives the session ending) before waiting for the teardown.
+	waitFor(t, "sensor registered", func() bool { return h.connects.Load() == 1 })
+	waitFor(t, "packets reached the manager", func() bool { return h.packets.Load() > 0 })
+	waitFor(t, "sensor deregistered after goodbye", func() bool {
+		_, lingering := h.mgr.Get("edge-1")
+		return len(h.col.Sensors()) == 0 && h.disconnAll.Load() == 1 && !lingering
+	})
 }
 
 // TestCollectorRejectsBadToken: the sensor rejects the daemon's ClientHello
