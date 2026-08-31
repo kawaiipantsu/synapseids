@@ -121,10 +121,35 @@ func Extract(r flow.Record) Vector {
 	s[8] = r.PktSizeStdDev()
 	s[9] = r.FwdSizeMean()
 	s[10] = r.BwdSizeMean()
-	s[11] = totalPkts / durNZ
-	s[12] = totalBytes / durNZ
-	s[13] = float64(r.FwdPackets) / durNZ
-	s[14] = float64(r.BwdPackets) / durNZ
+	// Rates when the flow has no measurable duration.
+	//
+	// flow-features-v1 defines these four explicitly:
+	//
+	//   packets_per_second   missing: "total packets when duration is 0"
+	//   bytes_per_second     missing: "total bytes when duration is 0"
+	//   forward_packets_per_second   missing: "packets_forward when duration is 0"
+	//   backward_packets_per_second  missing: "packets_backward when duration is 0"
+	//
+	// Dividing by the 1e-6 floor instead violated that contract and produced
+	// absurd values: a single-packet flow — every DNS response — reported
+	// 1/1e-6 = 1,000,000 packets/second. On a live WAN sensor that made
+	// heuristic rule dos.udp_flood (pps >= 500) fire on ordinary DNS replies
+	// from AWS and Cloudflare, at severity critical and 100% confidence.
+	//
+	// The floor stays for the genuinely-measured case; it must not be used to
+	// synthesise a rate out of a zero interval, which is a different thing from
+	// a very short one.
+	if dur == 0 {
+		s[11] = totalPkts
+		s[12] = totalBytes
+		s[13] = float64(r.FwdPackets)
+		s[14] = float64(r.BwdPackets)
+	} else {
+		s[11] = totalPkts / durNZ
+		s[12] = totalBytes / durNZ
+		s[13] = float64(r.FwdPackets) / durNZ
+		s[14] = float64(r.BwdPackets) / durNZ
+	}
 	s[15] = r.IATMean()
 	s[16] = r.IATMinS()
 	s[17] = r.IATMaxS()
