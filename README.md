@@ -66,84 +66,49 @@
 
 ## 🖥️ What it looks like
 
+Real screenshots of a running daemon — more in
+[`assets/screenshots/`](assets/screenshots/), including the Dashboard, the
+Architecture builder and the CLI transcripts.
+
 ### The full-screen rolling flow-classification log
 
 The primary product view — a kiosk-style stream that appends a row per classified flow and never blocks the capture path behind it.
 
-```text
-  Synapse▪IDS   flows 512 · classified 512 · clients 3 · ● live      min conf [  0 ]  class [ all ▾ ]  [ Pause ] [ Clear ]
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  time          sensor   source                 →  destination           proto   class        confidence      models
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  17:41:09.204  local    10.20.4.18:51222       →  93.184.216.34:443     TCP    ┃NORMAL     ┃  ▇▇▇▇▇▇▇▇  96.1%   P:normal 96
-  17:41:09.271  local    10.20.7.41:44118       →  10.20.8.9:445         TCP    ┃  SCAN     ┃  ▇▇▇▇▇▇▇▇  99.3%   P:scan 99
-  17:41:09.286  local    10.20.7.41:44119       →  10.20.8.9:139         TCP    ┃  SCAN     ┃  ▇▇▇▇▇▇▇▇  99.3%   P:scan 99
-  17:41:09.301  local    10.20.7.41:44120       →  10.20.8.9:3389        TCP    ┃  SCAN     ┃  ▇▇▇▇▇▇▇▇  99.3%   P:scan 99
-  17:41:09.560  local    10.20.4.18:51230       →  1.1.1.1:53            UDP    ┃NORMAL     ┃  ▇▇▇▇▇▇▇▇  96.1%   P:normal 96
-  17:41:09.771  local    10.20.4.18:51231       →  93.184.216.34:443     TCP    ┃NORMAL     ┃  ▇▇▇▇▇▇▇▇  96.1%   P:normal 96
-  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  replay:  [ testdata/pcap/portscan.pcap        ]  [ max ▾ ]  [ Start ] [ Stop ]   idle                        ⟦THUGS⟧ · (c) 2026
-```
+<p align="center"><img src="assets/screenshots/webui-flow-log.png" alt="The SynapseIDS Flow Log: a live table of classified flows with time, sensor, source, destination, protocol, colour-coded class, confidence bar and per-model output" width="100%"></p>
 
-<sub>Illustrative. The page at <code>http://127.0.0.1:8080/</code> renders exactly these columns and streams new rows over WebSocket; the class cell is colour-coded per class, rows below 60% confidence are dimmed, and model disagreement draws an accent bar on the left edge. <b>Pause</b> freezes the view without dropping backend events, and a replay appears in the same stream. Phase-1 replays report sensor <code>local</code>; multi-sensor names arrive with distributed capture (Phase 6). Every <code>NORMAL</code> verdict from the Phase-1 heuristic sits at ~96.1% by construction; port-scan probes land at ~99.3%.</sub>
+Filter the stream and the attack classes stand out — here a real MySQL
+credential-stuffing run picked out of ordinary browsing traffic:
+
+<p align="center"><img src="assets/screenshots/webui-flow-log-brute-force.png" alt="The Flow Log filtered to the brute_force class, showing repeated short TCP conversations to port 3306 on one host" width="100%"></p>
+
+<sub>The class cell is colour-coded per class, rows below 60% confidence are dimmed, and model disagreement draws an accent bar on the left edge. <b>Pause</b> freezes the view without dropping backend events, and a replay appears in the same stream. Phase-1 replays report sensor <code>local</code>; multi-sensor names arrive with distributed capture (Phase 6). Every <code>NORMAL</code> verdict from the Phase-1 heuristic sits at ~96.1% by construction; port-scan probes land at ~99.3%.</sub>
 
 ### The flow inspector
 
 Select any row to explain the verdict against the raw feature vector and every model's output.
 
-```text
-  FLOW #4    10.0.0.66:40015  →  10.0.0.1:1723   TCP           Phase 5 view · data: GET /api/v1/flows/4
-  ────────────────────────────────────────────────────────────────────────────────────────────────
-  direction     initiator → responder             close reason   fin_rst          snapshot #0
-  first seen    13:00:00.045Z                     last seen      13:00:00.046Z    duration  0.001 s
-  packets       fwd 1  ·  bwd 1                    bytes          fwd 40  ·  bwd 40
-  tcp flags     SYN 1  ·  ACK 1  ·  RST 1         payload mean   0 B
+<p align="center"><img src="assets/screenshots/webui-flow-inspector.png" alt="The Flow Inspector drawer: verdict and confidence, the full traffic-classes-v1 probability vector, per-model outputs, the disagreement flag, 5-tuple and direction, timing and packet/byte statistics" width="100%"></p>
 
-  flow-features-v1 (raw)            value        normal band
-  packets_per_second               2000.0       0.5 – 40
-  syn_ack_ratio                    1.00         0.7 – 1.4
-  packet_size_mean                 40 B         400 – 900 B
-  small_packet_ratio               1.00         0.0 – 0.3
-  packet_direction_ratio           0.50         ~0.5
-  dest_port_is_wellknown           0            1 for a known service
+Scroll it for all 48 raw `flow-features-v1` values, each joined to the frozen
+schema so it carries its own name, calculation and unit:
 
-  traffic-classes-v1     normal   scan   dos_ddos  brute_force  botnet_c2  web_attack  suspicious
-  heuristic-v1 (primary)  0.001   0.999    0.000      0.000        0.000      0.000       0.000
-                          →  verdict   SCAN   99.9%
+<p align="center"><img src="assets/screenshots/webui-flow-inspector-features.png" alt="The Flow Inspector scrolled to the raw flow-features-v1 table, listing each feature index, name, calculation, value and unit" width="100%"></p>
 
-  model            role           class   score    note
-  heuristic-v1     primary        scan    0.999    lone SYN answered only by RST
-  —                experimental   —       —        ONNX shadow model loads in Phase 2
-  disagreement:  none (1 model)          anomaly score:  —  (anomaly model is Phase 7)
-```
+<sub>Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Normalized inputs, snapshot history and human-review status are labelled Phase-2 stubs.</sub>
 
-<sub>Illustrative. The SPA's Flow Inspector drawer is live in Phase 1: click any row in the Flow Log to see the full 5-tuple, timing, packet/byte and TCP metadata, all 48 raw <code>flow-features-v1</code> values joined to the schema, the full class-probability vector and every model's output. Values come from <code>GET /api/v1/flows/{id}</code> + <code>GET /api/v1/schemas/features</code>. Normalized inputs, snapshot history and human-review status are labelled Phase-2 stubs; the "normal band" reference column arrives with trained baselines in Phase 2.</sub>
+### Live capture sources
+
+Every source — a local NIC, a `tcpdump` subprocess, an authorized remote `ssh … tcpdump`, or a PCAP-over-IP sensor — merges into the one pipeline, with per-source packets, rates, kernel drops and error state.
+
+<p align="center"><img src="assets/screenshots/webui-capture-sources.png" alt="The Capture Sources view: two live sources added at runtime with packet, byte, pps, bps and drop counters, plus an add-source form with a mandatory authorisation checkbox" width="100%"></p>
 
 ### and from the CLI
 
-```console
-$ synapsed --listen 127.0.0.1:8080 &
-2026/08/31 17:40:58 synapsed 0.1.0-dev listening on http://127.0.0.1:8080  (feature schema flow-features-v1, 1 models)
+<p align="center"><img src="assets/screenshots/cli-replay-classify.png" alt="Terminal: synapse replay of a port-scan capture at max speed, then synapse classifications listing each probed port classified as SCAN at 99.3%" width="100%"></p>
 
-$ synapse replay testdata/pcap/portscan.pcap --speed max
-{
-  "id": "replay-1756662058123456789",
-  "speed": "max"
-}
+A 27 MB real-world capture — ordinary browsing plus an `nmap` scan and a MySQL brute-force attempt — replayed through the same pipeline:
 
-$ synapse classifications
-  13:00:00.000 TCP   local        10.0.0.66:40000 -> 10.0.0.1:21           SCAN         99.9%
-  13:00:00.003 TCP   local        10.0.0.66:40001 -> 10.0.0.1:22           SCAN         99.3%
-  13:00:00.006 TCP   local        10.0.0.66:40002 -> 10.0.0.1:23           SCAN         99.3%
-  13:00:00.009 TCP   local        10.0.0.66:40003 -> 10.0.0.1:25           SCAN         99.3%
-  13:00:00.012 TCP   local        10.0.0.66:40004 -> 10.0.0.1:53           SCAN         99.3%
-  13:00:00.015 TCP   local        10.0.0.66:40005 -> 10.0.0.1:80           SCAN         99.9%
-  13:00:00.018 TCP   local        10.0.0.66:40006 -> 10.0.0.1:110          SCAN         99.3%
-  13:00:00.021 TCP   local        10.0.0.66:40007 -> 10.0.0.1:135          SCAN         99.3%
-  ...
-  # 20 most recent (24 flows total, one per probed port); pass --limit for more.
-  # Replaying testdata/pcap/http.pcap or udp.pcap instead prints NORMAL ~96.1%.
-```
+<p align="center"><img src="assets/screenshots/cli-real-world.png" alt="Terminal: replaying a 27 MB real capture of 68,810 packets, the resulting class histogram, and the brute-force flows it identified" width="100%"></p>
 
 <br/>
 
