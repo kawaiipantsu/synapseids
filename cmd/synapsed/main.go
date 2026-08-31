@@ -17,12 +17,14 @@ import (
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/api"
+	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/model"
+	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/version"
 )
@@ -66,16 +68,40 @@ func run(args []string) int {
 	bus := events.New()
 	store := storage.NewMem(cfg.Storage.MaxFlows, cfg.Storage.MaxFlows)
 
-	// Inspect any model bundles under cfg.Models.Directory. This validates each
-	// bundle against the frozen contracts and logs the result; it never adds a
-	// model to the runtime and never activates cfg.Models.Primary — activation
-	// is a separate explicit step, still to be wired (PROJECT.md §11, §28.10).
-	// One-shot at startup, off any packet path.
-	model.Scan(cfg.Models.Directory, cfg.Models.Primary, log.Printf)
-
 	rt := inference.NewRuntime(
 		inference.NewHeuristic("heuristic-v1", inference.RolePrimary),
 	)
+
+	// Scan cfg.Models.Directory, then register every bundle that passes the gate
+	// into the model registry (issue #26). Registration makes a model known,
+	// inspectable and lineage-linked; it never adds the model to the runtime and
+	// never activates cfg.Models.Primary — activation is a separate explicit
+	// action (POST /api/v1/models/{id}/activate, PROJECT.md §11, §28.10). One-shot
+	// at startup, off any packet path.
+	aud := audit.New(cfg.Models.Directory, log.Printf)
+	reg := registry.Open(cfg.Models.Directory, log.Printf)
+	for _, b := range model.Scan(cfg.Models.Directory, cfg.Models.Primary, log.Printf) {
+		e, err := reg.Register(b)
+		if err != nil {
+			log.Printf("registry: rejected %q: %v", b.Dir(), err)
+			continue
+		}
+		aud.Log(audit.EventModelRegistered, audit.ActorLocal, e.ModelID, "hash="+e.ContentHash+" status="+string(e.Status))
+		bus.Publish(events.ModelRegistered, map[string]any{
+			"model_id": e.ModelID, "family": e.Family,
+			"content_hash": e.ContentHash, "status": string(e.Status),
+		})
+		log.Printf("registry: registered model %q (%s) — %s; POST /api/v1/models/%s/activate to make it live",
+			e.ModelID, e.Family, e.Status, e.ModelID)
+	}
+	if cfg.Models.Primary != "" {
+		if e, ok := reg.Get(cfg.Models.Primary); ok {
+			log.Printf("primary %q is registered and valid; POST /api/v1/models/%s/activate to make it live (not auto-activated, PROJECT.md §28.10)",
+				e.ModelID, e.ModelID)
+		} else {
+			log.Printf("primary %q is not a registered model id (no matching valid bundle under %s)", cfg.Models.Primary, cfg.Models.Directory)
+		}
+	}
 
 	flowOpt := flow.Options{
 		IdleTimeout:      cfg.Capture.FlowIdleTimeout.D(),
@@ -88,7 +114,7 @@ func run(args []string) int {
 
 	// rc also implements api.FlowStatsProvider: it owns the running pipeline and
 	// therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, rc, rc)
+	srv := api.New(cfg, bus, store, rt, reg, aud, rc, rc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -18,7 +18,7 @@ func seededServer(t *testing.T) http.Handler {
 	t.Helper()
 	store := storage.NewMem(200, 200)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	h := New(config.Default(), events.New(), store, rt, nil, nil).Handler()
+	h := New(config.Default(), events.New(), store, rt, nil, nil, nil, nil).Handler()
 
 	mk := func(flowID uint64, class string, classID int, score float64, disagree bool, modelIDs ...string) storage.Classification {
 		var models []inference.ModelOutput

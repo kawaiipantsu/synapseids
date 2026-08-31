@@ -213,13 +213,112 @@ GET /api/v1/classifications?model=global-v1&limit=500
 
 ### GET /api/v1/models
 
-Loaded classifiers. No params. `200`:
+The model registry view plus the classifiers currently loaded in the inference
+runtime. No params. `200`:
 
 ```json
-[{ "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary" }]
+{
+  "models": [
+    {
+      "model_id": "flow-classifier-v1-cph-0002",
+      "name": "Copenhagen classifier",
+      "version": "0.2.0",
+      "family": "flow-classifier-v1",
+      "feature_schema": "flow-features-v1",
+      "input_size": 48,
+      "output_schema": "traffic-classes-v1",
+      "output_size": 7,
+      "architecture": { "input_size": 48, "output_size": 7, "hidden": [ /* ... */ ] },
+      "training_dataset_ids": ["cicids2017-v3"],
+      "metrics": { "accuracy": 0.985 },
+      "parameter_count": 5383,
+      "artifact_bytes": 220114,
+      "content_hash": "sha256:7aa0cf…",
+      "created_at": "2026-08-31T12:00:00Z",
+      "trainer_version": "synapse-trainer 0.2.0",
+      "derived_from": "flow-classifier-v1-global-0001",
+      "status": "active",
+      "registered_at": "2026-08-31T12:05:00Z",
+      "activated_at": "2026-08-31T12:07:11Z",
+      "dir": "./data/models/cph-0002",
+      "runtime": { "loaded": true, "role": "primary" }
+    }
+  ],
+  "runtime": [
+    { "id": "flow-classifier-v1-cph-0002", "family": "flow-classifier-v1", "role": "primary", "registered": true }
+  ]
+}
 ```
 
-`role` is one of `primary`, `location`, `global`, `experimental`, `anomaly`.
+`models` is every registered bundle, newest registration first; `status` is one
+of `registered`, `active`, `deactivated`. `runtime` is what is actually scoring
+flows right now — the heuristic (`id: heuristic-v1`, `registered: false`) until a
+model is activated, then the single activated model. `runtime` inside each
+`models` entry says whether that entry is the one loaded and in what role.
+Activation never survives a daemon restart: a `status: active` entry is
+reconciled to `deactivated` on startup and must be re-activated explicitly
+(PROJECT.md §28.10).
+
+When the daemon runs without a registry (embedded/test), `models` is `[]` and
+only `runtime` is populated.
+
+### GET /api/v1/models/{id}
+
+One registered model with its lineage. `200`:
+
+```json
+{
+  "entry":   { /* one models[] element, incl. "runtime" */ },
+  "lineage": [ /* root → id chain of entries via derived_from */ ],
+  "children": [ /* entries whose derived_from == id, newest first */ ]
+}
+```
+
+`404` if `id` is not a registered model.
+
+### GET /api/v1/models/{id}/lineage
+
+The lineage of one model plus the whole registry forest for context. `200`:
+
+```json
+{
+  "lineage":  [ /* root → id chain */ ],
+  "children": [ /* direct children */ ],
+  "tree":     [ { "entry": { /* … */ }, "children": [ { "entry": …, "children": [] } ] } ]
+}
+```
+
+`tree` is the forest of every registered model: one node per root (a model with
+no `derived_from`, or one whose parent is not registered), children nested
+recursively, each level newest registration first. `404` if `id` is unknown.
+
+### POST /api/v1/models/{id}/activate
+
+Explicitly make a registered model the live primary classifier (PROJECT.md §28.10,
+§29 steps 16–18). No body. The daemon re-loads the bundle from disk, re-runs the
+validation gate, compiles the ONNX graph, atomically swaps it into the inference
+runtime, records the status change and writes a `ModelActivated` audit line. Any
+previously active model is demoted to `deactivated`. `200` returns
+`{ "entry": { /* … */ } }` with `status: active` and `runtime.loaded: true`.
+
+- `404` — `id` is not a registered model.
+- `409` — the bundle no longer loads, no longer passes the gate, or its
+  `model.onnx` cannot be compiled by the Go inference runtime. The live runtime
+  is left untouched.
+- `503` — the daemon is running without a registry.
+
+State-changing and unauthenticated for now — same posture as `POST
+/api/v1/replay`, where loopback-by-default is the only control. RBAC is tracked
+as issue #58.
+
+### POST /api/v1/models/{id}/deactivate
+
+Turn a model off and restore the heuristic as the live primary. No body. Records
+the status change and writes a `ModelDeactivated` audit line. `200` returns
+`{ "entry": { /* … */ } }` with `status: deactivated`.
+
+- `404` — `id` is not a registered model.
+- `503` — the daemon is running without a registry.
 
 ### GET /api/v1/schemas/features
 
