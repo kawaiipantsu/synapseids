@@ -266,51 +266,64 @@ func (c Config) validate() error {
 		if seen[s.Name] {
 			return fmt.Errorf("config: capture.sources[%d]: duplicate name %q", i, s.Name)
 		}
-		if s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen {
-			return fmt.Errorf("config: capture.sources[%d] (%s): snaplen %d out of range [0,%d]", i, s.Name, s.Snaplen, maxCaptureSnaplen)
-		}
-		if err := validateCaptureKind(i, s); err != nil {
-			return err
+		if err := ValidateCaptureSource(s); err != nil {
+			return fmt.Errorf("config: capture.sources[%d]: %w", i, err)
 		}
 		seen[s.Name] = true
 	}
 	return nil
 }
 
+// ValidateCaptureSource runs the per-source rules the config loader applies to
+// every capture.sources[] entry: a non-empty name, an in-range snaplen and the
+// per-kind required fields and §28.18 authorization gate. The runtime
+// POST /api/v1/captures handler calls this exact function so the file path and
+// the API path can never drift (issue #32). Cross-source concerns (duplicate
+// names, array index in the message) stay in validate().
+func ValidateCaptureSource(s CaptureSource) error {
+	if s.Name == "" {
+		return fmt.Errorf("capture source: name is required")
+	}
+	if s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen {
+		return fmt.Errorf("capture source %q: snaplen %d out of range [0,%d]", s.Name, s.Snaplen, maxCaptureSnaplen)
+	}
+	return validateCaptureKind(s)
+}
+
 // validateCaptureKind enforces the per-kind required fields (PROJECT.md §6,
 // §28.18).
-func validateCaptureKind(i int, s CaptureSource) error {
+func validateCaptureKind(s CaptureSource) error {
 	switch s.Kind {
 	case "nic":
 		if s.Interface == "" {
-			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
+			return fmt.Errorf("capture source %q: interface is required for kind \"nic\"", s.Name)
 		}
 		if !captureFilterKnown(s.Filter) {
-			return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+			return fmt.Errorf("capture source %q: unknown filter %q (want \"\" or one of %v)", s.Name, s.Filter, captureFilterNames)
 		}
 	case "tcpdump":
 		if s.Interface == "" {
-			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"tcpdump\"", i, s.Name)
+			return fmt.Errorf("capture source %q: interface is required for kind \"tcpdump\"", s.Name)
 		}
 	case "ssh":
 		if s.Destination == "" {
-			return fmt.Errorf("config: capture.sources[%d] (%s): destination is required for kind \"ssh\"", i, s.Name)
+			return fmt.Errorf("capture source %q: destination is required for kind \"ssh\"", s.Name)
 		}
 		if s.Interface == "" {
-			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"ssh\"", i, s.Name)
+			return fmt.Errorf("capture source %q: interface is required for kind \"ssh\"", s.Name)
 		}
 		if !s.Authorized {
-			return fmt.Errorf("config: capture.sources[%d] (%s): remote capture requires \"authorized\": true — you must be authorised to monitor %s (PROJECT.md §28.18)", i, s.Name, s.Destination)
+			return fmt.Errorf("capture source %q: remote capture requires \"authorized\": true — you must be authorised to monitor %s (PROJECT.md §28.18)", s.Name, s.Destination)
 		}
 		switch s.KnownHosts {
 		case "", "strict", "accept-new":
 		default:
-			return fmt.Errorf("config: capture.sources[%d] (%s): known_hosts %q must be \"strict\" or \"accept-new\"", i, s.Name, s.KnownHosts)
+			return fmt.Errorf("capture source %q: known_hosts %q must be \"strict\" or \"accept-new\"", s.Name, s.KnownHosts)
 		}
 	case "pcap-over-ip":
-		return validatePCAPOverIPSource(i, s)
+		return validatePCAPOverIPSource(s)
 	default:
-		return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (want \"nic\", \"tcpdump\", \"ssh\" or \"pcap-over-ip\")", i, s.Name, s.Kind)
+		return fmt.Errorf("capture source %q: unknown kind %q (want \"nic\", \"tcpdump\", \"ssh\" or \"pcap-over-ip\")", s.Name, s.Kind)
 	}
 	return nil
 }
@@ -319,22 +332,22 @@ func validateCaptureKind(i int, s CaptureSource) error {
 // stream (PROJECT.md §21, §28.18): a real addr, no secret in the file, and an
 // explicit authorized:true for any non-loopback, insecure-TLS or token-less
 // configuration.
-func validatePCAPOverIPSource(i int, s CaptureSource) error {
+func validatePCAPOverIPSource(s CaptureSource) error {
 	switch {
 	case s.Addr == "":
-		return fmt.Errorf("config: capture.sources[%d] (%s): addr is required for kind \"pcap-over-ip\"", i, s.Name)
+		return fmt.Errorf("capture source %q: addr is required for kind \"pcap-over-ip\"", s.Name)
 	case !strings.Contains(s.Addr, ":"):
-		return fmt.Errorf("config: capture.sources[%d] (%s): addr %q must be host:port", i, s.Name, s.Addr)
+		return fmt.Errorf("capture source %q: addr %q must be host:port", s.Name, s.Addr)
 	case s.Token != "":
-		return fmt.Errorf("config: capture.sources[%d] (%s): an inline token is not allowed — use token_file or the SYNAPSE_POIP_TOKEN env var (PROJECT.md §23)", i, s.Name)
+		return fmt.Errorf("capture source %q: an inline token is not allowed — use token_file or the SYNAPSE_POIP_TOKEN env var (PROJECT.md §23)", s.Name)
 	case (s.ClientCertFile == "") != (s.ClientKeyFile == ""):
-		return fmt.Errorf("config: capture.sources[%d] (%s): client_cert_file and client_key_file must be set together", i, s.Name)
+		return fmt.Errorf("capture source %q: client_cert_file and client_key_file must be set together", s.Name)
 	case s.InsecureTLS && !s.Authorized:
-		return fmt.Errorf("config: capture.sources[%d] (%s): insecure_tls requires authorized: true (PROJECT.md §21, §28.18)", i, s.Name)
+		return fmt.Errorf("capture source %q: insecure_tls requires authorized: true (PROJECT.md §21, §28.18)", s.Name)
 	case !hostIsLoopback(s.Addr) && !s.Authorized:
-		return fmt.Errorf("config: capture.sources[%d] (%s): a non-loopback sensor addr %q requires authorized: true — you are asserting you are authorized to monitor it (PROJECT.md §21)", i, s.Name, s.Addr)
+		return fmt.Errorf("capture source %q: a non-loopback sensor addr %q requires authorized: true — you are asserting you are authorized to monitor it (PROJECT.md §21)", s.Name, s.Addr)
 	case s.TokenFile == "" && !s.Authorized:
-		return fmt.Errorf("config: capture.sources[%d] (%s): set token_file (or authorized: true to connect without a bearer token)", i, s.Name)
+		return fmt.Errorf("capture source %q: set token_file (or authorized: true to connect without a bearer token)", s.Name)
 	}
 	return nil
 }

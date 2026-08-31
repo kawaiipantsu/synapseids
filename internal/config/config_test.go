@@ -149,6 +149,44 @@ func TestCaptureSSHAuthorizationMessage(t *testing.T) {
 	}
 }
 
+// TestValidateCaptureSourceMatchesWholeFile asserts the exported single-source
+// validator and the whole-file validate() agree for representative good and bad
+// entries of every kind — no rule drift between the file path and the runtime
+// POST /api/v1/captures path (issue #32).
+func TestValidateCaptureSourceMatchesWholeFile(t *testing.T) {
+	cases := map[string]CaptureSource{
+		"nic ok":              {Name: "a", Kind: "nic", Interface: "eth0", Filter: "ip-any"},
+		"nic no iface":        {Name: "a", Kind: "nic"},
+		"nic bad filter":      {Name: "a", Kind: "nic", Interface: "eth0", Filter: "tcp port 80"},
+		"nic bad snaplen":     {Name: "a", Kind: "nic", Interface: "eth0", Snaplen: 9_999_999},
+		"tcpdump ok":          {Name: "a", Kind: "tcpdump", Interface: "eth0", Filter: "tcp port 80 or udp"},
+		"tcpdump no iface":    {Name: "a", Kind: "tcpdump"},
+		"ssh ok":              {Name: "a", Kind: "ssh", Destination: "h", Interface: "eth0", Authorized: true, KnownHosts: "accept-new"},
+		"ssh no auth":         {Name: "a", Kind: "ssh", Destination: "h", Interface: "eth0"},
+		"ssh no dest":         {Name: "a", Kind: "ssh", Interface: "eth0", Authorized: true},
+		"ssh bad known_hosts": {Name: "a", Kind: "ssh", Destination: "h", Interface: "eth0", Authorized: true, KnownHosts: "no"},
+		"poip ok tokenfile":   {Name: "a", Kind: "pcap-over-ip", Addr: "127.0.0.1:4789", TokenFile: "/etc/x.tok"},
+		"poip ok remote auth": {Name: "a", Kind: "pcap-over-ip", Addr: "sensor.hq:4789", Authorized: true, InsecureTLS: true},
+		"poip no addr":        {Name: "a", Kind: "pcap-over-ip"},
+		"poip inline token":   {Name: "a", Kind: "pcap-over-ip", Addr: "127.0.0.1:1", Token: "secret"},
+		"poip remote no auth": {Name: "a", Kind: "pcap-over-ip", Addr: "10.0.0.5:4789", TokenFile: "t"},
+		"poip half mtls":      {Name: "a", Kind: "pcap-over-ip", Addr: "127.0.0.1:1", TokenFile: "t", ClientCertFile: "c"},
+		"unknown kind":        {Name: "a", Kind: "tap", Interface: "eth0"},
+		"empty name":          {Kind: "nic", Interface: "eth0"},
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			single := ValidateCaptureSource(s) == nil
+			c := Default()
+			c.Capture.Sources = []CaptureSource{s}
+			whole := c.validate() == nil
+			if single != whole {
+				t.Fatalf("disagreement: ValidateCaptureSource ok=%t, validate() ok=%t (%+v)", single, whole, s)
+			}
+		})
+	}
+}
+
 func TestCaptureIfaceEnvAddsSource(t *testing.T) {
 	t.Setenv("SYNAPSE_CAPTURE_IFACE", "eth9")
 	c, err := Load("")

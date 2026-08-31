@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,6 +203,121 @@ func TestManagerListReflectsState(t *testing.T) {
 	l := m.List()
 	if len(l) != 1 || l[0].Kind != "nic" || l[0].Filter != "(all)" {
 		t.Fatalf("list = %+v", l)
+	}
+}
+
+// TestManagerDynamicAddAfterStart: a source added after Packets() is running
+// has its forwarder spun up against the live merged stream; its packets arrive
+// and the pre-existing source is undisturbed. This is the POST /api/v1/captures
+// path (issue #32).
+func TestManagerDynamicAddAfterStart(t *testing.T) {
+	m := newManager(64, 20*time.Millisecond)
+	a := &fakeSource{total: 400, delay: 100 * time.Microsecond, tag: 1}
+	mustAdd(t, m.Add("a", a, SourceMeta{Kind: "nic"}))
+
+	out, _ := m.Packets(context.Background())
+	defer func() { _ = m.Close() }()
+
+	perTag := map[uint16]int{}
+	// Drain a few of A's packets so the manager is demonstrably running.
+	for i := 0; i < 20; i++ {
+		pk := <-out
+		perTag[pk.SrcPort]++
+	}
+
+	b := &fakeSource{total: 150, tag: 2}
+	mustAdd(t, m.Add("b", b, SourceMeta{Kind: "nic"}))
+
+	deadline := time.After(10 * time.Second)
+	for perTag[2] < 150 || perTag[1] < 400 {
+		select {
+		case pk, ok := <-out:
+			if !ok {
+				t.Fatalf("stream closed early: %v", perTag)
+			}
+			perTag[pk.SrcPort]++
+		case <-deadline:
+			t.Fatalf("did not see all packets: %v", perTag)
+		}
+	}
+	if st, ok := m.Get("b"); !ok || st.Packets != 150 {
+		t.Fatalf("runtime-added source status = %+v ok=%t", st, ok)
+	}
+}
+
+// TestManagerRemoveStopsSourceAndGoroutine: Remove closes the source, joins its
+// forwarder (no goroutine left behind) and drops the row, while a sibling source
+// keeps flowing.
+func TestManagerRemoveStopsSourceAndGoroutine(t *testing.T) {
+	m := newManager(64, 20*time.Millisecond)
+	keep := &fakeSource{total: 1 << 20, delay: 200 * time.Microsecond, tag: 1}
+	drop := &fakeSource{total: 1 << 20, delay: 200 * time.Microsecond, tag: 2}
+	mustAdd(t, m.Add("keep", keep, SourceMeta{Kind: "nic"}))
+	mustAdd(t, m.Add("drop", drop, SourceMeta{Kind: "nic"}))
+
+	out, _ := m.Packets(context.Background())
+	defer func() { _ = m.Close() }()
+
+	stop := make(chan struct{})
+	keepSeen := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case pk, ok := <-out:
+				if !ok {
+					return
+				}
+				if pk.SrcPort == 1 {
+					select {
+					case keepSeen <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	waitFor(t, "drop source running", func() bool {
+		st, ok := m.Get("drop")
+		return ok && st.State == StateRunning
+	})
+
+	base := runtime.NumGoroutine()
+	if !m.Remove("drop") {
+		t.Fatal("Remove(drop) returned false")
+	}
+	if _, ok := m.Get("drop"); ok {
+		t.Fatal("drop still present after Remove")
+	}
+	if !drop.closed.Load() {
+		t.Fatal("drop source not Closed by Remove")
+	}
+	// The forwarder goroutine is joined synchronously by Remove, so the count
+	// must not have grown (a small slack absorbs unrelated scheduler churn).
+	if n := runtime.NumGoroutine(); n > base+1 {
+		t.Fatalf("goroutine count grew after Remove: base=%d now=%d", base, n)
+	}
+
+	// keep still delivers.
+	<-keepSeen
+	select {
+	case keepSeen <- struct{}{}:
+	default:
+	}
+	waitFor(t, "keep still flowing", func() bool {
+		select {
+		case <-keepSeen:
+			return true
+		default:
+			return false
+		}
+	})
+	close(stop)
+
+	if st, ok := m.Get("keep"); !ok || st.State != StateRunning {
+		t.Fatalf("keep source disturbed: %+v ok=%t", st, ok)
 	}
 }
 

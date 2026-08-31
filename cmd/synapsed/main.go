@@ -21,6 +21,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/api"
 	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
+	"github.com/kawaiipantsu/synapseids/internal/capturewire"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
@@ -148,16 +149,12 @@ func run(args []string) int {
 	capMgr := capture.NewManager()
 	live := 0
 	for _, cs := range cfg.Capture.Sources {
-		src, target, err := newCaptureSource(cs)
+		src, target, err := capturewire.Build(cs, log.Printf)
 		if err != nil {
 			log.Printf("capture: source %q disabled: %v", cs.Name, err)
 			continue
 		}
-		filterLabel := cs.Filter
-		if filterLabel == "" {
-			filterLabel = "(all)"
-		}
-		if err := capMgr.Add(cs.Name, src, capture.SourceMeta{Kind: cs.Kind, Filter: filterLabel}); err != nil {
+		if err := capMgr.Add(cs.Name, src, capturewire.Meta(cs)); err != nil {
 			log.Printf("capture: source %q: %v", cs.Name, err)
 			_ = src.Close()
 			continue
@@ -179,33 +176,34 @@ func run(args []string) int {
 		log.Printf("capture: no live source could start — continuing API-only (degraded)")
 	}
 
+	// The Manager is always wired into the API, even with zero startup sources,
+	// so POST /api/v1/captures can add one at runtime and DELETE can remove it
+	// (issue #32). The capture pipeline goroutine below always runs for the same
+	// reason — a runtime-added source needs a consumer on m.out.
+	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	var capProvider api.CaptureStatusProvider
-	if live > 0 {
-		capProvider = capMgr
-	}
-	srv := api.New(cfg, bus, store, rt, reg, aud, rc, rc, capProvider)
+	srv := api.New(cfg, bus, store, rt, reg, aud, rc, rc, capMgr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// One pipeline goroutine consumes the merged live-capture stream. It shares
-	// the daemon's IDGen with the replay pipeline so flow IDs stay globally
-	// unique (CLAUDE.md).
-	if live > 0 {
-		go func() {
-			st, err := pipeline.Run(ctx, capMgr, rt, bus, store, pipeline.Options{
-				Flow: flowOpt, Sensor: "local",
-				IDGen: func() uint64 { return flowID.Add(1) },
-			})
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("capture pipeline: %v", err)
-			}
-			log.Printf("capture pipeline stopped: %d packets, %d flows, %d classifications",
-				st.Packets, st.Flows, st.Classifications)
-		}()
-	}
+	// One pipeline goroutine consumes the merged live-capture stream. It runs
+	// even with no startup source so a source added later via
+	// POST /api/v1/captures has a consumer on the merged channel. It shares the
+	// daemon's IDGen with the replay pipeline so flow IDs stay globally unique
+	// (CLAUDE.md).
+	go func() {
+		st, err := pipeline.Run(ctx, capMgr, rt, bus, store, pipeline.Options{
+			Flow: flowOpt, Sensor: "local",
+			IDGen: func() uint64 { return flowID.Add(1) },
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("capture pipeline: %v", err)
+		}
+		log.Printf("capture pipeline stopped: %d packets, %d flows, %d classifications",
+			st.Packets, st.Flows, st.Classifications)
+	}()
 
 	log.Printf("synapsed %s listening on http://%s  (feature schema %s, %d models, %d live capture source(s))",
 		version.Version, cfg.Server.Listen, features.SchemaID, len(rt.Models()), live)
@@ -220,80 +218,6 @@ func run(args []string) int {
 	return 0
 }
 
-// newCaptureSource builds the capture.Source for one configured entry and a
-// short human label for the startup log. config.validate has already checked
-// the per-kind required fields; the constructors here do the real environment
-// checks (interface exists, capability present, binary on PATH) and a failure
-// is logged and skipped so the daemon still serves the API (PROJECT.md §21).
-func newCaptureSource(cs config.CaptureSource) (capture.Source, string, error) {
-	switch cs.Kind {
-	case "nic":
-		src, err := capture.NewAFPacket(capture.AFPacketConfig{
-			Interface:   cs.Interface,
-			Promiscuous: cs.Promiscuous,
-			Snaplen:     cs.Snaplen,
-			Filter:      cs.Filter,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return src, cs.Interface, nil
-	case "tcpdump":
-		src, err := capture.NewTcpdumpStream(capture.TcpdumpConfig{
-			Binary:    cs.Binary,
-			Interface: cs.Interface,
-			Filter:    cs.Filter,
-			Snaplen:   cs.Snaplen,
-			ExtraArgs: cs.ExtraArgs,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return src, cs.Interface, nil
-	case "ssh":
-		src, err := capture.NewSSHTcpdump(capture.SSHConfig{
-			SSHBinary:      cs.Binary,
-			Destination:    cs.Destination,
-			Port:           cs.Port,
-			IdentityFile:   cs.IdentityFile,
-			RemoteBinary:   cs.RemoteBinary,
-			Interface:      cs.Interface,
-			Filter:         cs.Filter,
-			Snaplen:        cs.Snaplen,
-			ExtraSSHArgs:   cs.ExtraSSHArgs,
-			KnownHostsMode: cs.KnownHosts,
-			Authorized:     cs.Authorized,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return src, cs.Destination + " " + cs.Interface, nil
-	case "pcap-over-ip":
-		tok, err := resolvePOIPToken(cs)
-		if err != nil {
-			return nil, "", err
-		}
-		src, err := capture.NewPCAPOverIP(capture.POIPConfig{
-			Addr:               cs.Addr,
-			Token:              tok,
-			ServerName:         cs.ServerName,
-			CAFile:             cs.CAFile,
-			ClientCertFile:     cs.ClientCertFile,
-			ClientKeyFile:      cs.ClientKeyFile,
-			InsecureSkipVerify: cs.InsecureTLS,
-			Authorized:         cs.Authorized,
-			SensorID:           cs.Name,
-			Logf:               log.Printf,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return src, cs.Addr, nil
-	default:
-		return nil, "", fmt.Errorf("unknown kind %q", cs.Kind)
-	}
-}
-
 // hasNICInterface reports whether srcs already contains a "nic" source bound to
 // iface (mirrors config.hasNICInterface for the --capture merge).
 func hasNICInterface(srcs []config.CaptureSource, iface string) bool {
@@ -303,18 +227,4 @@ func hasNICInterface(srcs []config.CaptureSource, iface string) bool {
 		}
 	}
 	return false
-}
-
-// resolvePOIPToken loads the bearer token for a pcap-over-ip source from its
-// token_file, else from SYNAPSE_POIP_TOKEN. An empty result is only valid when
-// the source set authorized:true (config.validate has already enforced that).
-func resolvePOIPToken(cs config.CaptureSource) (string, error) {
-	if cs.TokenFile != "" {
-		b, err := os.ReadFile(cs.TokenFile)
-		if err != nil {
-			return "", fmt.Errorf("token_file: %w", err)
-		}
-		return strings.TrimSpace(string(b)), nil
-	}
-	return strings.TrimSpace(os.Getenv("SYNAPSE_POIP_TOKEN")), nil
 }

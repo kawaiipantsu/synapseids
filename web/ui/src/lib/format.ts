@@ -52,6 +52,21 @@ export function fmtDuration(sec: number): string {
   return `${m}m ${s}s`
 }
 
+/** "12s ago" / "3m ago" / "just now" for a past ISO timestamp. A zero/invalid
+ *  time returns "—" (never observed). */
+export function fmtAgo(iso: string, now: number = Date.now()): string {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t) || t <= 0) return '—'
+  const s = Math.max(0, Math.round((now - t) / 1000))
+  if (s < 2) return 'just now'
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m ago`
+  return `${Math.floor(h / 24)}d ${h % 24}h ago`
+}
+
 export function endpoint(ip: string, port: number): string {
   if (!ip) return '—'
   return port ? `${ip}:${port}` : ip

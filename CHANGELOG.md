@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Capture-source UI + runtime source management** (issue #32, EPIC Phase 3 —
+  **this closes EPIC #3**; [ADR 0013](docs/adr/0013-runtime-capture-source-management.md)).
+  Capture sources can now be started and stopped without restarting the daemon,
+  and the `CAPTURE ▸ Sources` view is live.
+  - `POST /api/v1/captures` — the body is one `capture.sources[]` entry (a
+    `config.CaptureSource` JSON object, unknown fields rejected, 64 KiB cap).
+    Validated by the **same** rules the config file gets, built by the **same**
+    builder the startup loop uses, then handed to `capture.Manager`. `201` with
+    the new `SourceStatus`; `400` bad body / failed per-kind validation / an
+    inline `token` (the config error text verbatim); `409` duplicate name; `422`
+    a local source (`nic`, `tcpdump`) that could not be opened; `502` a remote
+    one (`ssh`, `pcap-over-ip`); `503` no capture manager. A source that fails to
+    open is never registered and never crashes the daemon (§21).
+  - `DELETE /api/v1/captures/{name}` — cancels, closes and joins the source
+    (raw socket closed / subprocess killed / SSH or TLS session ended), drops the
+    row, `200 {"removed": …}` or `404`. Config-loaded and API-added sources are
+    both removable; both operations are logged and published as
+    `CaptureSourceConnected` / `CaptureSourceDisconnected` with `"origin":"api"`.
+  - **Both routes are powerful and unauthenticated.** They inherit the repo's
+    loopback-by-default posture (§21) and carry `TODO(#58): gate behind
+    auth/RBAC`; `authorized: true` is an operator assertion (§28.18), not access
+    control.
+  - `config.ValidateCaptureSource(cs)` — the per-source capture rules (required
+    fields per kind, the `known_hosts` enum, the pcap-over-ip TLS/token posture
+    and the §28.18 `authorized:true` gate) are now **one exported function**
+    called by both `config.validate()` and the REST handler, so the file path and
+    the runtime path cannot drift. A test asserts the two agree across all four
+    kinds.
+  - `internal/capturewire` — a new, small package holding the shared source
+    builder (`Build`, `Meta`, `ResolvePOIPToken`), moved out of `cmd/synapsed`.
+    `internal/api` cannot import a `package main`, and `internal/capture` is a
+    data-plane leaf that must not import `config`, so the builder lives above
+    both and is imported by `cmd/synapsed` and `internal/api` only — the import
+    graph stays a DAG.
+  - `capture.Manager` — dynamic fan-in is pinned by tests: `Add` after
+    `Packets()` launches the forwarder against the live merged channel without
+    disturbing existing sources or the single pipeline goroutine (§22), and
+    `Remove` now joins that forwarder (each closes a `done` channel on exit)
+    before returning, so a `DELETE` leaves no goroutine behind. Both `-race`
+    clean. `SourceMeta`/`SourceStatus` gain `origin` (`config` | `api`), also
+    exposed on `GET /api/v1/captures`.
+  - `cmd/synapsed` always wires the Manager into the API and always runs the
+    live-capture pipeline goroutine, even with zero configured sources —
+    otherwise a runtime-added source would have no consumer.
+  - **SPA `CAPTURE ▸ Sources`** (PROJECT.md §19.14) replaces the Phase-3
+    placeholder: a 1 Hz table of every source with colour-coded state, packets,
+    bytes, pps, bps, drops, decode errors, last packet (relative + absolute on
+    hover), current filter, connection latency (`n/a` off `pcap-over-ip`), a
+    `from config` / `runtime` badge, and the error string in a prominent row when
+    a source is in `error`. The add form reveals only the fields for the selected
+    kind, offers `token_file` and **never** an inline token, persists its draft to
+    `localStorage`, and requires an explicit "I am authorised to monitor this
+    target" checkbox — mirroring the server rule for `ssh` and for non-loopback /
+    insecure / token-less `pcap-over-ip` — before submit is enabled. Removal asks
+    for confirmation. Server rejections are shown verbatim.
+
 - **PCAP-over-IP transport** (issue #31, EPIC Phase 3;
   [ADR 0012](docs/adr/0012-pcap-over-ip-transport.md),
   [PROTOCOL.md](internal/capture/pcapoverip/PROTOCOL.md)). A framed,
