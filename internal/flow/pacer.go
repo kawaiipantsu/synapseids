@@ -26,7 +26,31 @@ type Pacer struct {
 // be called now. Call it exactly once per observed packet.
 func (p *Pacer) Due(ts time.Time) bool {
 	p.n++
-	if p.n%TickEvery == 0 || (!p.last.IsZero() && ts.Sub(p.last) >= tickInterval) {
+
+	// Seed the clock on the first packet.
+	//
+	// Without this the capture-time arm below was guarded by !p.last.IsZero()
+	// and p.last was only ever set when the COUNT arm fired — so a source that
+	// never reached TickEvery packets never ticked at all. Table.Tick is what
+	// expires flows on idle and max-lifetime and emits snapshots, so on a quiet
+	// link flows were never closed, never classified, and nothing reached
+	// storage, the event bus or the detection feed. A sensor on a low-traffic
+	// segment looked healthy while producing no output whatsoever (issue #137).
+	// File replay hid it because capture-end flushes everything.
+	if p.last.IsZero() {
+		p.last = ts
+		return false
+	}
+
+	// A capture whose timestamps go backwards (a re-ordered merge, a clock step
+	// on the sensor) must not park the clock in the future and stop ticking:
+	// re-seed instead of letting the comparison stay negative forever.
+	if ts.Before(p.last) {
+		p.last = ts
+		return false
+	}
+
+	if p.n%TickEvery == 0 || ts.Sub(p.last) >= tickInterval {
 		p.last = ts
 		return true
 	}
