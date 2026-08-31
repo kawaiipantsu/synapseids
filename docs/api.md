@@ -357,16 +357,25 @@ params. Always `200` — an empty array `[]` when no live capture is configured
 ]
 ```
 
+- `kind` — `nic` (a local `AF_PACKET` interface) or `pcap-over-ip` (a framed,
+  authenticated TLS stream from a remote sensor; see the config `capture.sources`
+  entry and `internal/capture/pcapoverip/PROTOCOL.md`).
 - `state` — `running`, `error` (see `error` for the message; other sources keep
-  running), or `stopped` (the source was exhausted or removed).
+  running), or `stopped` (the source was exhausted, the remote sensor sent a
+  goodbye / end-of-capture, or the source was removed). A `pcap-over-ip` source
+  does not reconnect on its own yet — a dropped stream stays `error` / `stopped`
+  until the daemon restarts.
 - `pps` / `bps` — rolling packets- and bytes-per-second, sampled by the Manager
   once a second off the packet path.
 - `drops` — kernel packet drops (`AF_PACKET` `PACKET_STATISTICS` `tp_drops`),
   accumulated. A non-zero, growing value means the sensor cannot keep up
-  (PROJECT.md §22, §24).
-- `filter` — the source's current capture filter; `(all)` = everything.
-- `connection_latency_ms` — 0 for a local NIC; meaningful only for remote
-  sources (SSH/PCAP-over-IP, later).
+  (PROJECT.md §22, §24). For `pcap-over-ip` this carries the sensor-reported drop
+  counter from keepalive frames, or 0.
+- `filter` — the source's current capture filter; `(all)` = everything. For
+  `pcap-over-ip` this is the filter string the sensor advertised in the
+  handshake (blank until connected).
+- `connection_latency_ms` — 0 for a local NIC; for `pcap-over-ip` the measured
+  TLS dial + handshake time.
 
 ### GET /api/v1/captures/{name}
 

@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -81,15 +82,28 @@ type Capture struct {
 }
 
 // CaptureSource declares one live capture input. Phase 3 supports kind "nic"
-// (a local AF_PACKET interface); tcpdump/SSH/PCAP-over-IP kinds are tracked
-// separately (PROJECT.md §6).
+// (a local AF_PACKET interface) and kind "pcap-over-ip" (a framed, authenticated
+// TLS stream from a remote sensor, PROJECT.md §6); tcpdump/SSH kinds are tracked
+// separately.
 type CaptureSource struct {
 	Name        string `json:"name"`        // unique label, shown in /api/v1/captures
-	Kind        string `json:"kind"`        // "nic"
+	Kind        string `json:"kind"`        // "nic" | "pcap-over-ip"
 	Interface   string `json:"interface"`   // NIC name for kind "nic" (e.g. "eth0", "lo")
 	Promiscuous bool   `json:"promiscuous"` // needs CAP_NET_ADMIN
 	Snaplen     int    `json:"snaplen"`     // per-frame bytes; 0 = default (262144)
 	Filter      string `json:"filter"`      // "" or a capture.BuiltinFilters name
+
+	// pcap-over-ip fields. The bearer token is never inline (§23): use
+	// token_file or the SYNAPSE_POIP_TOKEN environment variable.
+	Addr           string `json:"addr,omitempty"`             // sensor host:port
+	Token          string `json:"token,omitempty"`            // rejected by validate() — kept only to give a clear error
+	TokenFile      string `json:"token_file,omitempty"`       // path to a file holding the bearer token
+	ServerName     string `json:"server_name,omitempty"`      // TLS SNI / cert name to verify (default: host of addr)
+	CAFile         string `json:"ca_file,omitempty"`          // PEM bundle verifying the sensor cert ("" = system roots)
+	ClientCertFile string `json:"client_cert_file,omitempty"` // optional mutual-TLS client certificate
+	ClientKeyFile  string `json:"client_key_file,omitempty"`  // optional mutual-TLS client key
+	InsecureTLS    bool   `json:"insecure_tls,omitempty"`     // skip sensor cert verification; requires authorized
+	Authorized     bool   `json:"authorized,omitempty"`       // operator asserts authority to monitor addr (§21) and accepts insecure/token-less choices (§28.18)
 }
 
 // Models points at the model directory and names the primary model.
@@ -231,16 +245,56 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: capture.sources[%d].name is empty", i)
 		case seen[s.Name]:
 			return fmt.Errorf("config: capture.sources[%d]: duplicate name %q", i, s.Name)
-		case s.Kind != "nic":
-			return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (only \"nic\" is supported in Phase 3)", i, s.Name, s.Kind)
-		case s.Interface == "":
-			return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
-		case s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen:
-			return fmt.Errorf("config: capture.sources[%d] (%s): snaplen %d out of range [0,%d]", i, s.Name, s.Snaplen, maxCaptureSnaplen)
-		case !captureFilterKnown(s.Filter):
-			return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+		}
+		switch s.Kind {
+		case "nic":
+			if err := validateNICSource(i, s); err != nil {
+				return err
+			}
+		case "pcap-over-ip":
+			if err := validatePCAPOverIPSource(i, s); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("config: capture.sources[%d] (%s): unknown kind %q (want \"nic\" or \"pcap-over-ip\")", i, s.Name, s.Kind)
 		}
 		seen[s.Name] = true
+	}
+	return nil
+}
+
+func validateNICSource(i int, s CaptureSource) error {
+	switch {
+	case s.Interface == "":
+		return fmt.Errorf("config: capture.sources[%d] (%s): interface is required for kind \"nic\"", i, s.Name)
+	case s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen:
+		return fmt.Errorf("config: capture.sources[%d] (%s): snaplen %d out of range [0,%d]", i, s.Name, s.Snaplen, maxCaptureSnaplen)
+	case !captureFilterKnown(s.Filter):
+		return fmt.Errorf("config: capture.sources[%d] (%s): unknown filter %q (want \"\" or one of %v)", i, s.Name, s.Filter, captureFilterNames)
+	}
+	return nil
+}
+
+// validatePCAPOverIPSource enforces the security posture of a remote sensor
+// stream (PROJECT.md §21, §28.18): a real addr, no secret in the file, and an
+// explicit authorized:true for any non-loopback, insecure-TLS or token-less
+// configuration.
+func validatePCAPOverIPSource(i int, s CaptureSource) error {
+	switch {
+	case s.Addr == "":
+		return fmt.Errorf("config: capture.sources[%d] (%s): addr is required for kind \"pcap-over-ip\"", i, s.Name)
+	case !strings.Contains(s.Addr, ":"):
+		return fmt.Errorf("config: capture.sources[%d] (%s): addr %q must be host:port", i, s.Name, s.Addr)
+	case s.Token != "":
+		return fmt.Errorf("config: capture.sources[%d] (%s): an inline token is not allowed — use token_file or the SYNAPSE_POIP_TOKEN env var (PROJECT.md §23)", i, s.Name)
+	case (s.ClientCertFile == "") != (s.ClientKeyFile == ""):
+		return fmt.Errorf("config: capture.sources[%d] (%s): client_cert_file and client_key_file must be set together", i, s.Name)
+	case s.InsecureTLS && !s.Authorized:
+		return fmt.Errorf("config: capture.sources[%d] (%s): insecure_tls requires authorized: true (PROJECT.md §21, §28.18)", i, s.Name)
+	case !hostIsLoopback(s.Addr) && !s.Authorized:
+		return fmt.Errorf("config: capture.sources[%d] (%s): a non-loopback sensor addr %q requires authorized: true — you are asserting you are authorized to monitor it (PROJECT.md §21)", i, s.Name, s.Addr)
+	case s.TokenFile == "" && !s.Authorized:
+		return fmt.Errorf("config: capture.sources[%d] (%s): set token_file (or authorized: true to connect without a bearer token)", i, s.Name)
 	}
 	return nil
 }
@@ -267,16 +321,24 @@ func captureFilterKnown(name string) bool {
 
 // LoopbackOnly reports whether the management listener is bound to a loopback
 // address. The daemon warns on startup when it is not (PROJECT.md §21).
-func (c Config) LoopbackOnly() bool {
-	host := c.Server.Listen
-	if i := strings.LastIndex(host, ":"); i >= 0 {
+func (c Config) LoopbackOnly() bool { return hostIsLoopback(c.Server.Listen) }
+
+// hostIsLoopback reports whether the host part of a host:port (or a bare host)
+// is a loopback address or the name "localhost". A missing/empty host (e.g.
+// ":8080", "0.0.0.0:8080") is not loopback.
+func hostIsLoopback(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	} else if i := strings.LastIndex(host, ":"); i >= 0 {
 		host = host[:i]
 	}
 	host = strings.Trim(host, "[]")
-	switch host {
-	case "127.0.0.1", "::1", "localhost":
+	if host == "localhost" {
 		return true
-	default:
-		return strings.HasPrefix(host, "127.")
 	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

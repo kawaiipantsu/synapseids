@@ -59,7 +59,7 @@ which runs the identical pipeline.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | string | — | Unique label shown in `GET /api/v1/captures`. Required. |
-| `kind` | string | — | `"nic"` — the only kind in Phase 3 (tcpdump-stream / SSH / PCAP-over-IP are tracked separately). Required. |
+| `kind` | string | — | `"nic"` (a local interface) or `"pcap-over-ip"` (a remote sensor stream, see below). tcpdump-stream / SSH are tracked separately. Required. |
 | `interface` | string | — | Local NIC name (`eth0`, `lo`, …). Required for `nic`. |
 | `promiscuous` | bool | `false` | Put the interface into promiscuous mode. Needs `CAP_NET_ADMIN`. |
 | `snaplen` | int | `0` → `262144` | Bytes copied per frame. `0` uses the default; max `262144`. |
@@ -76,6 +76,34 @@ Example:
 ```json
 "sources": [
   { "name": "wan", "kind": "nic", "interface": "eth0", "promiscuous": true, "snaplen": 0, "filter": "ip-any" }
+]
+```
+
+### `capture.sources[]` (kind `pcap-over-ip`)
+
+A framed, authenticated TLS stream from a remote sensor (the **SYNPOIP**
+protocol — `internal/capture/pcapoverip/PROTOCOL.md`,
+`docs/adr/0012-pcap-over-ip-transport.md`). Full worked example and cert-generation
+steps: `contrib/config/synapse.pcap-over-ip.json` + `contrib/config/pcap-over-ip.md`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `addr` | string | — | Sensor `host:port`. Required. |
+| `token_file` | string (path) | `""` | File holding the bearer token. An inline `token` is **refused** (PROJECT.md §23); `SYNAPSE_POIP_TOKEN` in the environment is the alternative. |
+| `server_name` | string | host of `addr` | TLS SNI / certificate name to verify. |
+| `ca_file` | string (path) | `""` | PEM bundle verifying the sensor certificate. Empty = system roots. |
+| `client_cert_file` / `client_key_file` | string (path) | `""` | Client certificate for mutual TLS. Both or neither. |
+| `insecure_tls` | bool | `false` | Skip sensor certificate verification. Logs a loud warning; requires `authorized`. |
+| `authorized` | bool | `false` | Operator asserts authority to monitor `addr` (§21) and accepts any `insecure_tls` / token-less choice (§28.18). **Required** for a non-loopback `addr`, for `insecure_tls`, or with no token. |
+
+No auto-reconnect yet: a dropped stream shows `state: "error"` in
+`GET /api/v1/captures` until `synapsed` restarts.
+
+```json
+"sources": [
+  { "name": "hq-sensor", "kind": "pcap-over-ip", "addr": "10.20.0.9:4789",
+    "server_name": "hq-sensor.internal", "token_file": "/etc/synapseids/pcap-over-ip.token",
+    "ca_file": "/etc/synapseids/hq-sensor-ca.pem", "authorized": true }
 ]
 ```
 
@@ -122,7 +150,12 @@ external backstop.
 - `storage.driver` is `sqlite` (explicitly rejected as unimplemented)
 - `capture.flow_idle_timeout <= 0` or `capture.flow_max_lifetime <= 0`
 - `capture.max_flows < 1`
-- a `capture.sources[]` entry with an empty/duplicate `name`, `kind != "nic"`,
-  an empty `interface`, `snaplen` outside `[0, 262144]`, or an unknown `filter`
+- a `capture.sources[]` entry with an empty/duplicate `name` or an unknown
+  `kind` (want `nic` or `pcap-over-ip`)
+- a `nic` source with an empty `interface`, `snaplen` outside `[0, 262144]`, or
+  an unknown `filter`
+- a `pcap-over-ip` source with no `addr`, an inline `token`, only one of
+  `client_cert_file` / `client_key_file`, or — without `authorized: true` — a
+  non-loopback `addr`, `insecure_tls`, or no `token_file`
 - `live.client_queue_size < 1`
 - any unknown key is present in the file

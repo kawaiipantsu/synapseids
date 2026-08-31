@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCAP-over-IP transport** (issue #31, EPIC Phase 3;
+  [ADR 0012](docs/adr/0012-pcap-over-ip-transport.md),
+  [PROTOCOL.md](internal/capture/pcapoverip/PROTOCOL.md)). A framed,
+  authenticated, versioned capture transport over one TLS connection.
+  - `internal/capture/pcapoverip` — the **SYNPOIP** wire protocol: a
+    `magic + version + link-type + bearer-token + JSON-metadata` handshake, a
+    typed accept/reject (`unsupported-version`, `unauthorized`, `bad-request`,
+    `unavailable`, `link-type-unsupported`), and record frames
+    (`0x01` packet = `uint64` unix-nanos + raw frame, `0x02` keepalive with an
+    optional packet/drop counter, `0x03` goodbye). All big-endian, every length
+    capped (token ≤ 512 B, metadata ≤ 64 KiB, **frame payload ≤ 262208 B**) and
+    checked before the read (§21, §28.11). Server MAY accept a lower version;
+    a higher-than-known version is rejected.
+  - `capture.PCAPOverIP` — the client `Source`. `NewPCAPOverIP(POIPConfig)`
+    builds the TLS client (1.2 min, `ca_file` or system roots, optional mutual
+    TLS) but does not dial; `Packets(ctx)` dials, handshakes, then streams
+    `packet.Decode`d packets. No auto-reconnect: a dial/auth/TLS/protocol/idle
+    failure is one terminal error and the capture-sources row goes to `error`.
+    `Close()` / ctx-cancel sends a goodbye and leaves no goroutine or fd behind.
+    Surfaces the real TLS dial time as `connection_latency_ms` and the
+    sensor-advertised filter in the capture-sources view.
+  - `synapse-sensor pcap-over-ip --listen … --from capture.pcap --token-file …`
+    — a minimal reference server that replays a classic-pcap file over the wire
+    (optional `--speed`, `--cert`/`--key`, `--client-ca` for mutual TLS; a
+    self-signed cert is generated and fingerprinted when none is given).
+    `synapse-sensor` with no subcommand still just prints its version.
+  - Config: `capture.sources[].kind` accepts `"pcap-over-ip"` with `addr`,
+    `token_file` (inline `token` is refused — §23), `server_name`, `ca_file`,
+    `client_cert_file`/`client_key_file`, `insecure_tls`, `authorized`.
+    `validate()` requires `authorized: true` for a non-loopback `addr`,
+    `insecure_tls`, or a token-less connection (§21, §28.18). `nic` is
+    unchanged.
 - **Architecture Builder** (issue #22, PROJECT.md §19.9). New `POST
   /api/v1/architecture/estimate`: given a `schema.Architecture` body it returns
   `{valid, error?, parameter_count, approx_bytes, rough_flops, layers[]}`. The
