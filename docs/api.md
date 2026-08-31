@@ -804,6 +804,69 @@ live bus: `event-envelope-v1`'s type enum is frozen and has no such member (see
 [ADR 0019](adr/0019-external-training-runs-reported-over-http.md)); the dashboard
 updates by polling `GET /api/v1/training/{id}` instead.
 
+### GET /api/v1/audit
+
+The tail of the append-only audit log (`models.directory/audit.log`), **newest
+record first** (PROJECT.md §21; issue #36,
+[ADR 0022](adr/0022-auditable-model-activation-workflow.md)). This is where an
+operator sees who activated which model and when, plus dataset edits and training
+history.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Records to return. Default `100`, clamped to `1000` (`max_limit`). Missing, non-numeric or `< 1` → the default. |
+| `subject_type` | Exact match on the subject kind: `model`, `dataset`, `training`, or any type added later. Not validated against a fixed set, so a new subject type is filterable as soon as it is first written. |
+| `subject` | Exact match on the subject id — a `model_id`, a `<id>@<version>` dataset ref, or a training-run id. |
+| `event` | Exact match on the event name, e.g. `ModelActivated`. |
+| `from`, `to` | Inclusive RFC3339 bounds on the record timestamp. A malformed value → `400 bad from` / `400 bad to`; `to` before `from` → `400 bad range`. |
+
+```json
+{
+  "records": [
+    { "ts": "2026-08-31T13:26:25Z", "event": "ModelDeactivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "restored heuristic as primary" },
+    { "ts": "2026-08-31T13:25:56Z", "event": "ModelActivated", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137…" },
+    { "ts": "2026-08-31T13:25:35Z", "event": "ModelRegistered", "actor": "local", "subject_type": "model", "subject": "flow-classifier-v1-demo-0001", "model_id": "flow-classifier-v1-demo-0001", "detail": "hash=sha256:d8d3e137… status=registered" }
+  ],
+  "count": 3,
+  "limit": 100,
+  "max_limit": 1000,
+  "scan_bytes_cap": 8388608
+}
+```
+
+`model_id` is populated on `subject_type: "model"` lines and empty on every other
+subject type; `actor` is `"local"` until RBAC (issue #58). Events written today:
+`ModelRegistered` / `ModelActivated` / `ModelDeactivated`, `DatasetCreated` /
+`DatasetDerived` / `DatasetDeleted`, `TrainingStarted` / `TrainingCompleted` /
+`TrainingFailed`. Human label changes (§21's fourth category) arrive with the
+review loop, issue #42, as a new subject type — no change to this route.
+
+**The read is bounded twice.** `limit` caps the records returned, and the reader
+seeks backwards from the end of the file and never scans further back than
+`scan_bytes_cap` (8 MiB), so the cost of a request does not grow with the log. A
+record older than that window stays on disk but is not served here. A torn
+trailing line — a crash mid-append — is skipped, not fatal, and a log file that
+does not exist yet returns `{"records": []}`.
+
+- `200` — always, including an empty log.
+- `400` — a malformed `from` / `to`, or `to` before `from`.
+- `503` — no audit logger is wired (distinct from "nothing has happened yet").
+
+### The audit log is append-only, forever
+
+`GET` is the only method routed at `/api/v1/audit`; `POST`, `PATCH` and `DELETE`
+return `404` and always will. There is deliberately no way to edit or delete a
+record through the API, because an audit trail an operator can curate after the
+fact records nothing worth reading (PROJECT.md §21). The only writers are
+`internal/audit`'s appenders, driven by a state change that actually happened.
+Rotation, if it becomes necessary, is an operator-and-filesystem concern outside
+this API and should archive rather than truncate.
+
+Note that the trail is **more** sensitive than most of this API — it is a
+timeline of every model that went live and every dataset built or deleted — and
+it inherits the same loopback-by-default, unauthenticated posture as the rest of
+`/api/v1` until issue #58. Do not expose it beyond localhost before then.
+
 ### GET /api/v1/schemas/features
 
 The frozen `flow-features-v1` document, served verbatim from the embedded

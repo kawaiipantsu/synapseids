@@ -117,13 +117,28 @@ func run(args []string) int {
 	// at startup, off any packet path.
 	aud := audit.New(cfg.Models.Directory, log.Printf)
 	reg := registry.Open(cfg.Models.Directory, log.Printf)
+	// A model that was active when the daemon stopped is loaded back as
+	// deactivated. That is a real state change and it must be in the audit log,
+	// otherwise the model's most recent line still says "activated" while the
+	// runtime is running the heuristic (PROJECT.md §21, §28.10).
+	for _, id := range reg.Reconciled() {
+		aud.Log(audit.EventModelDeactivated, audit.ActorLocal, id,
+			"daemon restart: activation does not survive a restart; re-activate explicitly")
+	}
 	for _, b := range model.Scan(cfg.Models.Directory, cfg.Models.Primary, log.Printf) {
+		// Register is idempotent, so the startup sweep re-registers bundles the
+		// registry already knows. Only audit a genuinely new registration —
+		// otherwise every restart appends a duplicate ModelRegistered line and
+		// the log stops being a record of what changed.
+		_, known := reg.Get(b.Meta().ModelID)
 		e, err := reg.Register(b)
 		if err != nil {
 			log.Printf("registry: rejected %q: %v", b.Dir(), err)
 			continue
 		}
-		aud.Log(audit.EventModelRegistered, audit.ActorLocal, e.ModelID, "hash="+e.ContentHash+" status="+string(e.Status))
+		if !known {
+			aud.Log(audit.EventModelRegistered, audit.ActorLocal, e.ModelID, "hash="+e.ContentHash+" status="+string(e.Status))
+		}
 		bus.Publish(events.ModelRegistered, map[string]any{
 			"model_id": e.ModelID, "family": e.Family,
 			"content_hash": e.ContentHash, "status": string(e.Status),

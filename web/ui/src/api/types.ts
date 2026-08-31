@@ -584,3 +584,129 @@ export interface TrainingList {
   history_cap: number
   stale_after_seconds: number
 }
+
+// ============================================================================
+// ML ▸ Model Registry, explicit activation and the audit trail
+// (PROJECT.md §19.12, §15, §21, §28.10; issue #36, ADR 0022)
+// ----------------------------------------------------------------------------
+// Mirrors internal/registry.Entry (plus the api modelView `runtime` block) and
+// internal/audit.Record. Two sibling branches also edit this file, so this
+// block is deliberately self-contained and appended at the end — add your own
+// block below rather than editing this one.
+//
+// `architecture` and `metrics` are typed `unknown` on purpose: both are
+// pass-throughs from a model bundle's own JSON (metrics is a json.RawMessage on
+// the Go side), so the view parses them defensively rather than trusting a
+// shape the daemon never validated field-by-field.
+// ============================================================================
+
+/** registry.Status. Activation never survives a restart, so `active` always
+ *  means "live in inference.Runtime right now". */
+export type ModelStatus = 'registered' | 'active' | 'deactivated'
+
+/** api.runtimeInfo — is this entry the classifier loaded in the live Runtime? */
+export interface ModelRuntimeInfo {
+  loaded: boolean
+  role?: string
+}
+
+/** registry.Entry plus its live-runtime block — the §19.12 field set. */
+export interface ModelEntry {
+  model_id: string
+  name: string
+  version: string
+  family: string
+  feature_schema: string
+  input_size: number
+  output_schema: string
+  output_size: number
+  /** schema.Architecture; parse with hiddenFromUnknown() from lib/arch. */
+  architecture?: unknown
+  training_dataset_ids?: string[] | null
+  /** the bundle's metrics.json, verbatim — shape is not guaranteed. */
+  metrics?: unknown
+  parameter_count: number
+  artifact_bytes: number
+  content_hash: string
+  created_at: string
+  trainer_version: string
+  derived_from?: string
+  status: ModelStatus
+  registered_at: string
+  activated_at?: string
+  dir: string
+  runtime?: ModelRuntimeInfo
+}
+
+/** api.runtimeModel — one classifier live in the Runtime, registered or not
+ *  (the heuristic never is). */
+export interface RuntimeModel {
+  id: string
+  family: string
+  role: string
+  registered: boolean
+}
+
+/** GET /api/v1/models */
+export interface ModelList {
+  models: ModelEntry[]
+  runtime: RuntimeModel[]
+}
+
+/** GET /api/v1/models/{id} — entry plus its lineage chain and direct children. */
+export interface ModelDetail {
+  entry: ModelEntry
+  /** derived-from chain, root first, this model last. */
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+}
+
+/** registry.TreeNode — the lineage forest (§15). */
+export interface ModelTreeNode {
+  entry: ModelEntry
+  children: ModelTreeNode[]
+}
+
+/** GET /api/v1/models/{id}/lineage */
+export interface ModelLineage {
+  lineage: ModelEntry[]
+  children: ModelEntry[]
+  tree: ModelTreeNode[]
+}
+
+/** audit.Record — one append-only line of operator history. `subject_type` is
+ *  an open string, not an enum: "model" | "dataset" | "training" today, and
+ *  whatever the review loop (issue #42) adds next, with no change here. */
+export interface AuditRecord {
+  ts: string
+  event: string
+  actor: string
+  subject_type: string
+  subject: string
+  /** equals `subject` on model lines, "" on every other subject type. */
+  model_id: string
+  detail: string
+}
+
+/** GET /api/v1/audit — read-only; the log is append-only forever, so there is
+ *  no create/update/delete counterpart. */
+export interface AuditList {
+  records: AuditRecord[]
+  count: number
+  /** the limit actually applied after clamping. */
+  limit: number
+  max_limit: number
+  /** how far back from EOF the reader will scan, in bytes. */
+  scan_bytes_cap: number
+}
+
+/** Query filters for GET /api/v1/audit. */
+export interface AuditQuery {
+  limit?: number
+  subject_type?: string
+  subject?: string
+  event?: string
+  /** RFC3339, inclusive. */
+  from?: string
+  to?: string
+}
