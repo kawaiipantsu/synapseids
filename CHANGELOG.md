@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Model bundle validation gate** (`internal/model`, issue #25) — the daemon
+  now reads a self-describing model bundle and refuses an incompatible one
+  before it could ever be activated (PROJECT.md §11, §28.6, §28.10):
+  - `model.Load(dir)` parses the five-file bundle (`model.onnx`, `metadata.json`,
+    `normalizer.json`, `metrics.json`, `training-recipe.json`) and returns an
+    **inactive** `*Bundle` — loading never activates anything.
+  - `Bundle.Validate()` rejects, naming the offending field: a missing or
+    non-JSON file; a `feature_schema` / `input_size` / `output_schema` /
+    `output_size` that is not `flow-features-v1` (48) / `traffic-classes-v1` (7);
+    an absent or wrong-sized `architecture`; an empty `family`,
+    non-positive `parameter_count`, or non-RFC3339 `created_at`; a `model_hash`
+    without the `sha256:` prefix or that does not match the SHA-256 recomputed
+    over the `model.onnx` bytes; a `normalizer.json` with the wrong feature
+    schema, an unknown method, or (for `standard` / `minmax`) not exactly 48
+    ascending in-order entries with `std > 0` / `min < max`.
+  - `schema.Architecture` / `schema.HiddenLayer` types and
+    `schema.ValidateArchitecture` keep the frozen input/output-layer contract
+    checks alongside `schema.ValidateBundle`.
+  - `features.Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`) — a
+    fitted per-feature z-score / min-max transform implementing the existing
+    `features.Normalizer` interface; `internal/model` builds it from
+    `normalizer.json` (`identity` → `features.Identity`). It is a per-model
+    concern applied on the trained-model path only; the pipeline never installs
+    it.
+  - `cmd/synapsed` scans `models.directory` at startup, logging
+    `loaded model "<dir>" … — INACTIVE` or `rejected model bundle "<dir>": …`
+    per subdirectory. No model is added to the inference runtime and
+    `models.primary` is not activated — activation remains a separate explicit
+    step, still to be wired.
+  - `model.Executor` interface + `Bundle.Bind` are defined (unused) as the seam
+    the Phase 2 ONNX runtime (issue #24) will implement.
+
 ## [0.1.0] - 2026-08-31
 
 First tagged release: the Phase 1 vertical slice plus the full build, packaging
