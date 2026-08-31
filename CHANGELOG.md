@@ -395,9 +395,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/adr/0007-python-trainer-and-bundle-export.md` — records Python + PyTorch
   per §27, the guarded-import approach, opset 17 / fixed batch 1, and the exact
   five-file bundle contract as the trainer↔daemon interface.
+- `assets/screenshots/` — real screenshots of SynapseIDS running: the Flow Log
+  (unfiltered, and filtered to `scan` / `brute_force`), the Flow Inspector
+  (verdict panel and the 48 raw `flow-features-v1` values), the Dashboard, the
+  Capture Sources view, Replay, the Architecture builder, and rendered
+  transcripts of the `synapse` / `synapsed` CLI. `assets/screenshots/README.md`
+  indexes them and documents how to regenerate them. The capture tooling stays
+  outside the repository — it needs a browser and a Node install, neither of
+  which belongs in a tree whose Go build is deliberately dependency-free
+  (§28.16).
 
 ### Changed
 
+- `README.md`'s "What it looks like" section now shows those screenshots instead
+  of the ASCII box-art mock-ups it carried while the SPA was still a placeholder;
+  the "Illustrative" disclaimers are gone because the images are real output.
 - `GET /api/v1/models` returns an object (`{ "models": [...], "runtime": [...] }`)
   instead of a bare array; the registry entries are the `models` list and the
   previously-returned `{id, family, role}` triples are now `runtime` (with an
