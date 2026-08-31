@@ -970,3 +970,186 @@ export interface InvestigationReport {
   }
   [k: string]: unknown
 }
+
+// ============================================================================
+// Flow Inspector: normalized inputs, snapshot history, explanation (§19.3)
+// issue #38, ADR 0025 — feature/flow-inspector
+// ---------------------------------------------------------------------------
+// Mirrors internal/api/flows.go and internal/api/flow_snapshots.go, served by
+// GET /api/v1/flows/{id}/explain and GET /api/v1/flows/{id}/snapshots. Appended
+// as its own block on purpose: sibling branches also edit this file, so keeping
+// the addition isolated makes a merge a concatenation rather than a conflict.
+//
+// Three things this block deliberately does NOT contain, because the daemon does
+// not produce them and the drawer must not imply otherwise:
+//
+//   * a training baseline, or any "current vs baseline" pair. §19.3's example
+//     shows one, but baselines are Phase 7 — `baseline.available` is always
+//     false and there is no value field to render next to it.
+//   * an anomaly score. Also Phase 7; `anomaly.available` is always false.
+//   * a per-feature contribution number for a trained model. Exact attribution
+//     needs gradients or SHAP, so `explanation.kind` is 'unavailable' for an
+//     ONNX model and `rules` is empty. A rough proxy is not offered at all,
+//     because a proxy rendered in an explanation panel reads as an explanation.
+// ============================================================================
+
+/** inference.RuleFeature — one feature value a heuristic rule compared. */
+export interface RuleFeature {
+  name: string
+  value: number
+  unit: string
+}
+
+/**
+ * inference.FiredRule — one heuristic rule that matched, and the values it
+ * matched on. There is intentionally no per-rule contribution percentage:
+ * several rules can feed one class and the mapping to probability runs through a
+ * softmax over class weights, so any per-rule share would be invented.
+ */
+export interface FiredRule {
+  rule: string
+  class: string
+  class_id: number
+  detail: string
+  features: RuleFeature[]
+}
+
+/** inference.ClassWeight — one class's pre-softmax weight. */
+export interface ClassWeight {
+  class: string
+  class_id: number
+  weight: number
+}
+
+/**
+ * inference.Explanation — a model's account of one verdict.
+ *
+ * `kind: 'rules'` is an EXACT account: those rules, on those values, produced
+ * those weights, which were soft-maxed into the reported probabilities.
+ * `kind: 'unavailable'` claims nothing beyond `note`.
+ *
+ * An empty `rules` with `kind: 'rules'` is meaningful, not a loading state: no
+ * rule fired, and `normal_prior` is what decided the verdict.
+ */
+export interface Explanation {
+  model_id: string
+  role: string
+  kind: 'rules' | 'unavailable'
+  rules: FiredRule[]
+  class_weights?: ClassWeight[]
+  normal_prior?: number
+  note: string
+}
+
+/** internal/api.normFeature — one feature as a specific model received it. */
+export interface NormalizedFeature {
+  index: number
+  name: string
+  unit: string
+  raw: number
+  normalized: number
+}
+
+/**
+ * internal/api.modelInput — what one model actually saw.
+ *
+ * `kind: 'raw'` means the model reads raw flow-features-v1 values (the Phase-1
+ * heuristic) and `features` is absent — there is no transformation to show, and
+ * the drawer must say that rather than render an identity table.
+ * `kind: 'normalized'` carries raw→normalized pairs from that model's own
+ * bundle. `kind: 'unknown'` means the normalizer could not be resolved.
+ */
+export interface ModelInput {
+  kind: 'raw' | 'normalized' | 'unknown'
+  normalizer_id?: string
+  note: string
+  features?: NormalizedFeature[]
+}
+
+/** internal/api.explainModel — one model's inputs and rationale. */
+export interface ExplainModel {
+  model_id: string
+  role: string
+  class: string
+  class_id: number
+  score: number
+  scores: number[]
+  /** False when the model that produced this verdict is no longer loaded. */
+  loaded: boolean
+  input: ModelInput
+  explanation: Explanation
+}
+
+/** internal/api.explainVerdict — the stored verdict being explained. */
+export interface ExplainVerdict {
+  ts: string
+  sensor: string
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.stubSection — an explicitly unavailable panel. Note the absence
+ * of any value field: there is nothing to show, by design.
+ */
+export interface StubSection {
+  available: boolean
+  note: string
+}
+
+/** GET /api/v1/flows/{id}/explain */
+export interface FlowExplain {
+  flow_id: number
+  snapshot_index: number
+  /** False when no verdict for this flow is retained; `models` is then empty. */
+  verdict_available: boolean
+  verdict?: ExplainVerdict
+  models: ExplainModel[]
+  anomaly: StubSection
+  baseline: StubSection
+  notes?: string[]
+}
+
+/** internal/api.versionVerdict — the verdict computed from one flow version. */
+export interface VersionVerdict {
+  class: string
+  class_id: number
+  score: number
+  disagreement: boolean
+}
+
+/**
+ * internal/api.flowVersionView — one retained version of a flow.
+ *
+ * Counters are CUMULATIVE, not per-interval: each version reports the flow's
+ * totals as of its own `last_seen`. A missing `verdict` means the classification
+ * aged out of the bounded ring — never "was not classified".
+ */
+export interface FlowVersionView {
+  snapshot_index: number
+  close_reason: string
+  terminal: boolean
+  first_seen: string
+  last_seen: string
+  duration_sec: number
+  fwd_packets: number
+  bwd_packets: number
+  fwd_bytes: number
+  bwd_bytes: number
+  verdict?: VersionVerdict
+}
+
+/** GET /api/v1/flows/{id}/snapshots */
+export interface FlowSnapshots {
+  flow_id: number
+  retained: number
+  cap: number
+  /** True when the per-flow cap dropped this flow's earliest versions. */
+  truncated: boolean
+  /** False for a flow that only ever produced its terminal record. */
+  snapshotting: boolean
+  versions: FlowVersionView[]
+  notes?: string[]
+}

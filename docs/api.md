@@ -44,6 +44,7 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "classifications": 128,
     "flows_evicted": 0,
     "classifications_evicted": 0,
+    "flow_versions_dropped": 0,
     "disagreements": 3,
     "driver": "memory"
   },
@@ -94,6 +95,12 @@ at `0`), and are all `0` before the first replay. The pipeline also writes a
 throttled warning to the daemon log on the first eviction of a run and every
 1000th after it.
 
+`storage.flow_versions_dropped` counts snapshot versions dropped because one flow
+exceeded `storage.FlowHistoryCap` (64 versions per flow) — a long-lived flow
+losing its *earliest* snapshots while keeping the most recent. It is distinct from
+`flows_evicted`, which is the global ring overwriting its oldest slot. See
+[`/api/v1/flows/{id}/snapshots`](#get-apiv1flowsidsnapshots).
+
 `storage.disagreements` is the cumulative number of stored classifications whose
 ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
 not just those still in the ring (PROJECT.md §12, §24).
@@ -138,11 +145,191 @@ Recent stored flows, newest first. Query: `limit` (default `100`, max `2000`).
 ### GET /api/v1/flows/{id}
 
 One flow by numeric ID — the most recent stored version (a later snapshot or the
-close record supersedes an earlier snapshot).
+close record supersedes an earlier snapshot). Earlier versions are available from
+[`/snapshots`](#get-apiv1flowsidsnapshots) below.
 
 - `200` → a single `FlowRecord` (shape as above)
 - `400` `bad flow id` — `{id}` is not a uint64
 - `404` `flow not found` — no such ID in the ring (it may have been evicted)
+
+### GET /api/v1/flows/{id}/explain
+
+Why this flow got the verdict it did, and what each model actually received
+(PROJECT.md §19.3, issue #38,
+[ADR 0025](adr/0025-flow-inspector-explanation-and-snapshots.md)). A sibling of
+the route above rather than part of it, so `FlowRecord`'s shape is unchanged.
+
+`200`:
+
+```json
+{
+  "flow_id": 1124,
+  "snapshot_index": 0,
+  "verdict_available": true,
+  "verdict": {
+    "ts": "2026-08-31T08:43:45.195387Z",
+    "sensor": "local",
+    "class": "brute_force",
+    "class_id": 3,
+    "score": 0.9217860648129587,
+    "disagreement": false
+  },
+  "models": [
+    {
+      "model_id": "heuristic-v1",
+      "role": "primary",
+      "class": "brute_force",
+      "class_id": 3,
+      "score": 0.9217860648129587,
+      "scores": ["…7 floats, traffic-classes-v1 order…"],
+      "loaded": true,
+      "input": {
+        "kind": "raw",
+        "note": "This model reads raw flow-features-v1 values — there is no transformation to show. …"
+      },
+      "explanation": {
+        "model_id": "heuristic-v1",
+        "role": "primary",
+        "kind": "rules",
+        "rules": [
+          {
+            "rule": "brute_force.auth_port_rounds",
+            "class": "brute_force",
+            "class_id": 3,
+            "detail": "repeated short small-packet request/response rounds against an authentication port",
+            "features": [
+              { "name": "destination_port", "value": 3306, "unit": "port" },
+              { "name": "packets_forward", "value": 7, "unit": "count" },
+              { "name": "packets_backward", "value": 6, "unit": "count" },
+              { "name": "tcp_fin_count", "value": 2, "unit": "count" },
+              { "name": "tcp_rst_count", "value": 0, "unit": "count" },
+              { "name": "flow_duration", "value": 0.000861, "unit": "seconds" },
+              { "name": "packet_size_mean", "value": 76.53846153846153, "unit": "bytes" }
+            ]
+          }
+        ],
+        "class_weights": [
+          { "class": "brute_force", "class_id": 3, "weight": 4.5 },
+          { "class": "normal", "class_id": 0, "weight": 3 }
+        ],
+        "normal_prior": 3,
+        "note": "Every rule listed is an exact account of the decision: …"
+      }
+    }
+  ],
+  "anomaly": { "available": false, "note": "Not available in this build. …" },
+  "baseline": { "available": false, "note": "Not available in this build. …" }
+}
+```
+
+- `400` `bad flow id` · `404` `flow not found`
+
+**`models[]` comes from the stored verdict**, not from whatever is loaded now —
+these are the models that actually scored this flow. `verdict_available` is
+`false` (and `models` empty) when the classification has aged out of the bounded
+ring; `notes[]` then says so. A model named in the verdict but no longer in the
+runtime gets `loaded: false`, and its inputs and rationale are not reconstructed.
+
+#### `input.kind` — normalized model inputs
+
+Normalization is a **per-model** concern (§8): the pipeline scores the *raw*
+vector, the heuristic reads it raw, and a trained model applies its own bundle's
+`normalizer.json`. There is no daemon-wide normalized vector, so this is reported
+per model:
+
+| `kind` | meaning |
+|:--|:--|
+| `raw` | the model scores raw values. `features` is **absent** — there is no transformation, and an identity table would imply a step that does not happen. |
+| `normalized` | `normalizer_id` (`standard` / `minmax` / `identity`) plus `features[]` of `{index, name, unit, raw, normalized}` for all 48, resolved from the **active** registry entry's bundle. |
+| `unknown` | the normalizer could not be resolved — no registry, nothing active, the model is unloaded, or the bundle is gone. Nothing is shown and `note` says why. |
+
+Resolved normalizers are cached per `<model id>@<content hash>` for the process
+lifetime, since `model.Load` reads and hashes `model.onnx`.
+
+#### `explanation.kind` — what the panel claims
+
+| `kind` | claim |
+|:--|:--|
+| `rules` | **exact.** Those rules, on those feature values, produced `class_weights`, which were soft-maxed into `scores`. `rules` and `class_weights` come from the same evaluation that produced the verdict, so they cannot drift from it. |
+| `unavailable` | **nothing**, beyond `note`. `rules` is `[]`. |
+
+`rules: []` with `kind: "rules"` is meaningful, not a loading state: no rule
+fired, and `normal_prior` is what decided the verdict. The note spells out that
+"nothing was detected" is *not* "checked against a baseline and found normal".
+
+There is deliberately **no per-rule contribution percentage**: several rules can
+feed one class and rule→probability runs through a softmax over class weights, so
+a per-rule share would be invented. Read `class_weights` for the real arithmetic.
+
+**A trained ONNX model always reports `unavailable`.** Exact attribution needs
+gradients or SHAP, and `internal/nn` exposes no weights; no linear proxy is
+offered, because a proxy drawn in an explanation panel reads as an explanation.
+The full `scores` vector is that model's complete output.
+
+#### There is no baseline column and no anomaly score
+
+`baseline` and `anomaly` are always `{available: false, note: …}` — two keys, **no
+value field**. §19.3's example shows a "Current vs Baseline" table, but
+behavioural baselines and anomaly scoring are Phase 7 (§13), exactly as
+`/api/v1/hosts` and the reports already report. A fabricated expected range would
+turn "never checked" into "checked and clean", so there is nothing here to plot.
+
+### GET /api/v1/flows/{id}/snapshots
+
+The retained version history of one flow: the periodic `snapshot` records a
+long-lived flow emits, then its terminal record, oldest first, each paired with
+the verdict computed from it (§19.3).
+
+`200`:
+
+```json
+{
+  "flow_id": 5,
+  "retained": 3,
+  "cap": 64,
+  "truncated": false,
+  "snapshotting": true,
+  "versions": [
+    {
+      "snapshot_index": 1,
+      "close_reason": "snapshot",
+      "terminal": false,
+      "first_seen": "2026-08-31T08:41:17.657338Z",
+      "last_seen": "2026-08-31T08:42:18.225Z",
+      "duration_sec": 60.568,
+      "fwd_packets": 1934,
+      "bwd_packets": 1473,
+      "fwd_bytes": 1996456,
+      "bwd_bytes": 956500,
+      "verdict": { "class": "normal", "class_id": 0, "score": 0.9611, "disagreement": false }
+    }
+  ],
+  "notes": ["Counters are cumulative, not per-interval: …"]
+}
+```
+
+- `400` `bad flow id` · `404` `flow not found`
+
+Counters are **cumulative**, not per-interval: each version reports the flow's
+totals as of its own `last_seen`.
+
+`snapshotting: false` means the flow closed inside one `snapshot_interval` and
+produced a single record — the common case, and not a gap.
+
+`verdict: null` means that version's classification aged out of the bounded ring.
+It never means "was not classified", and the response says so in `notes[]`.
+
+History is bounded twice. Globally by the flow ring, since every retained version
+occupies exactly one ring slot. Per flow by `storage.FlowHistoryCap` (**64**
+versions, reported as `cap`), oldest dropped first and counted in
+`status.storage.flow_versions_dropped`. `truncated: true` means the per-flow cap
+dropped this flow's earliest versions — detected exactly, since a flow's first
+snapshot carries `snapshot_index` 1.
+
+Note that `flow.Table` increments `snapshot_index` on the live flow, so a long
+flow's **terminal record inherits the last snapshot's index** and the final two
+rows may share one. `notes[]` mentions it; see
+[ADR 0025](adr/0025-flow-inspector-explanation-and-snapshots.md).
 
 ### GET /api/v1/classifications
 

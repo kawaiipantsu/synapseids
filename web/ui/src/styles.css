@@ -1943,3 +1943,172 @@ a.rep-dl-btn:focus-visible {
     display: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Flow Inspector §19.3 completions — issue #38, ADR 0025.
+
+   Normalized model inputs, snapshot history and the explanation panel. Appended
+   as its own block on purpose: sibling branches also edit this file, so keeping
+   the addition isolated makes a merge a concatenation rather than a conflict.
+   Every selector here is prefixed `fi-` and scoped to the drawer, so nothing in
+   this block can reach another view.
+
+   The drawer was already dense before these three sections, which is why the two
+   long tables collapse behind <details> and only the fired rules are open by
+   default — those are the reason the drawer gets opened.
+   --------------------------------------------------------------------------- */
+
+/* Per-model grouping. Normalization is per-model, so the model id is a heading
+   rather than a column, and each model owns its own note. */
+.drawer .fi-model {
+  border-left: 2px solid var(--edge);
+  padding: 0 0 0 10px;
+  margin: 0 0 14px;
+}
+.drawer .fi-model:last-child {
+  margin-bottom: 0;
+}
+.drawer .fi-model-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.drawer .fi-model p {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* What the model read: raw / normalized / unresolvable. Deliberately a plain
+   label, not a status colour — "reads raw values" is correct behaviour for the
+   heuristic, not a degraded state. */
+.drawer .fi-kind {
+  margin-left: auto;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.drawer .fi-kind-normalized {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Fired rules — the exact account of a heuristic verdict. */
+.drawer .fi-rules {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.drawer .fi-rules > li {
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--panel2);
+  padding: 8px 10px;
+  margin: 0 0 6px;
+}
+.drawer .fi-rule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.drawer .fi-rule-id {
+  font-size: 11px;
+  color: var(--accent);
+}
+.drawer .fi-rule-detail {
+  font-size: 11px;
+  color: var(--ink);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+/* The feature values the rule's condition compared. This is the payload of the
+   whole panel: name = value, straight from the vector that was scored. */
+.drawer .fi-rule-feats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.drawer .fi-feat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  background: var(--panel);
+}
+.drawer .fi-feat b {
+  color: var(--accent);
+}
+.drawer .fi-feat .dim {
+  font-size: 10px;
+}
+
+/* "No rule fired" is a finding, not an empty state, so it is boxed rather than
+   left as bare dim text that reads like a failed load. */
+.drawer .fi-norules {
+  border: 1px dashed var(--edge);
+  border-radius: 5px;
+  padding: 8px 10px;
+  line-height: 1.6;
+}
+
+/* Claim-scoping prose: what the panel does and does not assert. Never hidden on
+   narrow viewports — this is the text that stops the panel misleading. */
+.drawer .fi-claim {
+  font-size: 11px;
+  line-height: 1.6;
+  border-top: 1px dotted var(--edge);
+  padding-top: 6px;
+  margin: 8px 0 0;
+}
+
+/* Backend-authored retention/cap notes. */
+.drawer .fi-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--dim);
+}
+.drawer .fi-notes > li {
+  margin-bottom: 3px;
+}
+
+/* Snapshot history: the terminal record is the row an operator looks for. */
+.drawer tr.fi-terminal > td {
+  border-top: 1px solid var(--edge);
+}
+.drawer tr.fi-terminal .fi-close {
+  display: block;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* Collapsed long tables. */
+.drawer details > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--dim);
+  padding: 3px 0;
+  user-select: none;
+}
+.drawer details > summary:hover {
+  color: var(--accent);
+}
+.drawer details[open] > summary {
+  margin-bottom: 6px;
+}
+.drawer details > summary:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
