@@ -1,0 +1,26 @@
+{
+  "id": "hq-copenhagen/baseline-2026-08",
+  "name": "Copenhagen baseline (v9)",
+  "description": "synthetic Copenhagen baseline (v9) fixture for synapse-trainer examples",
+  "location": "hq-copenhagen",
+  "tags": [
+    "example",
+    "synthetic"
+  ],
+  "created_at": "2026-09-01T00:00:00Z",
+  "source_capture_ids": [],
+  "time_range": {
+    "start": "2026-08-01T00:00:00Z",
+    "end": "2026-08-31T23:59:59Z"
+  },
+  "feature_schema": "flow-features-v1",
+  "output_schema": "traffic-classes-v1",
+  "num_flows": 40,
+  "label_counts": {
+    "normal": 36,
+    "suspicious": 4
+  },
+  "labeling_source": "synthetic",
+  "parent_datasets": [],
+  "content_hash": "sha256:b21c11f1064a0f2112afb97ec88f52a81cc4cdde95ee50aead8269143d78cdfe"
+}

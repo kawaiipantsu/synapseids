@@ -4,7 +4,8 @@ Shape (all fields except ``datasets`` have defaults)::
 
     {
       "name": "flow-classifier-baseline",
-      "datasets": [ {"id": "thugs/lab-attacks-2026-08", "weight": 0.7}, ... ],
+      "datasets": [ {"id": "thugs/lab-attacks-2026-08", "weight": 0.7,
+                     "path": "optional/explicit.csv"}, ... ],
       "architecture": { "hidden": [ {"width": 64, "activation": "relu",
                                      "dropout": 0.3, "batchnorm": true, "residual": false} ] },
       "normalizer": "standard",
@@ -56,11 +57,22 @@ class RecipeError(ValueError):
 
 @dataclass
 class DatasetRef:
+    """One entry of ``recipe.datasets``.
+
+    ``path`` is an optional escape hatch that pins this dataset to an exact CSV
+    (or a directory holding one) instead of resolving ``id`` under ``--data``;
+    see :mod:`synapse_trainer.mixture` for the full resolution order.
+    """
+
     id: str
     weight: float = 1.0
+    path: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {"id": self.id, "weight": float(self.weight)}
+        out: dict[str, Any] = {"id": self.id, "weight": float(self.weight)}
+        if self.path:
+            out["path"] = str(self.path)
+        return out
 
 
 @dataclass
@@ -116,6 +128,12 @@ class Recipe:
                 raise RecipeError(f"dataset {d.id!r} has negative weight {d.weight}")
             if not d.id:
                 raise RecipeError("every dataset needs a non-empty id")
+        # Duplicate ids would collide in the mixture's per-dataset RNG derivation
+        # and make the recorded provenance ambiguous (PROJECT.md §14, §28.9).
+        ids = [d.id for d in self.datasets]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise RecipeError(f"duplicate dataset id(s) in recipe: {dupes}")
 
         self.optimizer = str(self.optimizer).lower()
         if self.optimizer not in OPTIMIZERS:
@@ -206,7 +224,16 @@ def from_dict(raw: dict[str, Any]) -> Recipe:
         if isinstance(d, str):
             datasets.append(DatasetRef(id=d, weight=1.0 / len(ds_raw)))
         elif isinstance(d, dict):
-            datasets.append(DatasetRef(id=str(d["id"]), weight=float(d.get("weight", 1.0 / len(ds_raw)))))
+            if "id" not in d:
+                raise RecipeError(f"dataset entry needs an 'id': {d!r}")
+            path = d.get("path")
+            datasets.append(
+                DatasetRef(
+                    id=str(d["id"]),
+                    weight=float(d.get("weight", 1.0 / len(ds_raw))),
+                    path=str(path) if path else None,
+                )
+            )
         else:
             raise RecipeError(f"bad dataset entry: {d!r}")
 

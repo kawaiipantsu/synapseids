@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Training recipes with multi-dataset weighting** (issue #34, EPIC Phase 4;
+  [ADR 0017](docs/adr/0017-multi-dataset-training-mixtures.md)). A recipe's
+  `datasets[]` weights now actually shape the training data (PROJECT.md §14:
+  "70% Copenhagen baseline / 20% attack corpus / 10% reviewed detections") —
+  previously they were validated and then ignored, and `train` loaded a single
+  CSV.
+  - `synapse_trainer/mixture.py` — resolves every `datasets[]` entry under
+    `--data ROOT` in a documented order: the entry's explicit `path` →
+    `ROOT/<id>.csv` → `ROOT/<id>/dataset.csv` → `ROOT/<id>/<latest version
+    dir>/dataset.csv` (numeric-aware, so `v10` beats `v9`) → any single
+    `ROOT/<id>/*.csv`. Nothing found is a hard error listing every path tried;
+    an id may be namespaced but never absolute and never contains `..`. A
+    `manifest.json` beside the CSV (or `ROOT/<id>.manifest.json`) supplies the
+    §14 metadata — its `content_hash` is recorded with the model.
+  - **Schema-compatibility gate.** Every dataset must carry all 48
+    `flow-features-v1` columns and agree with the others (and with any manifest)
+    on `feature_schema` / `output_schema`. A mismatch is a named
+    `DatasetIncompatible` / `MixtureError`; columns are never dropped, reordered
+    or coerced (§5.4, §8, §28.5-6).
+  - **Weighting = resampling the training mixture.** `target_n = Σ len(train_i)`;
+    per-dataset quotas by largest-remainder apportionment (so they sum to
+    `target_n` exactly); down-sample without replacement, or up-sample by taking
+    every row once and drawing the remainder with replacement; one deterministic
+    shuffle. Every draw is seeded by `sha256(recipe.seed, purpose, dataset id)`,
+    so the mixture is reproducible from the recipe alone and adding a dataset
+    does not reshuffle the others (§28.8).
+  - **Split before mix — no test leakage.** Each dataset is split *first*, on its
+    own; only the train portions are weighted and mixed, so an up-sampled
+    duplicate can never straddle the train/test boundary (§14). Val and test are
+    plain unions and are never resampled. Asserted by
+    `test_no_leak_under_aggressive_upsampling` (pairwise-disjoint row-id sets
+    under ~10× up-sampling) plus `test_naive_mix_then_split_would_leak`, which
+    shows the naive order does leak.
+  - `training-recipe.json` now records `split_result` (seed, fractions, sizes,
+    stratified, per-split label counts, per-dataset detail) and a new `mixture`
+    block: strategy name, seed, `split_before_mix`, `target_train_rows`, sizes,
+    label counts, warnings, and per dataset the requested + effective weight,
+    resolved path and rule, `content_hash`, source rows, split sizes, split and
+    sample seeds, realised train rows and up/down-sampling counts (§14, §28.9).
+    `metadata.json` is unchanged in shape — only `training_dataset_ids` content,
+    which now lists **every** contributing dataset.
+  - `synapse-trainer inspect-recipe --recipe R --data ROOT [--json]` and
+    `train --dry-run` — resolve, split and weight the whole mixture and print the
+    plan (per-dataset rows, effective weights, split sizes, label distribution,
+    warnings) **without torch**, so an operator can validate a recipe before
+    burning a run.
+  - **Quality warnings** (§19.10): a dominant class (>90% of the mixture), a
+    class absent from the mixture, a class under 10 training rows, a dataset
+    contributing zero rows after weighting, heavy (≥3×) up-sampling, and an empty
+    val/test split.
+  - `trainer/examples/recipe.multi-dataset.json` + a `trainer/examples/data/`
+    fixture tree exercising all three on-disk layouts.
+
 - **Capture-source UI + runtime source management** (issue #32, EPIC Phase 3 —
   **this closes EPIC #3**; [ADR 0013](docs/adr/0013-runtime-capture-source-management.md)).
   Capture sources can now be started and stopped without restarting the daemon,
