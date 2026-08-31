@@ -617,3 +617,41 @@ func TestPidfileLivesInADirectoryTheServiceUserOwns(t *testing.T) {
 		}
 	}
 }
+
+// rc.subr reserves a set of ${name}_* variables and acts on them itself. Naming
+// our own knob synapseids_sensor_user meant rc.subr dropped privileges before
+// running the command, so daemon(8)'s -u then ran unprivileged and failed:
+//
+//	daemon: failed to set user environment
+//
+// preceded by "pidfile: Permission denied" against root-owned /var/run. Neither
+// message points at a variable name, and rc.subr's own route is unusable here
+// because it wraps the command in su(1), which fails for a service account with
+// /usr/sbin/nologin as its shell.
+//
+// rcvar (${name}_enable) is the one reserved name we must define.
+func TestRCScriptAvoidsRCSubrReservedVariables(t *testing.T) {
+	const rcPath = "../../contrib/opnsense/src/etc/rc.d/synapseids_sensor"
+	rc := readScript(t, rcPath)
+
+	// From rc.subr(8): these are consumed by run_rc_command, not by us.
+	reserved := []string{
+		"user", "group", "groups", "chroot", "chdir", "flags", "env", "env_file",
+		"fib", "login_class", "limits", "nice", "oomprotect", "program", "umask",
+		"prepend",
+	}
+	for _, suffix := range reserved {
+		name := "synapseids_sensor_" + suffix
+		for i, line := range strings.Split(rc, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue // commentary may name it to explain the trap
+			}
+			// An assignment or a : ${...:=default} definition of a reserved name.
+			if strings.Contains(trimmed, name+"=") || strings.Contains(trimmed, name+":=") {
+				t.Errorf("%s:%d defines %s, which rc.subr reserves and acts on itself\n\t%s",
+					filepath.Base(rcPath), i+1, name, trimmed)
+			}
+		}
+	}
+}
