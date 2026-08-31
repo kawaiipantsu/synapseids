@@ -283,22 +283,94 @@ bpf_group() {
 }
 BPF_GROUP="$(bpf_group)"
 
+# existing_bpf_rule_group prints the group named in an existing [synapseids_bpf]
+# block, or nothing when there is no such block.
+existing_bpf_rule_group() {
+	[ -f "$DEVFS_RULES" ] || return 0
+	awk '
+		/^[[:space:]]*\[synapseids_bpf=/ { inblock = 1; next }
+		/^[[:space:]]*\[/               { inblock = 0 }
+		inblock {
+			for (i = 1; i < NF; i++)
+				if ($i == "group") { print $(i + 1); exit }
+		}
+	' "$DEVFS_RULES" 2>/dev/null
+}
+
+# write_bpf_ruleset removes any existing [synapseids_bpf] block and appends a
+# correct one. Editing rather than appending matters: devfs(8) rejects the WHOLE
+# file when any line is bad, so a single stale rule disables every ruleset in it.
+write_bpf_ruleset() {
+	if [ "$DRY_RUN" = 1 ]; then
+		say "  would rewrite the [synapseids_bpf=10] ruleset with group $BPF_GROUP"
+		return 0
+	fi
+	cp "$DEVFS_RULES" "$DEVFS_RULES.synapseids.bak" 2>/dev/null || true
+	tmp="$(mktemp)"
+	if [ -f "$DEVFS_RULES" ]; then
+		awk '
+			/^[[:space:]]*\[synapseids_bpf=/ { skip = 1; next }
+			/^[[:space:]]*\[/               { skip = 0 }
+			!skip
+		' "$DEVFS_RULES" > "$tmp"
+	fi
+	{
+		printf '\n[synapseids_bpf=10]\n'
+		printf "add path 'bpf*' mode 0640 group %s\n" "$BPF_GROUP"
+	} >> "$tmp"
+	cat "$tmp" > "$DEVFS_RULES"
+	rm -f "$tmp"
+}
+
 if [ "$GRANT_BPF" = 1 ]; then
-	if grep -q 'synapseids_bpf' "$DEVFS_RULES" 2>/dev/null; then
-		say "devfs rule synapseids_bpf already present in $DEVFS_RULES"
+	EXISTING_GROUP="$(existing_bpf_rule_group)"
+	if [ -z "$EXISTING_GROUP" ]; then
+		say "installing the synapseids_bpf devfs ruleset into $DEVFS_RULES (group $BPF_GROUP)"
+		write_bpf_ruleset
+	elif /usr/sbin/pw groupshow "$EXISTING_GROUP" >/dev/null 2>&1; then
+		say "devfs rule synapseids_bpf already present in $DEVFS_RULES (group $EXISTING_GROUP)"
 	else
-		say "installing the synapseids_bpf devfs ruleset into $DEVFS_RULES"
-		if [ "$DRY_RUN" = 1 ]; then
-			say "  would append the [synapseids_bpf=10] ruleset and set devfs_system_ruleset"
-		else
-			{
-				printf '\n[synapseids_bpf=10]\n'
-				printf "add path 'bpf*' mode 0640 group %s\n" "$BPF_GROUP"
-			} >> "$DEVFS_RULES"
-		fi
+		# The reason this branch exists: an earlier release of this installer
+		# wrote `group net`, which does not exist on a stock FreeBSD system.
+		# devfs then refuses to parse the file at all --
+		#   devfs rule: error converting to integer: net
+		#   devfs_init_rulesets: could not read rules from /etc/devfs.rules
+		# -- so NO ruleset loads and /dev/bpf* keeps its default 0600 root:wheel.
+		# "Already present" is the wrong answer here; repair it.
+		say "the existing synapseids_bpf rule names group '$EXISTING_GROUP', which does not exist"
+		say "  devfs rejects the whole file when one line is bad, so no ruleset is loading"
+		say "  rewriting it with group $BPF_GROUP (backup: $DEVFS_RULES.synapseids.bak)"
+		write_bpf_ruleset
 	fi
 	run sysrc devfs_system_ruleset=synapseids_bpf
 	run service devfs restart
+
+	# Verify the ruleset actually took effect rather than trusting that it did.
+	# devfs reports a parse error and then simply carries on with NO rules
+	# applied, so "sysrc + restart returned 0" proves nothing -- /dev/bpf* can
+	# still be 0600 root:wheel and the sensor would capture nothing while every
+	# install step looked successful.
+	if [ "$DRY_RUN" != 1 ]; then
+		_bpfdev=""
+		for _d in /dev/bpf0 /dev/bpf; do
+			[ -c "$_d" ] && { _bpfdev="$_d"; break; }
+		done
+		if [ -n "$_bpfdev" ]; then
+			_got="$(stat -f '%Sg' "$_bpfdev" 2>/dev/null || echo '')"
+			if [ "$_got" = "$BPF_GROUP" ]; then
+				say "devfs: $_bpfdev is group $BPF_GROUP — the sensor can read it"
+			else
+				say ""
+				say "WARNING: $_bpfdev is still group '${_got:-unknown}', not '$BPF_GROUP'."
+				say "         The devfs ruleset did not take effect, so the sensor will"
+				say "         capture nothing. Look for a parse error from:"
+				say "             service devfs restart"
+				say "         Any single bad line in $DEVFS_RULES makes devfs discard"
+				say "         the entire file -- check that no rule names a group that"
+				say "         does not exist (pw groupshow <name>)."
+			fi
+		fi
+	fi
 fi
 
 # ---------------------------------------------------------------- summary
