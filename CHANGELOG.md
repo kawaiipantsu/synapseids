@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-31
+
+### Fixed
+
+- **The OPNsense installer hung, silently and indefinitely.** `dl()` used
+  `fetch -qo -` with no timeout, and `-q` makes that wait produce no output at
+  all. A firewall that can reach `raw.githubusercontent.com` but not
+  `api.github.com` — which the script called to resolve "latest" — printed one
+  banner line and stopped, with nothing to indicate why. Every network call in
+  both installers is now bounded (15s connect, 120s transfer).
+- **The installer no longer needs `api.github.com`.**
+  `github.com/<repo>/releases/latest` redirects to the tag, so the version is
+  read from the redirect: the same host that serves the packages, no API token,
+  no rate limit. The API remains a fallback, and failing both now names the
+  remedy (`--version`, or `--url` for a local mirror).
+- **The installer printed a JSON object as the OPNsense version.**
+  `/usr/local/opnsense/version/core` is a bare version string on some builds and
+  JSON on others (25.10, and the Business edition), so `cat`ting it dumped the
+  whole object into the banner. It now reads `product_version`, then
+  `CORE_VERSION`, then the first non-brace line.
+- **`install.sh` was never published as a release asset**, so the documented
+  `curl -fsSL .../releases/download/<tag>/install.sh | sh` returned 404 for
+  v0.2.0. The release workflow now publishes it.
+
+All four were reported from a live OPNsense 25.10 Business gateway within minutes
+of v0.2.0, and none could have been caught on a Linux build host with unrestricted
+network access.
+
+
 ## [0.2.0] - 2026-08-31
 
 ### Added
