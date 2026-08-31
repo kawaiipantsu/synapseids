@@ -177,9 +177,28 @@ if [ -x /usr/local/etc/rc.restart_webgui ]; then
 fi
 
 echo "SynapseIDS sensor installed. Configure it at Services > SynapseIDS Sensor."
-echo "The sensor needs read access to /dev/bpf*. If it will not start, run:"
-echo "    printf '[synapseids_bpf=10]\\nadd path \\'bpf*\\' mode 0640 group ${bpf_group:-network}\\n' >> /etc/devfs.rules"
-echo "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
+
+# Only advise when there is actually something to do. install.sh --grant-bpf
+# writes this rule and then verifies it took effect, so printing the manual
+# recipe unconditionally told operators to redo work that was already done --
+# and left them wondering whether the installer had finished the job.
+#
+# The recipe uses a DOUBLE-quoted printf. The single-quoted form this used to
+# print could not be pasted at all: POSIX sh has no way to escape a single quote
+# inside single quotes, so `\'bpf*\'` terminated the string early and the paste
+# died with "Unterminated quoted string" having written nothing.
+if grep -q 'synapseids_bpf' /etc/devfs.rules 2>/dev/null; then
+	echo "A synapseids_bpf devfs ruleset is already present in /etc/devfs.rules."
+	echo "Confirm it took effect:  ls -l /dev/bpf0   (group should be ${bpf_group:-network})"
+else
+	echo "The sensor needs read access to /dev/bpf*. The installer does this for you"
+	echo "when run with --grant-bpf; to do it by hand:"
+	# printf '%s\n', not echo: whether echo expands \n is shell-dependent (FreeBSD
+	# sh leaves it literal, dash expands it), and this line must reach the operator
+	# byte-for-byte as something they can paste.
+	printf '%s\n' "    printf \"[synapseids_bpf=10]\\nadd path 'bpf*' mode 0640 group ${bpf_group:-network}\\n\" >> /etc/devfs.rules"
+	echo "    sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart"
+fi
 POSTINSTALL
 }
 
