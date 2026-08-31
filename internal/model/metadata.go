@@ -20,6 +20,13 @@ type Metadata struct {
 	TrainerVersion     string              `json:"trainer_version"`
 	ParameterCount     int64               `json:"parameter_count"`
 	ModelHash          string              `json:"model_hash"`
+
+	// DerivedFrom is the model_id of the parent this model was fine-tuned or
+	// derived from, for the registry lineage tree (PROJECT.md §15, §19.12). It is
+	// an additive, optional field: the trainer may populate it later, and an
+	// absent value marks a lineage root. It is not part of the frozen validation
+	// contract and Validate does not check it.
+	DerivedFrom string `json:"derived_from,omitempty"`
 }
 
 // BundleMeta projects the frozen-contract subset that schema.ValidateBundle

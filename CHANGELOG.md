@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Model registry with lineage + explicit activation** (issue #26, EPIC Phase 2;
+  [ADR 0009](docs/adr/0009-model-registry-lineage-and-explicit-activation.md)).
+  - `internal/registry` records one entry per validated bundle — the §11
+    metadata plus `content_hash`, `artifact_bytes`, `derived_from`, `status`
+    (`registered` / `active` / `deactivated`), `registered_at`, `activated_at`
+    and the on-disk `dir` — in `registry.json` under `models.directory` (atomic
+    rewrite, corrupt-file tolerant). Rejects a bundle that fails the gate, a
+    content hash already registered under another id, or an id already registered
+    with another hash. `Lineage` / `Children` / `Tree` walk `derived_from` for
+    the §15 / §19.12 lineage view. At most one entry is `active`; a persisted
+    `active` is reconciled to `deactivated` on restart (activation never
+    auto-restores, PROJECT.md §28.10).
+  - `synapsed` startup now `Register`s every bundle `model.Scan` returns and logs
+    `POST /api/v1/models/{id}/activate to make it live` for `models.primary` —
+    it still activates nothing.
+  - `inference.Runtime` gains `Activate` / `Deactivate` / `SetModels`, swapping
+    the live model set atomically under an `RWMutex` (`Score` never sees a
+    half-swap). `Deactivate` restores the heuristic; while a trained model is
+    active it is the sole classifier.
+  - `internal/modelrun.Build` compiles a registered bundle into a live
+    `inference.Classifier` (`nn.LoadFile` + `normalizer.json` bridge +
+    `inference.NewONNXModel`).
+  - New REST routes: `GET /api/v1/models` (now `{ "models": [...], "runtime":
+    [...] }` — registry entries with per-entry `runtime {loaded, role}`, plus the
+    classifiers actually loaded), `GET /api/v1/models/{id}` (entry + `lineage` +
+    `children`), `GET /api/v1/models/{id}/lineage` (chain + children + forest),
+    `POST /api/v1/models/{id}/activate` (404 unknown / 409 no longer
+    loads·validates·compiles / 200 with the updated entry), `POST
+    /api/v1/models/{id}/deactivate` (restores the heuristic). State-changing and
+    unauthenticated for now — same posture as `POST /api/v1/replay`; RBAC is
+    issue #58.
+  - `internal/audit` appends `ModelRegistered` / `ModelActivated` /
+    `ModelDeactivated` to `models.directory/audit.log` (JSONL:
+    `{ts,event,actor,model_id,detail}`, `actor: "local"`). The same envelopes are
+    also published on the live event bus (already members of the frozen
+    `event-envelope-v1` enum — no new type added).
+  - `model.Metadata` gains an additive optional `derived_from` field (absent =
+    lineage root); the validation contract is unchanged.
 - `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
   `started`, `closed`, `snapshots` and `evicted` counters plus the configured
   `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
@@ -197,6 +235,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `GET /api/v1/models` returns an object (`{ "models": [...], "runtime": [...] }`)
+  instead of a bare array; the registry entries are the `models` list and the
+  previously-returned `{id, family, role}` triples are now `runtime` (with an
+  added `registered` flag). `/api/v1/status` keeps its lightweight `models` list.
+- `api.New` takes two new parameters — `*registry.Registry` and `*audit.Logger`,
+  both nil-tolerant (a nil registry makes the `/api/v1/models*` reads runtime-only
+  and the state-changing routes `503`).
 - `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng
   capture)"; the replay-start `409` and the capture docs describe the wider
   accepted set.
