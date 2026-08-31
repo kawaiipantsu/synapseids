@@ -299,12 +299,17 @@ synapsed --config contrib/config/synapse.collector.json &
 synapse-sensor pcap-over-ip --connect 127.0.0.1:4789 --token-file collector.token \
     --sensor-id edge-1 --location wan --ca collector.crt --from ./capture.pcap --speed 1 &
 
-curl -sS http://127.0.0.1:8080/api/v1/sensors    # edge-1@wan, running, packets climbing
-curl -sS http://127.0.0.1:8080/api/v1/captures   # the same peer, kind pcap-over-ip-listen
-synapse classifications                          # flows from the sensor, classified
+curl -sS http://127.0.0.1:8080/api/v1/sensors           # edge-1@wan, running, packets climbing
+curl -sS http://127.0.0.1:8080/api/v1/sensors/topology  # the same sensors, grouped by location
+curl -sS http://127.0.0.1:8080/api/v1/captures          # the same peer, kind pcap-over-ip-listen
+synapse classifications                                 # flows from the sensor, classified
 ```
 
-A missing or unreadable collector certificate is logged and the daemon keeps serving the API. The sensor-topology view (#46) is still open.
+A missing or unreadable collector certificate is logged and the daemon keeps serving the API.
+
+**Sensor topology (issue #46, [ADR 0026](docs/adr/0026-traffic-matrix-and-sensor-topology.md)).** `GET /api/v1/sensors/topology` groups the connected sensors by the location each one reported, with per-location aggregates (sensor and running counts, summed pps/bps/packets/bytes/drops/records, the modes in use) and a `down`/`degraded`/`ok` health verdict. Sensors that reported no location land in an explicit `unassigned` bucket — no location is invented for them. `CAPTURE ▸ Sensors` in the web UI renders it, and clicking a location or a sensor scopes the other views via `sensor=` / `location=`, which every route in the shared filter dialect accepts.
+
+There is one honest limit, and the API states it rather than hiding it: a flow can only be attributed to the sensor that produced it when that sensor ships **pre-aggregated records** (`--mode flow` or `--mode feature`). A `raw`-mode sensor's packets merge into one channel and one flow table before a flow record exists, so its rows are labelled `"local"` — the same as a local NIC or a PCAP replay — and a `sensor=` filter would match nothing. Every sensor row therefore carries `flow_attribution: "records" | "none"`, and the UI offers the scope links only where they work. Making raw mode attributable needs sensor identity on the packet path *and* in `flow.Key`, and is deliberately deferred.
 
 **Sensor modes — `raw` / `flow` / `feature` (Phase 6, issue #45, [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).** A sensor on a thin WAN link should not ship every frame just so the daemon can rebuild the flows the sensor already built. `--mode` (or `SYNAPSE_SENSOR_MODE`) chooses how much work happens on the sensor and therefore how little crosses the wire:
 
@@ -464,8 +469,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [PROJECT.md](PROJECT.md) — `PROJECT
 | 2 | Real inference | Python trainer, configurable hidden layers, ONNX export, Go ONNX inference, model bundles + registry, contract validation | ⬜ |
 | 3 | Live capture | local interface, tcpdump stream, SSH tcpdump, capture-source UI, capture performance metrics | ⬜ |
 | 4 | Dataset & training workflow | dataset manager, multi-dataset training recipes, live training dashboard, confusion matrices, model activation flow | ⬜ |
-| 5 | Investigation | flow inspector, host profiles, investigation mode, classification timeline, human-review queue, curated datasets | ⬜ |
-| 6 | Distributed sensors | `synapse-sensor`, authenticated encrypted transport, raw/flow/feature modes, sensor topology, location metadata | ⬜ |
+| 5 | Investigation | flow inspector, host profiles, investigation mode, classification timeline, human-review queue, curated datasets, downloadable reports, traffic matrix | ✅ |
+| 6 | Distributed sensors | `synapse-sensor`, authenticated encrypted transport, raw/flow/feature modes, sensor topology, location metadata | ✅ |
 | 7 | Advanced ML | anomaly autoencoder, model comparison, shadow models, disagreement views, drift monitoring, model lineage | ⬜ |
 | 8 | Scale | AF_PACKET/eBPF capture, ClickHouse, NATS/Kafka, distributed & GPU inference, QUIC sensor transport — only when measurements demand it | ⬜ |
 

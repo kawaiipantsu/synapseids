@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Traffic matrix and sensor topology** (issues #68 and #46 — **the last two open
+  children of EPIC Phase 5 and EPIC Phase 6**;
+  [ADR 0026](docs/adr/0026-traffic-matrix-and-sensor-topology.md)). Two
+  relationship views over data that already existed, feeding one "scope everything
+  to this thing" interaction.
+  - **`GET /api/v1/matrix`** — who talks to whom. Per ordered
+    `(initiator, responder)` pair: flow count, byte volume (both directions),
+    packets, the class mix, and `threat_class` — the highest-count class that is
+    **not** `normal`, so a pair with 400 benign and 3 `brute_force` verdicts is
+    still visibly the cell worth looking at. `flow.Key` is direction-normalized, so
+    `A→B` and `B→A` are separate cells and are never merged. Accepts `limit`,
+    `sort` (`flows` \| `bytes` \| `last_seen`), `from`/`to`, and the full
+    `parseClassFilters` vocabulary (`class`, `model`, `min_confidence`,
+    `disagreement`), so it speaks the same dialect as everything else.
+  - **It is a bounded top-N, not a matrix, and it says so.** The host map is capped
+    at 2048, which permits ~4.2 million pairs; `internal/insight` tracks at most
+    **4096**, discarding the lighter half by `(flows, bytes)` on overflow and
+    counting it. Every response carries `partial` (the cap bit, or a filtered scan
+    hit its window), `truncated` (`limit` cut the list — deliberately a *different*
+    flag), `pairs_evicted`, `tracked_pairs` and `source` (`incremental` vs `scan`).
+    A pair evicted and later seen again restarts from zero; the flow log and host
+    profiles stay the systems of record. `pairs` / `pair_cap` / `pairs_evicted` are
+    on `/api/v1/status` under `insight`.
+  - **Nothing was added to the packet path.** `insight.Observe` still copies one
+    ~120-byte observation and does one non-blocking send: **77 ns/op, 0 allocs**.
+    The matrix fold runs on the aggregator goroutine at **38 ns/op, 0 allocs** on
+    an existing cell, taking the whole per-record fold from 226 → **245 ns/op**.
+    `TestMatrixObserveDoesNotAllocate` pins the zero. Worst case — every record a
+    new pair, pruning every 512 inserts — is 602 ns/op.
+  - **`GET /api/v1/sensors/topology`** — the connected sensors grouped by the
+    location each one reported, with per-location aggregates (sensor and running
+    counts, summed pps/bps/packets/bytes/drops/records, the modes in use, newest
+    `last_packet`) and a `down`/`degraded`/`ok` health verdict, where *degraded*
+    includes "a sensor is running but dropping". Sensors that reported no location
+    group under an explicit `unassigned` bucket, sorted last; **no location is
+    invented for them.** Locations differing only in case stay distinct, because
+    merging them would mean choosing a spelling no sensor sent. With no collector
+    wired it returns an empty grouping with `collector: false` rather than a `503`,
+    which is deliberately distinguishable from a collector nobody has connected to.
+  - **`sensor=` and `location=` scope the flow and classification lists** — the
+    §19.15 interaction. They join `classFilters`, so every route already speaking
+    that dialect gains them, including `GET /api/v1/flows`, which previously took
+    no filters. An unresolvable `location=` is a **`400`**, never a silently empty
+    `200`.
+  - **Flow-to-sensor attribution is only partly possible, and the API says which
+    part.** `flow`- and `feature`-mode sensors ship pre-tagged records, so scoping
+    genuinely filters their traffic. `raw`-mode sensors' packets merge into one
+    channel and one flow table before a flow record exists, so their rows are
+    labelled `"local"` like a local NIC or a PCAP replay, and a `sensor=` scope
+    would match nothing. Every topology sensor row therefore carries
+    `flow_attribution: "records" | "none"`, each location reports
+    `attributable_sensors`, and the SPA offers the scope links **only** where they
+    work — a `counters only` affordance with the reason beats a filter that
+    silently returns an empty list. Fixing the raw case needs sensor identity on
+    `packet.Packet` *and* in `flow.Key` (or two sensors' identical 5-tuples merge
+    into one flow); that is a data-plane change and is deferred, not faked.
+  - **SPA:** `CAPTURE ▸ Sensors` (`#/sensors`) replaces its "Planned — Phase 6"
+    placeholder with the grouped topology, and a new `LIVE ▸ Matrix`
+    (`#/matrix`) draws the matrix as a canvas heat grid — cells tinted by the
+    pair's worst class, shaded by `sqrt(share)` of the heaviest cell, hollow
+    outline for model disagreement — with the pair list beneath it and
+    click-through to Investigate for either endpoint. The scoped Flow Log shows a
+    "scoped to X" strip with a clear button. Verified against
+    `nmap_scan.pcap`: `10.10.10.22 → 10.10.10.21` is the hot cell at 426 flows /
+    9.4 MB / 304 `brute_force` verdicts, every one to `:3306`.
 - **The Flow Inspector explains the verdict, and shows a flow's history** (issue
   #38, EPIC Phase 5;
   [ADR 0025](docs/adr/0025-flow-inspector-explanation-and-snapshots.md)). The last

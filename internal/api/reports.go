@@ -120,7 +120,7 @@ func (s *Server) reportOptions(w http.ResponseWriter, r *http.Request) (report.O
 		opt.MaxFlows = n // report.Options clamps to report.MaxFlowsCap
 	}
 
-	f, ok := parseClassFilters(w, q)
+	f, ok := s.parseClassFilters(w, q)
 	if !ok {
 		return opt, "", false
 	}

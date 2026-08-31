@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,7 +190,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/captures/{name}", s.handleCapture)
 	mux.HandleFunc("DELETE /api/v1/captures/{name}", s.handleCaptureDelete)
 	mux.HandleFunc("GET /api/v1/sensors", s.handleSensors)
+	// The literal path is registered before the wildcard for readability only —
+	// Go's ServeMux picks the more specific pattern regardless of order.
+	mux.HandleFunc("GET /api/v1/sensors/topology", s.handleSensorTopology)
 	mux.HandleFunc("GET /api/v1/sensors/{id}", s.handleSensor)
+	mux.HandleFunc("GET /api/v1/matrix", s.handleMatrix)
 	mux.HandleFunc("POST /api/v1/architecture/estimate", s.handleArchitectureEstimate)
 	mux.HandleFunc("GET /api/v1/replay", s.handleReplayStatus)
 	mux.HandleFunc("POST /api/v1/replay", s.handleReplayStart)
@@ -316,8 +321,84 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleFlows serves GET /api/v1/flows. It accepts the sensor scope (sensor=,
+// location=) so the topology view can pivot the flow list onto one sensor
+// (PROJECT.md §19.15); without those params its behaviour is unchanged.
+//
+// A flow record carries no sensor field of its own, so the scope is applied by
+// joining each flow to its verdict from the recent classification window — the
+// same join handleHostFlows already uses for the class predicates. A flow whose
+// verdict has aged out of that window therefore drops out of a scoped list.
 func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.RecentFlows(limitParam(r, 2000)))
+	limit := limitParam(r, 2000)
+	scope, ok := s.parseSensorScope(w, r.URL.Query())
+	if !ok {
+		return
+	}
+	if scope == nil {
+		writeJSON(w, http.StatusOK, s.store.RecentFlows(limit))
+		return
+	}
+
+	verdict := make(map[uint64]storage.Classification, classFilterScan)
+	for _, c := range s.store.RecentClassifications(classFilterScan) {
+		if _, seen := verdict[c.FlowID]; !seen {
+			verdict[c.FlowID] = c
+		}
+	}
+	out := make([]storage.FlowRecord, 0, min(limit, 128))
+	for _, fr := range s.store.RecentFlows(classFilterScan) {
+		c, found := verdict[fr.ID]
+		if !found || !scope[c.Sensor] {
+			continue
+		}
+		out = append(out, fr)
+		if len(out) >= limit {
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// parseSensorScope reads sensor= and location=, and nothing else, so a route that
+// supports only the scope does not accidentally validate predicates it then
+// ignores. A nil map with ok=true means "unscoped"; an empty non-nil map means
+// "scoped to nothing", which is a legitimate outcome of intersecting a disjoint
+// sensor= and location=.
+//
+// See parseClassFilters for what these two parameters honestly select.
+func (s *Server) parseSensorScope(w http.ResponseWriter, q url.Values) (map[string]bool, bool) {
+	var out map[string]bool
+
+	// sensor= is matched verbatim and deliberately not validated against the
+	// connected set: a sensor that has disconnected still owns its stored rows,
+	// and "local" is a legitimate value that never appears in the collector.
+	if v := strings.TrimSpace(q.Get("sensor")); v != "" {
+		out = map[string]bool{v: true}
+	}
+
+	// location= resolves through the *currently connected* sensors, because a
+	// location lives on the live session and is not stored on a row. A location
+	// nothing reports is a 400: an empty 200 would be indistinguishable from "that
+	// location produced no traffic".
+	if v := strings.TrimSpace(q.Get("location")); v != "" {
+		ids := s.sensorIDsAtLocation(v)
+		if len(ids) == 0 {
+			http.Error(w, "unknown location: no connected sensor reports it", http.StatusBadRequest)
+			return nil, false
+		}
+		if out == nil {
+			out = ids
+		} else {
+			// Both given: intersect, so sensor= narrows within location=.
+			for id := range out {
+				if !ids[id] {
+					delete(out, id)
+				}
+			}
+		}
+	}
+	return out, true
 }
 
 func (s *Server) handleFlow(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +425,7 @@ func (s *Server) handleClassifications(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := limitParam(r, 5000)
 
-	f, ok := parseClassFilters(w, q)
+	f, ok := s.parseClassFilters(w, q)
 	if !ok {
 		return // parseClassFilters already wrote a 400
 	}
@@ -375,10 +456,20 @@ type classFilters struct {
 	model        string  // model=<id>         → any Result.Models[].ModelID == id
 	minConf      float64 // min_confidence=... → Result.Score >= threshold (0..1)
 	hasMinConf   bool
+
+	// sensors is the sensor scope from sensor= / location= (PROJECT.md §19.15,
+	// issue #46): the set of Classification.Sensor values a row may carry. A nil
+	// map means "any sensor" — it is not the same as an empty map, which matches
+	// nothing.
+	//
+	// Read the honesty note on parseClassFilters before using this: for most
+	// traffic Classification.Sensor is the literal "local", so this predicate is
+	// only as good as the attribution the pipeline actually performs.
+	sensors map[string]bool
 }
 
 func (f classFilters) empty() bool {
-	return !f.disagreement && f.class == "" && f.model == "" && !f.hasMinConf
+	return !f.disagreement && f.class == "" && f.model == "" && !f.hasMinConf && f.sensors == nil
 }
 
 func (f classFilters) match(c storage.Classification) bool {
@@ -389,6 +480,9 @@ func (f classFilters) match(c storage.Classification) bool {
 		return false
 	}
 	if f.hasMinConf && c.Result.Score < f.minConf {
+		return false
+	}
+	if f.sensors != nil && !f.sensors[c.Sensor] {
 		return false
 	}
 	if f.model != "" {
@@ -408,7 +502,27 @@ func (f classFilters) match(c storage.Classification) bool {
 
 // parseClassFilters reads the query params, validating as it goes. On a bad
 // value it writes a 400 and returns ok=false.
-func parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool) {
+//
+// # The sensor scope, and what it honestly does
+//
+// sensor= and location= exist so clicking a sensor or a location in the topology
+// view can scope the other views (PROJECT.md §19.15). Both resolve to a set of
+// allowed Classification.Sensor values, which is the *only* sensor provenance any
+// stored row carries.
+//
+// That field is a real sensor id for `flow`- and `feature`-mode SYNPOIP sensors,
+// whose records arrive pre-aggregated and tagged. For a `raw`-mode sensor it is
+// not: raw packets from every source merge into one channel and one flow table
+// before a flow record exists, so those rows are labelled "local" exactly like a
+// local NIC or a PCAP replay. ADR 0026 records this and why widening it is a
+// packet-path change, not an API one.
+//
+// The consequence, stated rather than hidden: sensor=<a raw-mode sensor> matches
+// nothing, and location=<a location with only raw-mode sensors> matches nothing.
+// The topology response marks each sensor's flow_attribution so a client can
+// avoid offering a scope that cannot work, and an unresolvable location= is a 400
+// rather than a silently empty 200.
+func (s *Server) parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool) {
 	var f classFilters
 
 	f.disagreement = q.Get("disagreement") == "true"
@@ -435,7 +549,41 @@ func parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool)
 		f.minConf, f.hasMinConf = n, true
 	}
 
+	// The sensor scope shares one implementation with the routes that accept it
+	// alone, so `sensor=`/`location=` cannot come to mean two different things.
+	scope, ok := s.parseSensorScope(w, q)
+	if !ok {
+		return f, false
+	}
+	f.sensors = scope
+
 	return f, true
+}
+
+// sensorIDsAtLocation returns the ids of connected sensors whose reported
+// location is exactly loc, after trimming. The match is exact — not
+// case-insensitive — because GET /api/v1/sensors/topology groups by the same
+// verbatim string and hands the client the value to send back, so there is
+// nothing to guess. The empty-location bucket is addressed by the
+// UnassignedLocation sentinel (see topology.go).
+func (s *Server) sensorIDsAtLocation(loc string) map[string]bool {
+	if s.sensors == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, st := range s.sensors.Sensors() {
+		have := strings.TrimSpace(st.Location)
+		if have == "" {
+			have = UnassignedLocation
+		}
+		if have == loc {
+			out[st.SensorID] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // validClassName reports whether name is a traffic-classes-v1 class.

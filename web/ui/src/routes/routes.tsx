@@ -9,9 +9,11 @@ import { Datasets } from './Datasets'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
 import { Investigate } from './Investigate'
+import { Matrix } from './Matrix'
 import { Models } from './Models'
 import { ReplayPage } from './ReplayPage'
 import { ReviewQueue } from './Review'
+import { Sensors } from './Sensors'
 import { Timeline } from './Timeline'
 import { Training } from './Training'
 
@@ -38,6 +40,10 @@ export const ROUTES: RouteDef[] = [
   { group: 'LIVE', path: '/flow-log', label: 'Flow Log', tag: 'live', live: true, element: <FlowLog /> },
   { group: 'LIVE', path: '/investigate', label: 'Investigate', tag: 'live', live: true, element: <Investigate /> },
   { group: 'LIVE', path: '/hosts', label: 'Hosts', tag: 'live', live: true, element: <Hosts /> },
+  // The traffic matrix (issue #68): who talks to whom, over the same bounded read
+  // model that backs Hosts. A top-N of the heaviest conversations, not a full
+  // hosts × hosts grid — see ADR 0026.
+  { group: 'LIVE', path: '/matrix', label: 'Matrix', tag: 'live', live: true, element: <Matrix /> },
   { group: 'LIVE', path: '/timeline', label: 'Timeline', tag: 'live', live: true, element: <Timeline /> },
   // The human review loop (§16; issues #42 and #64): the ranked queue, the five
   // review states, and the curated-dataset hand-off. Distinct from Detections
@@ -62,13 +68,17 @@ export const ROUTES: RouteDef[] = [
     live: true,
     element: <CaptureSources />,
   },
+  // Sensor topology (§19.15, issue #46): sensors grouped by the location each one
+  // reported, with per-location aggregates, and click-to-scope. The view states
+  // per sensor whether its flows can actually be attributed to it — flow/feature
+  // mode yes, raw mode no (ADR 0026).
   {
     group: 'CAPTURE',
     path: '/sensors',
     label: 'Sensors',
-    tag: 'P6',
-    live: false,
-    element: P(6, 'Sensor Topology', 'EPIC: Phase 6 — Distributed Sensors', 'Sensors grouped by location/environment (§19.15); clicking a location scopes the other views.'),
+    tag: 'live',
+    live: true,
+    element: <Sensors />,
   },
   { group: 'CAPTURE', path: '/replay', label: 'Replay', tag: 'live', live: true, element: <ReplayPage /> },
 

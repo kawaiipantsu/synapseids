@@ -103,7 +103,7 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("unknown sort %q (want one of %s)", q.Get("sort"), strings.Join(review.SortNames(), ", ")), http.StatusBadRequest)
 		return
 	}
-	f, ok := parseClassFilters(w, q)
+	f, ok := s.parseClassFilters(w, q)
 	if !ok {
 		return // parseClassFilters already wrote a 400
 	}

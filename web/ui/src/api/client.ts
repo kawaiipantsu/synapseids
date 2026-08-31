@@ -40,6 +40,8 @@ import type {
 } from './types'
 // Flow Inspector additions (§19.3, issue #38) — own block, own merge surface.
 import type { FlowExplain, FlowSnapshots } from './types'
+// Traffic matrix + sensor topology (§19.15, issues #68/#46) — own block.
+import type { MatrixSort, SensorStatus, SensorTopology, TrafficMatrix } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -534,4 +536,82 @@ export function hostReportURL(ip: string, p: ReportParams): string {
 /** GET /api/v1/reports/range — a time-window report. */
 export function rangeReportURL(p: ReportParams): string {
   return '/api/v1/reports/range' + reportQuery(p)
+}
+
+
+// ---- traffic matrix and sensor topology (§19.15, issues #68 + #46) ----------
+// Self-contained block at the end of the file. See ADR 0026.
+
+/**
+ * The sensor scope shared by /flows, /classifications and /matrix.
+ *
+ * Both parameters resolve to the sensor id stored on a classification. Only
+ * flow-/feature-mode sensors carry one, so consult a sensor's
+ * `flow_attribution` from getSensorTopology() before offering this as a filter —
+ * scoping to a raw-mode sensor matches nothing. `location` is matched exactly as
+ * the topology response spells it; an unknown location is a 400, not an empty
+ * result.
+ */
+export interface SensorScopeParams {
+  sensor?: string
+  location?: string
+}
+
+export interface MatrixParams extends ClassFilterParams, SensorScopeParams {
+  sort?: MatrixSort
+}
+
+function scopeInto(q: URLSearchParams, p: SensorScopeParams): void {
+  if (p.sensor) q.set('sensor', p.sensor)
+  if (p.location) q.set('location', p.location)
+}
+
+/**
+ * GET /api/v1/matrix — the bounded traffic matrix.
+ *
+ * Any filter switches the daemon from its incremental table to an on-demand scan
+ * of the stored window; the response's `source` says which answered, and
+ * `partial`/`truncated` say whether it is the whole picture. Render those flags —
+ * a top-N presented as a complete matrix is a lie about the data.
+ */
+export function getMatrix(p: MatrixParams = {}): Promise<TrafficMatrix> {
+  const q = new URLSearchParams()
+  if (p.limit != null) q.set('limit', String(p.limit))
+  if (p.sort) q.set('sort', p.sort)
+  if (p.class) q.set('class', p.class)
+  if (p.model) q.set('model', p.model)
+  if (p.min_confidence != null && p.min_confidence > 0) {
+    q.set('min_confidence', String(p.min_confidence))
+  }
+  if (p.disagreement) q.set('disagreement', 'true')
+  if (p.from) q.set('from', p.from)
+  if (p.to) q.set('to', p.to)
+  scopeInto(q, p)
+  const s = q.toString()
+  return getJSON<TrafficMatrix>('/api/v1/matrix' + (s ? '?' + s : ''))
+}
+
+/** GET /api/v1/sensors — the flat sensor list. */
+export function getSensors(): Promise<SensorStatus[]> {
+  return getJSON<SensorStatus[]>('/api/v1/sensors')
+}
+
+/**
+ * GET /api/v1/sensors/topology — sensors grouped by the location each reported.
+ *
+ * Never 503s: with no collector wired it returns an empty grouping with
+ * `collector: false`, which is deliberately distinguishable from a collector
+ * that simply has nobody connected.
+ */
+export function getSensorTopology(): Promise<SensorTopology> {
+  return getJSON<SensorTopology>('/api/v1/sensors/topology')
+}
+
+/** GET /api/v1/flows scoped to a sensor or location. */
+export function getScopedFlows(p: SensorScopeParams & { limit?: number }): Promise<FlowRecord[]> {
+  const q = new URLSearchParams()
+  if (p.limit != null) q.set('limit', String(p.limit))
+  scopeInto(q, p)
+  const s = q.toString()
+  return getJSON<FlowRecord[]>('/api/v1/flows' + (s ? '?' + s : ''))
 }

@@ -74,7 +74,7 @@ func (s *Server) handleHostFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	f, ok := parseClassFilters(w, q)
+	f, ok := s.parseClassFilters(w, q)
 	if !ok {
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) handleHostClassifications(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	q := r.URL.Query()
-	f, ok := parseClassFilters(w, q)
+	f, ok := s.parseClassFilters(w, q)
 	if !ok {
 		return
 	}
