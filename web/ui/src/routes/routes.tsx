@@ -5,7 +5,10 @@ import { Architecture } from './Architecture'
 import { CaptureSources } from './CaptureSources'
 import { Dashboard } from './Dashboard'
 import { FlowLog } from './FlowLog'
+import { Hosts } from './Hosts'
+import { Investigate } from './Investigate'
 import { ReplayPage } from './ReplayPage'
+import { Timeline } from './Timeline'
 
 export type NavGroup = 'LIVE' | 'CAPTURE' | 'ML' | 'SYSTEM'
 
@@ -28,22 +31,9 @@ export const ROUTES: RouteDef[] = [
   // ---- LIVE -------------------------------------------------------------
   { group: 'LIVE', path: '/dashboard', label: 'Dashboard', tag: 'live', live: true, element: <Dashboard /> },
   { group: 'LIVE', path: '/flow-log', label: 'Flow Log', tag: 'live', live: true, element: <FlowLog /> },
-  {
-    group: 'LIVE',
-    path: '/investigate',
-    label: 'Investigate',
-    tag: 'P5',
-    live: false,
-    element: P(5, 'Investigate', 'EPIC: Phase 5 — Investigation', 'Host-pivot view (§19.4): live flows, classification history, baselines and related detections for a selected entity.'),
-  },
-  {
-    group: 'LIVE',
-    path: '/hosts',
-    label: 'Hosts',
-    tag: 'P5',
-    live: false,
-    element: P(5, 'Hosts', 'EPIC: Phase 5 — Investigation', 'Observed host profiles (§19.5): first/last seen, traffic volume, common peers/ports, baseline behaviour and anomaly trend.'),
-  },
+  { group: 'LIVE', path: '/investigate', label: 'Investigate', tag: 'live', live: true, element: <Investigate /> },
+  { group: 'LIVE', path: '/hosts', label: 'Hosts', tag: 'live', live: true, element: <Hosts /> },
+  { group: 'LIVE', path: '/timeline', label: 'Timeline', tag: 'live', live: true, element: <Timeline /> },
   {
     group: 'LIVE',
     path: '/detections',

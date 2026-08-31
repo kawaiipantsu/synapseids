@@ -26,7 +26,7 @@
 > [!IMPORTANT]
 > **SynapseIDS is in early development — this is Phase 1 of an [8-phase plan](#roadmap).** No release is tagged yet; build from source today.
 >
-> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
+> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Hosts, Investigate, Timeline, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
 >
 > **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
@@ -287,7 +287,7 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 <br/>
 
