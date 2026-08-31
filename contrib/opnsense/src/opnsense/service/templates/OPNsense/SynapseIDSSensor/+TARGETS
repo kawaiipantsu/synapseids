@@ -1,0 +1,14 @@
+# +TARGETS - configd template map for the SynapseIDS sensor.
+#
+# Copyright (C) 2026 SynapseIDS contributors
+# BSD 2-Clause; see Sensor.php for the full text.
+#
+# <template file>:<absolute destination>
+#
+# configd writes both files as root:wheel with the default umask, so the
+# `synapseidssensor fixperms` action (and the rc.d start_precmd) tighten them
+# immediately afterwards:
+#   sensor.conf  -> root:wheel 0640              (flags only, no secrets)
+#   sensor.token -> _synapseids:_synapseids 0400 (the bearer token, nothing else)
+sensor.conf:/usr/local/etc/synapseids/sensor.conf
+sensor.token:/usr/local/etc/synapseids/sensor.token

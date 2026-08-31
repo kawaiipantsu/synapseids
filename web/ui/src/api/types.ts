@@ -195,6 +195,95 @@ export interface WsEvent<T = unknown> {
   data: T
 }
 
+// ---- investigation: host profiles and the classification timeline -----------
+// insight.Profile / insight.Series (PROJECT.md §19.4-6, issues #39/#40/#41).
+//
+// Every address here is a packet-derived string decoded from the wire. Render it
+// as text; never feed it to dangerouslySetInnerHTML or build markup from it.
+
+export interface ProtoCount {
+  proto: string
+  flows: number
+}
+
+export interface PortCount {
+  port: number
+  flows: number
+}
+
+export interface PeerCount {
+  ip: string
+  flows: number
+}
+
+export interface ClassCount {
+  class: string
+  class_id: number
+  count: number
+}
+
+/** A pointer back into the flow store; resolve the record with getFlow(). */
+export interface HostFlowRef {
+  flow_id: number
+  ts: string
+  proto: string
+  peer: string
+  port: number
+  bytes: number
+  class?: string
+}
+
+export interface HostProfile {
+  ip: string
+  first_seen: string
+  last_seen: string
+  flows: number
+  flows_initiated: number
+  flows_responded: number
+  packets_in: number
+  packets_out: number
+  bytes_in: number
+  bytes_out: number
+  protocols: ProtoCount[]
+  top_ports: PortCount[]
+  /** Detail view only. */
+  top_peers?: PeerCount[]
+  classifications: number
+  classes: ClassCount[]
+  disagreements: number
+  /** Detail view only. */
+  recent_flows?: HostFlowRef[]
+  /** Always false in Phase 5 — behavioural baselines are Phase 7. */
+  baseline_available: boolean
+  /** Always false in Phase 5 — anomaly scoring is Phase 7. */
+  anomaly_available: boolean
+}
+
+export interface TimelineBucket {
+  ts: string
+  total: number
+  by_class: Record<string, number>
+  disagreements: number
+}
+
+export interface TimelineSeries {
+  bucket_sec: number
+  buckets: TimelineBucket[]
+  /** Always false in Phase 5 — there is no anomaly series to plot yet. */
+  anomaly_available: boolean
+}
+
+/** Filters shared by /api/v1/classifications and the per-host collections. */
+export interface ClassFilterParams {
+  class?: string
+  model?: string
+  min_confidence?: number
+  disagreement?: boolean
+  from?: string
+  to?: string
+  limit?: number
+}
+
 // ---- datasets (PROJECT.md §14, §19.10; issue #33) ------------------------
 
 /** dataset.TimeRange — RFC3339 UTC, "" when the dataset is empty of times. */

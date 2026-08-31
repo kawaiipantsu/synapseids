@@ -26,7 +26,7 @@
 > [!IMPORTANT]
 > **SynapseIDS is in early development — this is Phase 1 of an [8-phase plan](#roadmap).** No release is tagged yet; build from source today.
 >
-> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
+> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Hosts, Investigate, Timeline, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
 >
 > **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), distributed `synapse-sensor` agents, and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
@@ -153,22 +153,30 @@ make build            # builds synapsed, synapse, synapse-sensor — CGO_ENABLED
 ./synapsed --version
 ```
 
-### 🌍 Cross-compile (all four Linux targets)
+### 🌍 Cross-compile
 
 ```bash
 make build-linux      # dist/synapseids_<ver>_linux_{amd64,386,arm64,arm}/{synapsed,synapse,synapse-sensor}
+make build-freebsd    # dist/synapseids_<ver>_freebsd_{amd64,arm64}/…  — the OPNsense sensor
+make build-all        # both
 ```
 
 <div align="center">
 
-| `make` target | `GOARCH` | `.deb` arch | `uname -m` |
+| `make` target | `GOARCH` | package arch | `uname -m` |
 |:--|:--|:--:|:--|
-| 🐧 `linux/amd64` | `amd64` | `amd64` | `x86_64` |
-| 🐧 `linux/386` | `386` | `i386` | `i686` |
-| 🐧 `linux/arm64` | `arm64` | `arm64` | `aarch64` |
-| 🐧 `linux/arm` (v7, `GOARM=7`) | `arm` | `armhf` | `armv7l` |
+| 🐧 `linux/amd64` | `amd64` | `.deb` `amd64` | `x86_64` |
+| 🐧 `linux/386` | `386` | `.deb` `i386` | `i686` |
+| 🐧 `linux/arm64` | `arm64` | `.deb` `arm64` | `aarch64` |
+| 🐧 `linux/arm` (v7, `GOARM=7`) | `arm` | `.deb` `armhf` | `armv7l` |
+| 😈 `freebsd/amd64` | `amd64` | `.pkg` `FreeBSD:14:amd64` | `amd64` |
+| 😈 `freebsd/arm64` | `arm64` | `.pkg` `FreeBSD:14:aarch64` | `arm64` |
 
 </div>
+
+The four Linux targets are the release contract ([§27, §28.16](PROJECT.md)). The two FreeBSD
+targets exist for the OPNsense sensor ([ADR 0014](docs/adr/0014-freebsd-bpf-capture-and-the-opnsense-sensor-plugin.md));
+`synapse-sensor` is the binary that must build there, and `synapsed`/`synapse` ride along because they happen to.
 
 ### 📦 Debian / Ubuntu
 
@@ -225,15 +233,36 @@ PCAP-over-IP (Phase 3): a `capture.sources` entry of `kind: "pcap-over-ip"` cons
 
 Optional: `server_name` (TLS SNI / cert name), `client_cert_file` + `client_key_file` (mutual TLS), `insecure_tls` (skip verification — logs a loud warning, needs `authorized`). There is **no auto-reconnect** yet: a dropped stream shows `state: "error"` in `GET /api/v1/captures` until the daemon restarts.
 
-Run a sensor to stream a capture file over the wire (the seam the Phase 6 `synapse-sensor` grows from):
+Run a sensor to stream a capture file — or a **live NIC** — over the wire:
 
 ```bash
 # generates + fingerprints a self-signed cert when --cert/--key are omitted
 synapse-sensor pcap-over-ip --listen :4789 --from ./capture.pcap --token-file ./poip.token --speed 1
 # mutual TLS: also pass --client-ca ./clients-ca.pem
+
+# live NIC: AF_PACKET on Linux, /dev/bpf on FreeBSD. --authorized is required (§28.18).
+synapse-sensor pcap-over-ip --listen :4789 --iface eth0 --filter ip-any --promisc \
+    --authorized --sensor-id edge-01 --location dmz --token-file ./poip.token
+
+# outbound: the sensor dials the daemon, so a box behind NAT needs no inbound hole.
+# The sensor half is complete; synapsed has no collector endpoint to dial yet (ADR 0014).
+synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --direction in \
+    --authorized --ca ./daemon-ca.pem --cert ./sensor.pem --key ./sensor.key --token-file ./poip.token
 ```
 
 A quick loopback demo — `synapse-sensor pcap-over-ip --listen 127.0.0.1:4789 --from testdata/pcap/portscan.pcap --token-file poip.token` then point a `pcap-over-ip` source (with `insecure_tls` + `authorized`) at `127.0.0.1:4789`: `GET /api/v1/captures` counts the packets with a real `connection_latency_ms`, and `GET /api/v1/classifications` returns the port-scan flows as `scan`. See `contrib/config/synapse.pcap-over-ip.json`.
+
+#### 🛡️ OPNsense WAN sensor
+
+An OPNsense firewall can be an inbound-WAN sensor, configured from its own web UI under **Services → SynapseIDS Sensor**. Capture runs through FreeBSD's `/dev/bpf` as a dedicated unprivileged user — never root — and streams over the same SYNPOIP transport. See **[docs/opnsense-sensor.md](docs/opnsense-sensor.md)** and [`contrib/opnsense/`](contrib/opnsense/).
+
+```sh
+# on the firewall, as root. Read it first — see the docs for why.
+fetch -o install.sh https://raw.githubusercontent.com/kawaiipantsu/synapseids/main/contrib/opnsense/install.sh
+sh ./install.sh
+```
+
+> ⚠️ **Untested on hardware.** The FreeBSD BPF source, the package and the plugin were all written and verified on Linux — cross-builds, unit tests and compile-time ABI assertions pass, but nobody has yet run them on a real OPNsense box. [What a maintainer must validate](docs/opnsense-sensor.md#what-is-not-verified).
 `capture.sources[]` also takes `kind: "tcpdump"` and `kind: "ssh"` (issues #29/#30). For these two, `filter` is a **raw tcpdump filter expression** (e.g. `"tcp port 80 or udp"`), tokenised and passed as arguments — never through a shell.
 
 ```jsonc
@@ -287,7 +316,7 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 `{ref}` is a url-escaped `<id>@<version>` — a dataset id may contain one `/`
 (`thugs/lab-attacks-2026-08`), so the whole reference travels as one segment.

@@ -860,6 +860,168 @@ button.src-rm:hover:not(:disabled) {
   white-space: pre-wrap;
 }
 
+/* --------------------------- investigation: hosts, pivot, timeline (§19.4-6) */
+
+/* Section heads on the investigation pages use h2; match the existing h4 rule. */
+.sect > h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--edge);
+  padding-bottom: 4px;
+  font-weight: 600;
+}
+.sect > h2 .dim {
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+
+/* .flowscroll assumes a flex-column page (Flow Log). These pages are normal
+   block flow, so give the scroller an explicit bound instead. */
+.flowscroll.short {
+  flex: none;
+  max-height: 340px;
+}
+.hosts-scroll {
+  flex: none;
+  max-height: 62vh;
+}
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover {
+  color: var(--ink);
+}
+th.sorted {
+  color: var(--accent);
+}
+th .caret {
+  font-size: 9px;
+}
+
+/* Clickable address cells that navigate into Investigate. */
+.linkish {
+  cursor: pointer;
+  text-decoration: underline dotted var(--edge);
+}
+.linkish:hover {
+  color: var(--accent);
+}
+
+.host-pivot {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Small "TCP 12" style count chips in the hosts table. */
+.chip {
+  display: inline-block;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-right: 4px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.chip b {
+  color: var(--ink);
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+/* Class mix as one stacked bar. */
+.mixbar {
+  display: inline-flex;
+  width: 120px;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel2);
+  vertical-align: middle;
+}
+.mixbar i {
+  display: block;
+  height: 100%;
+}
+
+/* Classification timeline (§19.6). */
+.tl {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 8px 10px;
+  margin: 0 0 18px;
+}
+.tl-plot {
+  width: 100%;
+}
+.tl-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--dim);
+  padding-top: 6px;
+  border-top: 1px solid var(--edge);
+  margin-top: 6px;
+}
+.tl-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.tl-key i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.tl-key i.tl-dash {
+  height: 0;
+  border-top: 1px dashed var(--ink);
+  border-radius: 0;
+}
+.tl-sel {
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tl-clear {
+  font-size: 10px;
+  padding: 0 6px;
+}
+.tl-stub {
+  font-size: 11px;
+  color: var(--dim);
+  opacity: 0.65;
+  padding-top: 4px;
+}
+
+/* uPlot's drag selection needs to read against the dark panel. */
+.tl .u-select {
+  background: rgba(53, 193, 214, 0.16);
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+}
+
+@media (max-width: 720px) {
+  .app-body {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+}
+
 /* --------------------------------------------------- datasets (§19.10) */
 
 .ds-honesty {

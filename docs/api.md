@@ -211,6 +211,159 @@ GET /api/v1/classifications?class=scan&min_confidence=90
 GET /api/v1/classifications?model=global-v1&limit=500
 ```
 
+### GET /api/v1/hosts
+
+Observed host profiles (PROJECT.md §19.5, issue #39). Newest-active first by
+default. Profiles are maintained incrementally by `internal/insight` from the
+classified flow stream — see `docs/adr/0016-host-and-time-aggregation-for-investigation.md`.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Max profiles. Default `100`, clamped to `2000`. |
+| `q` | Case-sensitive substring match on the address, e.g. `q=10.10.10.`. |
+| `sort` | `last_seen` (default), `flows` or `bytes`. Anything else → `400 bad sort`. |
+
+```json
+[
+  {
+    "ip": "10.10.10.22",
+    "first_seen": "2026-08-31T08:41:11.052640Z",
+    "last_seen": "2026-08-31T08:43:45.874377Z",
+    "flows": 1124,
+    "flows_initiated": 864,
+    "flows_responded": 260,
+    "packets_in": 33880,
+    "packets_out": 34202,
+    "bytes_in": 15914440,
+    "bytes_out": 10223125,
+    "protocols": [{ "proto": "TCP", "flows": 923 }, { "proto": "UDP", "flows": 197 }],
+    "top_ports": [{ "port": 3306, "flows": 400 }, { "port": 80, "flows": 248 }],
+    "classifications": 1176,
+    "classes": [
+      { "class": "normal", "class_id": 0, "count": 868 },
+      { "class": "brute_force", "class_id": 3, "count": 304 }
+    ],
+    "disagreements": 0,
+    "baseline_available": false,
+    "anomaly_available": false
+  }
+]
+```
+
+The list view is shallow: `top_ports` is capped at 5 and `top_peers` /
+`recent_flows` are omitted. Fetch one host for the full lists.
+
+`baseline_available` and `anomaly_available` are **always `false`**. Behavioural
+baseline and anomaly trend (§19.5) need the Phase 7 anomaly work; the fields exist
+so a client can label the gap rather than plot an invented number.
+
+Counting rules worth knowing:
+
+- `flows`, `packets_*` and `bytes_*` come only from **terminal** flow records. A
+  long flow's periodic snapshot records carry cumulative counters, so including
+  them would double-count.
+- `classifications`, `classes[]` and `disagreements` count **every** verdict,
+  snapshot verdicts included, which keeps a host's mix consistent with
+  `/api/v1/classifications`.
+- A flow updates **both** endpoints, so summing `flows` across hosts roughly
+  doubles the flow count.
+- `top_ports` is the conversation's **service** port (the responder side): for an
+  initiator "a port I connected to", for a responder "a port I served".
+- `top_ports` / `top_peers` are exact for heavy hitters but **approximate for long
+  tails**: each host tracks at most 128 distinct keys and discards the
+  lowest-count half on overflow (a 60000-port sweep evicts its own tail). The
+  scalar totals are never pruned. Discards are counted in `status.insight.keys_pruned`.
+
+Resource bounds are reported on `GET /api/v1/status` under `insight`:
+
+```json
+"insight": {
+  "hosts": 84, "host_cap": 2048, "hosts_evicted": 0,
+  "key_cap": 128, "keys_pruned": 0,
+  "observed": 1176, "dropped": 0, "queue_size": 8192, "timeline_late": 0
+}
+```
+
+At most 2048 hosts are tracked; on overflow the least-recently-active quarter is
+dropped and counted in `hosts_evicted`. `dropped` counts observations the
+aggregator's bounded ingest queue could not accept — the packet path never blocks
+on it (PROJECT.md §21, §22).
+
+### GET /api/v1/hosts/{ip}
+
+One profile with its detail lists: `top_ports` up to 16, `top_peers` up to 16, and
+`recent_flows` — up to 16 compact references (`flow_id`, `ts`, `proto`, `peer`,
+`port`, `bytes`, `class`). Resolve a reference with `GET /api/v1/flows/{id}`; the
+profile deliberately does not duplicate the 48-value feature vector.
+
+`{ip}` must parse as an IPv4 or IPv6 literal (`net/netip`) or the response is
+`400 bad host address`. The address is canonicalised, so `::ffff:10.0.0.1` and
+`10.0.0.1` address the same profile. An unobserved but well-formed address is
+`404 host not found`.
+
+### GET /api/v1/hosts/{ip}/flows
+
+That host's flow records, newest first, where it is either endpoint. Accepts the
+**same** filter parameters as `/api/v1/classifications` (`class`, `model`,
+`min_confidence`, `disagreement`) plus `from` / `to`, so there is one filter
+dialect to learn. `limit` defaults to `100`, clamped to `2000`.
+
+The classification predicates are applied by joining each flow to its verdict from
+the recent classification window; a flow whose verdict has already aged out of the
+ring is therefore not returned when such a filter is set.
+
+### GET /api/v1/hosts/{ip}/classifications
+
+That host's verdicts, newest first, with the same parameters as above.
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | Inclusive RFC3339 bounds on the record timestamp. A malformed value → `400 bad from` / `400 bad to`; `to` before `from` → `400 bad range`. |
+
+```text
+GET /api/v1/hosts/10.10.10.21/classifications?class=brute_force&limit=50
+GET /api/v1/hosts/10.10.10.22/flows?from=2026-08-31T08:42:00Z&to=2026-08-31T08:43:00Z
+```
+
+### GET /api/v1/timeline
+
+Classification volume bucketed over time (PROJECT.md §19.6, issue #41).
+
+| Param | Meaning |
+|---|---|
+| `bucket` | `1s` (default), `10s` or `1m` (`60s` is accepted as an alias). Anything else → `400 bad bucket`. |
+| `from`, `to` | Inclusive RFC3339 bounds. Same validation as above. |
+| `class` | Restrict to one `traffic-classes-v1` class; unknown → `400 unknown class name`. |
+| `host` | Restrict to conversations involving this address; must be an IP literal → `400` otherwise. |
+
+```json
+{
+  "bucket_sec": 1,
+  "buckets": [
+    { "ts": "2026-08-31T08:41:11Z", "total": 6, "by_class": { "normal": 4, "brute_force": 2 }, "disagreements": 0 },
+    { "ts": "2026-08-31T08:41:12Z", "total": 3, "by_class": { "normal": 2, "brute_force": 1 }, "disagreements": 0 }
+  ],
+  "anomaly_available": false
+}
+```
+
+The series is **dense**: a quiet interval is an explicit zero bucket, not a missing
+`ts`, so a chart does not have to interpolate. With no `from`, it starts at the
+oldest non-empty bucket still retained rather than at the start of the ring's
+window.
+
+Retention is per resolution: `1s` keeps 900 buckets (15 min), `10s` keeps 720
+(2 h), `1m` keeps 1440 (24 h). A verdict older than a ring's whole window cannot be
+placed and is counted in `status.insight.timeline_late`.
+
+An unscoped query is answered from the incrementally maintained ring. A `class=` or
+`host=` scoped query is bucketed on demand from the newest 5000 stored
+classifications instead — a ring per host would be unbounded.
+
+`anomaly_available` is **always `false`**: the anomaly-score series (§19.6) needs
+the Phase 7 anomaly model, and the API reports its absence rather than returning a
+fabricated zero series.
+
 ### GET /api/v1/models
 
 The model registry view plus the classifiers currently loaded in the inference

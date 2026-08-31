@@ -1,0 +1,238 @@
+#!/bin/sh
+#
+# Copyright (C) 2026 SynapseIDS contributors
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+# AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY OR
+# CONSEQUENTIAL DAMAGES HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY.
+#
+# ---------------------------------------------------------------------------
+# rc.d wrapper for the SynapseIDS distributed capture sensor.
+#
+# Everything that varies is rendered by configd into
+# /usr/local/etc/synapseids/sensor.conf; this script only turns those variables
+# into a supervised daemon(8) invocation and enforces the invariants that must
+# hold before a packet is captured:
+#
+#   * the bearer token lives in a 0400 _synapseids file and is passed as
+#     --token-file, never as an argument value - it must not be visible in
+#     ps(1) output to any local user;
+#   * sensor.conf itself contains no secrets, so any PEM file the flags refer
+#     to must already be on disk with a sane mode before the sensor starts;
+#   * /dev/bpf* must actually be readable by the unprivileged service user,
+#     otherwise the operator gets the exact devfs.rules incantation instead of
+#     an opaque "permission denied".
+#
+# PROVIDE: synapseids_sensor
+# REQUIRE: LOGIN FILESYSTEMS
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="synapseids_sensor"
+rcvar=synapseids_sensor_enable
+
+load_rc_config $name
+
+# The configd-rendered configuration wins over anything in rc.conf: it is the
+# authoritative projection of the OPNsense config store.
+synapseids_sensor_conf="/usr/local/etc/synapseids/sensor.conf"
+if [ -r "${synapseids_sensor_conf}" ]; then
+    # shellcheck source=/dev/null
+    . "${synapseids_sensor_conf}"
+fi
+
+: ${synapseids_sensor_enable:="NO"}
+: ${synapseids_sensor_args:=""}
+: ${synapseids_sensor_iface:=""}
+: ${synapseids_sensor_user:="_synapseids"}
+: ${synapseids_sensor_bin:="/usr/local/bin/synapse-sensor"}
+: ${synapseids_sensor_etcdir:="/usr/local/etc/synapseids"}
+: ${synapseids_sensor_logdir:="/var/log/synapseids"}
+
+synapseids_sensor_token="${synapseids_sensor_etcdir}/sensor.token"
+synapseids_sensor_ca="${synapseids_sensor_etcdir}/peer-ca.pem"
+synapseids_sensor_cert="${synapseids_sensor_etcdir}/sensor-cert.pem"
+synapseids_sensor_key="${synapseids_sensor_etcdir}/sensor-key.pem"
+
+pidfile="/var/run/synapseids_sensor.pid"
+procname="${synapseids_sensor_bin}"
+command="/usr/sbin/daemon"
+
+# daemon(8) supervises synapse-sensor, drops privileges to the service user and
+# relays the child's stdout/stderr to syslog tagged "synapseids_sensor".
+#
+# TODO(verify): `-f` redirects stdin/stdout/stderr to /dev/null while `-S -T`
+# asks for syslog capture.  Confirm on FreeBSD 14 that the combination still
+# reaches syslog; if it does not, drop `-f` (daemon(8) already detaches) or add
+# `-o ${synapseids_sensor_logdir}/sensor.log`.  The web UI's log viewer reads
+# ${synapseids_sensor_logdir}/sensor.log, which syslog.d must be pointed at.
+command_args="-f -S -T ${name} -p ${pidfile} -u ${synapseids_sensor_user} \
+    ${synapseids_sensor_bin} pcap-over-ip ${synapseids_sensor_args} \
+    --token-file ${synapseids_sensor_token}"
+
+start_precmd="synapseids_sensor_precmd"
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+# synapseids_sensor_check_pem <path> <owner:group> <mode>
+#
+# If $synapseids_sensor_args references <path> (as the value of a cert, key, ca
+# or client-ca flag), make sure the file exists and tighten its ownership and
+# mode.  A referenced but missing PEM is a hard failure: starting anyway would
+# either abort inside synapse-sensor with a less obvious message or, worse,
+# silently weaken the transport.
+synapseids_sensor_check_pem()
+{
+    _path=$1
+    _owner=$2
+    _mode=$3
+
+    case " ${synapseids_sensor_args} " in
+    *" ${_path} "*)
+        ;;
+    *)
+        return 0
+        ;;
+    esac
+
+    if [ ! -f "${_path}" ]; then
+        echo "synapseids_sensor: the configuration references ${_path}, but that file does not exist."
+        echo "synapseids_sensor: install the PEM you entered in the web UI, for example:"
+        echo "    install -m ${_mode} -o ${_owner%%:*} -g ${_owner##*:} /path/to/file.pem ${_path}"
+        return 1
+    fi
+
+    chown "${_owner}" "${_path}" 2>/dev/null
+    chmod "${_mode}" "${_path}" 2>/dev/null
+    return 0
+}
+
+# Print the devfs guidance and fail.  Kept verbatim so it can be pasted.
+synapseids_sensor_bpf_help()
+{
+    cat <<'EOF'
+synapseids_sensor: the _synapseids user cannot read /dev/bpf*.
+Add to /etc/devfs.rules:
+    [synapseids_bpf=10]
+    add path 'bpf*' mode 0640 group net
+then: sysrc devfs_system_ruleset=synapseids_bpf && service devfs restart
+EOF
+}
+
+# Return 0 when ${synapseids_sensor_user} can open a BPF device.
+#
+# There is no portable way to test read access "as another user" without a
+# usable login shell, so this inspects the device's owner, group and mode the
+# same way the kernel would.  /dev/bpf is the cloning device present on
+# FreeBSD 14; /dev/bpf0 is checked as a fallback.
+synapseids_sensor_bpf_ok()
+{
+    _dev=""
+    for _candidate in /dev/bpf /dev/bpf0; do
+        if [ -c "${_candidate}" ]; then
+            _dev="${_candidate}"
+            break
+        fi
+    done
+
+    # No bpf device node at all: let synapse-sensor produce the error, since
+    # this is not a permission problem we can advise on.
+    [ -z "${_dev}" ] && return 0
+
+    _owner=$(stat -f '%Su' "${_dev}" 2>/dev/null) || return 0
+    _group=$(stat -f '%Sg' "${_dev}" 2>/dev/null) || return 0
+    _mode=$(stat -f '%Lp' "${_dev}" 2>/dev/null) || return 0
+
+    # owner read bit
+    if [ "${_owner}" = "${synapseids_sensor_user}" ] && [ $((0${_mode} & 0400)) -ne 0 ]; then
+        return 0
+    fi
+    # group read bit, and the service user is a member of that group
+    if [ $((0${_mode} & 0040)) -ne 0 ]; then
+        if id -Gn "${synapseids_sensor_user}" 2>/dev/null | tr ' ' '\n' | grep -qx "${_group}"; then
+            return 0
+        fi
+    fi
+    # world read bit (unusual, but sufficient)
+    if [ $((0${_mode} & 0004)) -ne 0 ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# start_precmd
+# ---------------------------------------------------------------------------
+synapseids_sensor_precmd()
+{
+    if [ ! -x "${synapseids_sensor_bin}" ]; then
+        echo "synapseids_sensor: ${synapseids_sensor_bin} is missing or not executable."
+        return 1
+    fi
+
+    # -- log directory -----------------------------------------------------
+    if [ ! -d "${synapseids_sensor_logdir}" ]; then
+        mkdir -p "${synapseids_sensor_logdir}" || return 1
+    fi
+    chown "${synapseids_sensor_user}:wheel" "${synapseids_sensor_logdir}" 2>/dev/null
+    chmod 0750 "${synapseids_sensor_logdir}" 2>/dev/null
+
+    # -- configuration directory ------------------------------------------
+    if [ ! -d "${synapseids_sensor_etcdir}" ]; then
+        mkdir -p "${synapseids_sensor_etcdir}" || return 1
+    fi
+    chown "root:${synapseids_sensor_user}" "${synapseids_sensor_etcdir}" 2>/dev/null
+    chmod 0750 "${synapseids_sensor_etcdir}" 2>/dev/null
+
+    # sensor.conf carries no secrets, but there is no reason for it to be world
+    # readable either.
+    if [ -f "${synapseids_sensor_conf}" ]; then
+        chown root:wheel "${synapseids_sensor_conf}" 2>/dev/null
+        chmod 0640 "${synapseids_sensor_conf}" 2>/dev/null
+    fi
+
+    # -- bearer token ------------------------------------------------------
+    # configd renders it root:wheel 0644; make it unreadable to everyone but
+    # the service user before the sensor (or anyone else) can look at it.
+    # The value itself is never echoed, compared or logged here.
+    if [ ! -f "${synapseids_sensor_token}" ]; then
+        ( umask 077; : > "${synapseids_sensor_token}" ) || return 1
+    fi
+    chown "${synapseids_sensor_user}:${synapseids_sensor_user}" "${synapseids_sensor_token}" || return 1
+    chmod 0400 "${synapseids_sensor_token}" || return 1
+
+    # -- TLS material ------------------------------------------------------
+    # sensor.conf only names the PEM files; refuse to start when one that the
+    # flags reference is absent, and tighten the mode of the ones that are.
+    synapseids_sensor_check_pem "${synapseids_sensor_ca}" "root:wheel" 0444 || return 1
+    synapseids_sensor_check_pem "${synapseids_sensor_cert}" "root:wheel" 0444 || return 1
+    synapseids_sensor_check_pem "${synapseids_sensor_key}" \
+        "${synapseids_sensor_user}:${synapseids_sensor_user}" 0400 || return 1
+
+    # -- packet capture permissions ---------------------------------------
+    if ! synapseids_sensor_bpf_ok; then
+        synapseids_sensor_bpf_help
+        return 1
+    fi
+
+    return 0
+}
+
+run_rc_command "$1"

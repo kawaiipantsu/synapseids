@@ -23,10 +23,26 @@ import (
 // packet-path pressure stays visible without flooding the log (PROJECT.md §24).
 const evictLogEvery = 1000
 
+// Observer receives every classified flow record. It exists so read models that
+// are not the system of record — the host/timeline aggregates behind
+// Investigation mode (PROJECT.md §19.4-6) — can be fed from the one place that
+// has both the record and its verdict, without the pipeline importing them.
+//
+// An implementation MUST NOT block, allocate heavily or take a lock a reader can
+// hold: it is called from the packet-processing goroutine (PROJECT.md §22).
+// internal/insight satisfies it with a single non-blocking channel send. The
+// arguments are only valid for the duration of the call.
+type Observer interface {
+	Observe(fr *storage.FlowRecord, cl *storage.Classification)
+}
+
 // Options configure a pipeline run.
 type Options struct {
 	Flow   flow.Options
 	Sensor string
+	// Observer, when non-nil, is handed every flow record and its verdict. See
+	// Observer for the contract it must honour.
+	Observer Observer
 	// IDGen, when set, allocates globally-unique flow IDs so records from
 	// different runs never collide (the daemon shares one allocator).
 	IDGen func() uint64
@@ -109,6 +125,9 @@ func Run(
 		bus.Publish(events.ClassificationCreated, cl)
 		if res.Disagreement {
 			bus.Publish(events.ModelDisagreementDetected, cl)
+		}
+		if opt.Observer != nil {
+			opt.Observer.Observe(&fr, &cl)
 		}
 	}
 

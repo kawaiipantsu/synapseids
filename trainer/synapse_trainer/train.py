@@ -5,6 +5,12 @@ present, and everything that does not actually run a forward/backward pass
 (``confusion_and_prf``, ``classification_metrics``) works without it.  Anything
 that needs torch raises a clear :class:`TrainingUnavailable` instead.
 
+The ``X_train`` / ``y_train`` handed in are the **combined, weighted** training
+mixture and ``X_val`` / ``y_val`` the merged validation set that
+:func:`synapse_trainer.mixture.build_mixture` produced from every dataset in the
+recipe — this module never loads or splits data itself, so the "split each
+dataset before mixing" guarantee cannot be bypassed here (PROJECT.md §14).
+
 ``train_iter`` is a generator that yields one progress dict per epoch and a
 final ``{"event": "done", "metrics": {...}}``; ``run_training`` drains it,
 optionally POSTing each dict as a JSON line to a ``progress_url`` (a no-op when

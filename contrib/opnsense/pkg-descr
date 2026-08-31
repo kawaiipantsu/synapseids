@@ -1,0 +1,16 @@
+SynapseIDS sensor for OPNsense.
+
+Turns an OPNsense firewall into an inbound-WAN sensor for a central SynapseIDS
+daemon. The plugin captures traffic on the selected interface through FreeBSD's
+BPF devices and streams the raw frames to synapsed over SYNPOIP, the project's
+framed, authenticated, TLS-only PCAP-over-IP transport. Flow assembly, feature
+extraction and neural-network classification all happen on the daemon; the
+firewall only observes and forwards.
+
+Everything is configured from Services > SynapseIDS Sensor: capture interface,
+filter preset, direction, the daemon address, the bearer token and the TLS
+trust settings. The sensor runs as the dedicated unprivileged _synapseids
+account with read-only access to the bpf devices, never as root, and never
+modifies or injects traffic.
+
+WWW: https://github.com/kawaiipantsu/synapseids

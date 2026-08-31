@@ -1,0 +1,24 @@
+{
+  "name": "flow-classifier-copenhagen-mix",
+  "datasets": [
+    { "id": "hq-copenhagen/baseline-2026-08", "weight": 0.7 },
+    { "id": "thugs/lab-attacks-2026-08", "weight": 0.2 },
+    { "id": "hq-copenhagen/reviewed-anomalies-2026-09", "weight": 0.1 }
+  ],
+  "architecture": {
+    "hidden": [
+      { "width": 64, "activation": "relu", "dropout": 0.3, "batchnorm": true, "residual": false },
+      { "width": 32, "activation": "relu", "dropout": 0.2, "batchnorm": false, "residual": false }
+    ]
+  },
+  "normalizer": "standard",
+  "optimizer": "adam",
+  "lr": 0.001,
+  "batch_size": 64,
+  "epochs": 40,
+  "early_stopping": { "patience": 8, "metric": "val_loss" },
+  "class_weighting": "balanced",
+  "scheduler": "cosine",
+  "seed": 1337,
+  "split": { "train": 0.7, "val": 0.15, "test": 0.15 }
+}

@@ -38,6 +38,16 @@ type ServerConfig struct {
 	// KeepaliveInterval is how often the server emits a keepalive frame when no
 	// packet has gone out. 0 uses DefaultKeepaliveInterval.
 	KeepaliveInterval time.Duration
+	// Drops, when set, supplies the sender-side kernel drop counter carried in
+	// keepalive frames (PROTOCOL.md §3.2). A live NIC sensor wires this to its
+	// BIOCGSTATS / PACKET_STATISTICS total so the daemon's capture-sources view
+	// shows real drops (PROJECT.md §19.14, §22). nil reports 0.
+	Drops func() uint64
+	// SessionPrefix is prepended to the generated session id, so a reverse
+	// connection can identify itself to the collector that accepted it (the
+	// daemon sends the ClientHello in that direction, so the sensor's identity
+	// travels in the accept). Truncated to fit MaxSessionIDLen.
+	SessionPrefix string
 	// HandshakeTimeout bounds how long a client has to complete the handshake.
 	// 0 uses DefaultHandshakeTimeout.
 	HandshakeTimeout time.Duration
@@ -69,6 +79,9 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
 	}
+	if c.Drops == nil {
+		c.Drops = func() uint64 { return 0 }
+	}
 	return c
 }
 
@@ -97,12 +110,28 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig, stream Stream
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleConn(ctx, conn, cfg, stream)
+			serveConn(ctx, conn, cfg, stream)
 		}()
 	}
 }
 
-func handleConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream StreamFunc) {
+// ServeConn speaks the sensor (server) side of SYNPOIP on a connection that is
+// already established, and closes it when the stream ends. Serve calls it once
+// per accepted connection.
+//
+// It is exported for the **reverse-connect** posture: a sensor behind NAT dials
+// the daemon's collector, and on that already-open TLS connection the SYNPOIP
+// roles are unchanged — the daemon still sends the ClientHello and the sensor
+// still answers with a ServerAccept and streams packet frames. Only the TCP/TLS
+// dial direction is inverted, so no byte of the wire format changes and no
+// version bump is needed. See PROTOCOL.md §6 and ADR 0014.
+//
+// conn must already be wrapped in TLS by the caller.
+func ServeConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream StreamFunc) {
+	serveConn(ctx, conn, cfg.withDefaults(), stream)
+}
+
+func serveConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream StreamFunc) {
 	defer func() { _ = conn.Close() }()
 	remote := conn.RemoteAddr().String()
 
@@ -120,7 +149,7 @@ func handleConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Str
 		return
 	}
 
-	sid := newSessionID()
+	sid := newSessionID(cfg.SessionPrefix)
 	acc := ServerAccept{Version: Version1, LinkType: cfg.LinkType, Filter: cfg.Filter, SessionID: sid}
 	raw, err := acc.MarshalBinary()
 	if err != nil {
@@ -179,7 +208,7 @@ func handleConn(ctx context.Context, conn net.Conn, cfg ServerConfig, stream Str
 			return
 
 		case <-ka.C:
-			if !write(FrameKeepalive, KeepalivePayload(sent, 0)) {
+			if !write(FrameKeepalive, KeepalivePayload(sent, cfg.Drops())) {
 				return
 			}
 
@@ -235,10 +264,20 @@ func writeReject(conn net.Conn, cfg ServerConfig, rj ServerReject) {
 	_, _ = conn.Write(raw)
 }
 
-func newSessionID() string {
+// newSessionID mints a random per-connection id, optionally prefixed with a
+// caller-supplied label so a reverse connection can name the sensor it came
+// from. The result is always within MaxSessionIDLen.
+func newSessionID(prefix string) string {
 	var b [8]byte
-	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
-		return "session"
+	id := "session"
+	if _, err := io.ReadFull(rand.Reader, b[:]); err == nil {
+		id = hex.EncodeToString(b[:])
 	}
-	return hex.EncodeToString(b[:])
+	if prefix != "" {
+		id = prefix + "-" + id
+	}
+	if len(id) > MaxSessionIDLen {
+		id = id[:MaxSessionIDLen]
+	}
+	return id
 }

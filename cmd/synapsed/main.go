@@ -28,6 +28,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
@@ -96,6 +97,13 @@ func run(args []string) int {
 	bus := events.New()
 	store := storage.NewMem(cfg.Storage.MaxFlows, cfg.Storage.MaxFlows)
 
+	// Host and timeline aggregates for Investigation mode. Its aggregator runs on
+	// its own goroutine; both pipelines below feed it with one non-blocking send
+	// per flow record, so /api/v1/hosts can never stall the packet path
+	// (docs/adr/0016, PROJECT.md §19.4-6, §22).
+	ins := insight.New(insight.Options{})
+	defer func() { _ = ins.Close() }()
+
 	rt := inference.NewRuntime(
 		inference.NewHeuristic("heuristic-v1", inference.RolePrimary),
 	)
@@ -144,7 +152,7 @@ func run(args []string) int {
 		MaxFlows:         cfg.Capture.MaxFlows,
 	}
 	var flowID atomic.Uint64
-	rc := newReplayController(bus, store, rt, flowOpt, "local", &flowID)
+	rc := newReplayController(bus, store, rt, ins, flowOpt, "local", &flowID)
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -190,7 +198,7 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -203,7 +211,8 @@ func run(args []string) int {
 	go func() {
 		st, err := pipeline.Run(ctx, capMgr, rt, bus, store, pipeline.Options{
 			Flow: flowOpt, Sensor: "local",
-			IDGen: func() uint64 { return flowID.Add(1) },
+			IDGen:    func() uint64 { return flowID.Add(1) },
+			Observer: ins,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)
