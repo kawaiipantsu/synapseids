@@ -179,7 +179,55 @@ All are configurable on both ends.
   in the daemon config — the operator asserting they are authorized to monitor
   that host (PROJECT.md §21).
 
-## 6. Not in v1 (tracked follow-ups)
+## 6. Transport-direction inversion (reverse connect)
+
+§1 draws the daemon as the TCP/TLS dialer. That is a deployment choice, not
+part of the wire format. A sensor on a firewall is usually behind NAT, and
+opening an inbound hole in the box you are trying to monitor is the wrong
+instinct — so `synapse-sensor pcap-over-ip --connect <daemon>` **dials out**
+instead.
+
+**The SYNPOIP roles do not invert with the TCP direction.** On the established
+TLS connection:
+
+```
+sensor (TCP client)                        daemon collector (TCP server)
+  │ tls.Dial ────────────────────────────▶ │
+  │ ◀──────────────────────── ClientHello  │   the ACCEPTING side still speaks first
+  │ ServerResponse (accept) ─────────────▶ │
+  │ frame (0x01 packet) ─────────────────▶ │
+  │ …                                      │
+```
+
+Everything in §2–§4 applies byte for byte. There is no role flag, no extra
+handshake field and **no version bump**: v1 clients and v1 servers are the same
+code on both sides (`pcapoverip.ServeConn` is the identical per-connection
+handler `Serve` runs). The only thing that changed is who opened the socket.
+
+Consequences, all deliberate:
+
+| concern | `--listen` (daemon dials) | `--connect` (sensor dials) |
+|---------|---------------------------|-----------------------------|
+| TLS server cert | sensor presents | **daemon** presents |
+| TLS client cert (mTLS) | daemon presents | **sensor** presents |
+| bearer token in ClientHello | daemon presents, sensor verifies | unchanged — daemon presents, sensor verifies |
+| sensor identity | `sensor_id` in the hello metadata | the accept's `session_id`, prefixed with the sensor id |
+| firewall rule needed | inbound, on the sensor | outbound, on the sensor |
+
+So both ends still authenticate each other: the daemon proves itself with the
+bearer token (and its server certificate), the sensor with its client
+certificate. `sensor_id` moves from the hello metadata to the `session_id`
+field of the accept, because in this direction the sensor is the one answering.
+
+**Not wired yet:** `synapsed` has no collector endpoint. Every capture kind it
+supports (`nic`, `tcpdump`, `ssh`, `pcap-over-ip`) opens outward or locally, so
+there is nothing listening for a sensor to dial. `--connect` implements the
+complete sensor half against the unchanged wire format and is exercised
+end to end against a test collector, but a daemon-side listener — a new capture
+kind that accepts connections and registers a source per peer — is a tracked
+follow-up. See ADR 0014.
+
+## 7. Not in v1 (tracked follow-ups)
 
 - **Client reconnect / backoff.** A dropped stream is terminal; the
   capture-sources row shows `error` and an operator restarts it. Phase 6.

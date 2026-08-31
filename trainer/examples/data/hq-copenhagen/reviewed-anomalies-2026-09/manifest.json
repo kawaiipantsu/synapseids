@@ -1,0 +1,27 @@
+{
+  "id": "hq-copenhagen/reviewed-anomalies-2026-09",
+  "name": "Reviewed local detections",
+  "description": "synthetic Reviewed local detections fixture for synapse-trainer examples",
+  "location": "hq-copenhagen",
+  "tags": [
+    "example",
+    "synthetic"
+  ],
+  "created_at": "2026-09-01T00:00:00Z",
+  "source_capture_ids": [],
+  "time_range": {
+    "start": "2026-08-01T00:00:00Z",
+    "end": "2026-08-31T23:59:59Z"
+  },
+  "feature_schema": "flow-features-v1",
+  "output_schema": "traffic-classes-v1",
+  "num_flows": 12,
+  "label_counts": {
+    "suspicious": 4,
+    "botnet_c2": 4,
+    "normal": 4
+  },
+  "labeling_source": "human-review",
+  "parent_datasets": [],
+  "content_hash": "sha256:eb841b6f2390d279fc82676f2e9ede62cf67db51e67fcd858cea32cce38cd618"
+}

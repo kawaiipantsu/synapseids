@@ -16,100 +16,290 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
 )
 
-// runPCAPOverIP serves the SYNPOIP protocol over TLS, replaying a capture file
-// to connecting clients. It returns a process exit code.
+// runPCAPOverIP serves the SYNPOIP protocol over TLS. It returns a process exit
+// code.
 func runPCAPOverIP(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return runPCAPOverIPCtx(ctx, args, nil)
 }
 
-// runPCAPOverIPCtx is the testable core: it stops when ctx is cancelled and
-// invokes ready (if non-nil) with the bound listener address once serving.
+// sensorOpts is the parsed command line. It is a struct so the validation and
+// wiring below stay readable as the flag set grows.
+type sensorOpts struct {
+	// Transport posture: exactly one of these decides who dials.
+	listen  string
+	connect string
+
+	// Capture source: exactly one of these.
+	from  string // classic .pcap file to replay
+	iface string // live NIC
+
+	// Live capture tuning.
+	device    string
+	filter    string
+	direction string
+	promisc   bool
+	snaplen   int
+
+	// Sensor identity, echoed into the daemon's capture-sources view.
+	sensorID string
+	location string
+
+	authorized bool
+	speed      float64
+	token      string
+
+	// TLS. In --listen mode cert/key are the sensor's *server* certificate and
+	// clientCA turns on mutual TLS. In --connect mode the sensor is the TLS
+	// client, so cert/key become the *client* certificate it presents and
+	// caFile/serverName/insecureTLS govern how it verifies the daemon.
+	certFile    string
+	keyFile     string
+	clientCA    string
+	caFile      string
+	serverName  string
+	insecureTLS bool
+
+	retryMin time.Duration
+	retryMax time.Duration
+}
+
+// runPCAPOverIPCtx is the testable core: it stops when ctx is cancelled and, in
+// --listen mode, invokes ready (if non-nil) with the bound listener address.
 func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) int {
 	log.SetFlags(log.LstdFlags | log.LUTC)
-	fs := flag.NewFlagSet("synapse-sensor pcap-over-ip", flag.ContinueOnError)
-	var (
-		listen    = fs.String("listen", ":4789", "TLS listen address (host:port)")
-		from      = fs.String("from", "", "classic .pcap file to replay over the wire (required)")
-		certFile  = fs.String("cert", "", "server certificate PEM; if empty a self-signed cert is generated")
-		keyFile   = fs.String("key", "", "server private key PEM (required with --cert)")
-		tokenFile = fs.String("token-file", "", "file holding the bearer token clients must present")
-		token     = fs.String("token", "", "bearer token literal (prefer --token-file); empty accepts any client")
-		clientCA  = fs.String("client-ca", "", "PEM bundle: require and verify a client certificate (mutual TLS)")
-		speedStr  = fs.String("speed", "1", "replay speed: 0.5, 1, 2, 10, or max")
-	)
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Serve a capture file to synapsed over the framed, authenticated SYNPOIP transport.")
-		fmt.Fprintln(os.Stderr, "\nUsage:\n  synapse-sensor pcap-over-ip --listen :4789 --from capture.pcap --token-file tok [flags]\n\nFlags:")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if *from == "" {
-		fmt.Fprintln(os.Stderr, "pcap-over-ip: --from <capture.pcap> is required")
-		return 2
-	}
-	if (*certFile == "") != (*keyFile == "") {
-		fmt.Fprintln(os.Stderr, "pcap-over-ip: --cert and --key must be given together")
-		return 2
+
+	opts, code := parseSensorFlags(args)
+	if opts == nil {
+		return code
 	}
 
-	speed, err := parseSpeed(*speedStr)
+	stream, link, drops, err := openSource(opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pcap-over-ip:", err)
-		return 2
+		return 1
 	}
 
-	tok := strings.TrimSpace(*token)
-	if *tokenFile != "" {
-		b, rerr := os.ReadFile(*tokenFile)
+	srvCfg := pcapoverip.ServerConfig{
+		Token:         opts.token,
+		LinkType:      link,
+		Filter:        opts.filterLabel(),
+		Drops:         drops,
+		SessionPrefix: opts.sensorID,
+		Logf:          log.Printf,
+	}
+
+	if opts.connect != "" {
+		return runConnect(ctx, opts, srvCfg, stream)
+	}
+	return runListen(ctx, opts, srvCfg, stream, ready)
+}
+
+func parseSensorFlags(args []string) (*sensorOpts, int) {
+	fs := flag.NewFlagSet("synapse-sensor pcap-over-ip", flag.ContinueOnError)
+	o := &sensorOpts{}
+	var speedStr, tokenFile, tokenLiteral string
+
+	fs.StringVar(&o.listen, "listen", ":4789", "TLS listen address (host:port); the daemon dials in")
+	fs.StringVar(&o.connect, "connect", "", "dial this synapsed collector (host:port) instead of listening — for a sensor behind NAT")
+
+	fs.StringVar(&o.from, "from", "", "classic .pcap file to replay over the wire")
+	fs.StringVar(&o.iface, "iface", "", "live network interface to capture from (AF_PACKET on Linux, /dev/bpf on FreeBSD)")
+
+	fs.StringVar(&o.device, "bpf-device", "", "explicit BPF device for --iface (FreeBSD only, e.g. /dev/bpf4); empty probes")
+	fs.StringVar(&o.filter, "filter", "", "built-in capture filter preset: "+strings.Join(capture.BuiltinFilters(), ", "))
+	fs.StringVar(&o.direction, "direction", "", "traffic direction for --iface: in, out or inout (FreeBSD only)")
+	fs.BoolVar(&o.promisc, "promisc", false, "put --iface into promiscuous mode")
+	fs.IntVar(&o.snaplen, "snaplen", 0, "bytes captured per frame (0 = default)")
+
+	fs.StringVar(&o.sensorID, "sensor-id", "", "sensor identifier, shown in the daemon's capture-sources view")
+	fs.StringVar(&o.location, "location", "", "sensor location label, shown in the daemon's capture-sources view")
+	fs.BoolVar(&o.authorized, "authorized", false,
+		"assert you are authorized to monitor this traffic; required for live capture and for --insecure-tls")
+
+	fs.StringVar(&tokenFile, "token-file", "", "file holding the bearer token")
+	fs.StringVar(&tokenLiteral, "token", "", "bearer token literal (prefer --token-file); empty accepts any peer")
+	fs.StringVar(&speedStr, "speed", "1", "replay speed for --from: 0.5, 1, 2, 10, or max")
+
+	fs.StringVar(&o.certFile, "cert", "", "certificate PEM: the server cert with --listen, the client cert with --connect")
+	fs.StringVar(&o.keyFile, "key", "", "private key PEM (required with --cert)")
+	fs.StringVar(&o.clientCA, "client-ca", "", "--listen only: PEM bundle requiring and verifying a client certificate (mutual TLS)")
+	fs.StringVar(&o.caFile, "ca", "", "--connect only: PEM bundle used to verify the collector; empty uses the system roots")
+	fs.StringVar(&o.serverName, "server-name", "", "--connect only: expected TLS server name; empty uses the --connect host")
+	fs.BoolVar(&o.insecureTLS, "insecure-tls", false, "--connect only: skip collector certificate verification (needs --authorized)")
+
+	fs.DurationVar(&o.retryMin, "retry-min", 2*time.Second, "--connect only: initial reconnect delay")
+	fs.DurationVar(&o.retryMax, "retry-max", 60*time.Second, "--connect only: maximum reconnect delay")
+
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Stream captured traffic to synapsed over the framed, authenticated SYNPOIP transport.")
+		fmt.Fprintln(os.Stderr, "\nUsage:")
+		fmt.Fprintln(os.Stderr, "  # the daemon dials this sensor (needs an inbound hole in the firewall)")
+		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --listen :4789 --iface em0 --authorized --token-file tok")
+		fmt.Fprintln(os.Stderr, "  # the sensor dials the daemon (works behind NAT; needs a daemon-side collector)")
+		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized --token-file tok")
+		fmt.Fprintln(os.Stderr, "  # replay a capture file instead of a live NIC")
+		fmt.Fprintln(os.Stderr, "  synapse-sensor pcap-over-ip --listen :4789 --from capture.pcap")
+		fmt.Fprintln(os.Stderr, "\nFlags:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, 0
+		}
+		return nil, 2
+	}
+
+	speed, err := parseSpeed(speedStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "pcap-over-ip:", err)
+		return nil, 2
+	}
+	o.speed = speed
+
+	if code := validateSensorOpts(o); code != 0 {
+		return nil, code
+	}
+
+	tok := strings.TrimSpace(tokenLiteral)
+	if tokenFile != "" {
+		b, rerr := os.ReadFile(tokenFile) //nolint:gosec // the operator names the token file
 		if rerr != nil {
 			fmt.Fprintln(os.Stderr, "pcap-over-ip: --token-file:", rerr)
-			return 1
+			return nil, 1
 		}
 		tok = strings.TrimSpace(string(b))
 	}
 	if tok == "" {
-		log.Printf("pcap-over-ip: WARNING no token configured — every client that completes TLS is accepted")
+		log.Printf("pcap-over-ip: WARNING no token configured — every peer that completes TLS is accepted")
+	}
+	o.token = tok
+
+	return o, 0
+}
+
+// validateSensorOpts enforces the mutually exclusive choices and the
+// authorization gate. It returns 0 when the options are usable.
+func validateSensorOpts(o *sensorOpts) int {
+	reject := func(msg string) int {
+		fmt.Fprintln(os.Stderr, "pcap-over-ip:", msg)
+		return 2
 	}
 
-	stream, link, err := pcapoverip.PcapFileStream(*from, speed)
+	switch {
+	case o.from == "" && o.iface == "":
+		return reject("give a capture source: --from <capture.pcap> or --iface <interface>")
+	case o.from != "" && o.iface != "":
+		return reject("--from and --iface are mutually exclusive")
+	}
+	if (o.certFile == "") != (o.keyFile == "") {
+		return reject("--cert and --key must be given together")
+	}
+	if !capture.FilterKnown(o.filter) {
+		return reject(fmt.Sprintf("unknown --filter %q (want empty or one of %s)",
+			o.filter, strings.Join(capture.BuiltinFilters(), ", ")))
+	}
+
+	if o.connect != "" {
+		if o.clientCA != "" {
+			return reject("--client-ca applies to --listen only; in --connect mode the collector is the TLS server")
+		}
+		if o.insecureTLS && !o.authorized {
+			return reject("--insecure-tls disables collector certificate verification; pass --authorized to acknowledge it")
+		}
+	} else {
+		if o.caFile != "" || o.serverName != "" || o.insecureTLS {
+			return reject("--ca, --server-name and --insecure-tls apply to --connect only")
+		}
+	}
+
+	// PROJECT.md §21 and §28.18: capturing live traffic is an authorization
+	// decision, not a default. Replaying a file the operator already has is not.
+	if o.iface != "" && !o.authorized {
+		return reject("capturing live traffic from " + o.iface + " requires --authorized: " +
+			"the operator must assert they are authorized to monitor this network")
+	}
+	if o.iface == "" && (o.promisc || o.device != "" || o.direction != "") {
+		return reject("--promisc, --bpf-device and --direction apply to --iface only")
+	}
+	return 0
+}
+
+// filterLabel is the human-readable filter string advertised in the SYNPOIP
+// ServerAccept and shown in the daemon's capture-sources row.
+func (o *sensorOpts) filterLabel() string {
+	if o.iface == "" {
+		return "" // a whole capture file: no filter
+	}
+	parts := []string{o.iface}
+	if o.direction != "" && o.direction != "inout" {
+		parts = append(parts, o.direction)
+	}
+	if o.filter != "" {
+		parts = append(parts, o.filter)
+	}
+	if o.promisc {
+		parts = append(parts, "promisc")
+	}
+	return strings.Join(parts, " ")
+}
+
+// openSource turns the chosen capture source into a SYNPOIP stream, its
+// authoritative link type, and a drop-counter callback for keepalives.
+func openSource(o *sensorOpts) (pcapoverip.StreamFunc, uint32, func() uint64, error) {
+	if o.from != "" {
+		stream, link, err := pcapoverip.PcapFileStream(o.from, o.speed)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		log.Printf("pcap-over-ip: source is the capture file %s (link %d) at speed %v", o.from, link, o.speed)
+		return stream, link, nil, nil
+	}
+
+	live, err := capture.NewLiveStreamer(capture.LiveConfig{
+		Interface:   o.iface,
+		Promiscuous: o.promisc,
+		Snaplen:     o.snaplen,
+		Filter:      o.filter,
+		Direction:   o.direction,
+		Device:      o.device,
+	})
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	log.Printf("pcap-over-ip: source is the live interface %s (link %d, filter %q)",
+		o.iface, live.LinkType(), o.filterLabel())
+	return live.Stream, live.LinkType(), live.Drops, nil
+}
+
+// runListen is the original posture: the sensor listens and synapsed dials it.
+func runListen(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
+	stream pcapoverip.StreamFunc, ready func(net.Addr)) int {
+	tlsCfg, err := serverTLSConfig(o.listen, o.certFile, o.keyFile, o.clientCA)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pcap-over-ip:", err)
 		return 1
 	}
 
-	tlsCfg, err := serverTLSConfig(*listen, *certFile, *keyFile, *clientCA)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "pcap-over-ip:", err)
-		return 1
-	}
-
-	ln, err := tls.Listen("tcp", *listen, tlsCfg)
+	ln, err := tls.Listen("tcp", o.listen, tlsCfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pcap-over-ip: listen:", err)
 		return 1
 	}
-	log.Printf("pcap-over-ip: serving %s (link %d) on %s at speed %s", *from, link, ln.Addr(), *speedStr)
+	log.Printf("pcap-over-ip: serving on %s (link %d)", ln.Addr(), cfg.LinkType)
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
-	serr := pcapoverip.Serve(ctx, ln, pcapoverip.ServerConfig{
-		Token:    tok,
-		LinkType: link,
-		Filter:   "", // whole capture; a real sensor would advertise its BPF here
-		Logf:     log.Printf,
-	}, stream)
+	serr := pcapoverip.Serve(ctx, ln, cfg, stream)
 	if serr != nil && !errors.Is(serr, context.Canceled) {
 		log.Printf("pcap-over-ip: %v", serr)
 		return 1
@@ -129,7 +319,7 @@ func serverTLSConfig(listen, certFile, keyFile, clientCA string) (*tls.Config, e
 		cfg.Certificates = []tls.Certificate{pair}
 	} else {
 		host := "127.0.0.1"
-		if h, _, err := splitHostPort(listen); err == nil && h != "" {
+		if h, err := hostOf(listen); err == nil && h != "" {
 			host = h
 		}
 		pair, certPEM, _, err := pcapoverip.SelfSignedCert(host, "127.0.0.1", "::1", "localhost")
@@ -144,7 +334,7 @@ func serverTLSConfig(listen, certFile, keyFile, clientCA string) (*tls.Config, e
 	}
 
 	if clientCA != "" {
-		pem, err := os.ReadFile(clientCA)
+		pem, err := os.ReadFile(clientCA) //nolint:gosec // the operator names the CA bundle
 		if err != nil {
 			return nil, fmt.Errorf("client-ca: %w", err)
 		}
@@ -159,12 +349,15 @@ func serverTLSConfig(listen, certFile, keyFile, clientCA string) (*tls.Config, e
 	return cfg, nil
 }
 
-func splitHostPort(hostport string) (string, string, error) {
+// hostOf returns the host part of a "host:port" string, with any IPv6 brackets
+// stripped. It is used for the self-signed certificate's subject and for the
+// default TLS ServerName, neither of which wants the port.
+func hostOf(hostport string) (string, error) {
 	i := strings.LastIndex(hostport, ":")
 	if i < 0 {
-		return "", "", errors.New("no port")
+		return "", errors.New("no port")
 	}
-	return strings.Trim(hostport[:i], "[]"), hostport[i+1:], nil
+	return strings.Trim(hostport[:i], "[]"), nil
 }
 
 // parseSpeed maps the CLI speed token to the float PcapFileStream expects.

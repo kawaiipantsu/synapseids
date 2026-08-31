@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<!--
+    Menu/Menu.xml - menu entry for the SynapseIDS sensor plugin.
+
+    Copyright (C) 2026 SynapseIDS contributors
+    All rights reserved. BSD 2-Clause; see Sensor.php for the full text.
+
+    Adds Services -> SynapseIDS Sensor, pointing at
+    OPNsense\SynapseIDSSensor\SettingsController::indexAction().
+-->
+<menu>
+    <Services>
+        <SynapseIDSSensor
+            order="80"
+            VisibleName="SynapseIDS Sensor"
+            cssClass="fa fa-shield fa-fw"
+            url="/ui/synapseidssensor/settings"/>
+    </Services>
+</menu>

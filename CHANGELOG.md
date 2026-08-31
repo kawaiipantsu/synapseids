@@ -9,6 +9,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Training recipes with multi-dataset weighting** (issue #34, EPIC Phase 4;
+  [ADR 0017](docs/adr/0017-multi-dataset-training-mixtures.md)). A recipe's
+  `datasets[]` weights now actually shape the training data (PROJECT.md §14:
+  "70% Copenhagen baseline / 20% attack corpus / 10% reviewed detections") —
+  previously they were validated and then ignored, and `train` loaded a single
+  CSV.
+  - `synapse_trainer/mixture.py` — resolves every `datasets[]` entry under
+    `--data ROOT` in a documented order: the entry's explicit `path` →
+    `ROOT/<id>.csv` → `ROOT/<id>/dataset.csv` → `ROOT/<id>/<latest version
+    dir>/dataset.csv` (numeric-aware, so `v10` beats `v9`) → any single
+    `ROOT/<id>/*.csv`. Nothing found is a hard error listing every path tried;
+    an id may be namespaced but never absolute and never contains `..`. A
+    `manifest.json` beside the CSV (or `ROOT/<id>.manifest.json`) supplies the
+    §14 metadata — its `content_hash` is recorded with the model.
+  - **Schema-compatibility gate.** Every dataset must carry all 48
+    `flow-features-v1` columns and agree with the others (and with any manifest)
+    on `feature_schema` / `output_schema`. A mismatch is a named
+    `DatasetIncompatible` / `MixtureError`; columns are never dropped, reordered
+    or coerced (§5.4, §8, §28.5-6).
+  - **Weighting = resampling the training mixture.** `target_n = Σ len(train_i)`;
+    per-dataset quotas by largest-remainder apportionment (so they sum to
+    `target_n` exactly); down-sample without replacement, or up-sample by taking
+    every row once and drawing the remainder with replacement; one deterministic
+    shuffle. Every draw is seeded by `sha256(recipe.seed, purpose, dataset id)`,
+    so the mixture is reproducible from the recipe alone and adding a dataset
+    does not reshuffle the others (§28.8).
+  - **Split before mix — no test leakage.** Each dataset is split *first*, on its
+    own; only the train portions are weighted and mixed, so an up-sampled
+    duplicate can never straddle the train/test boundary (§14). Val and test are
+    plain unions and are never resampled. Asserted by
+    `test_no_leak_under_aggressive_upsampling` (pairwise-disjoint row-id sets
+    under ~10× up-sampling) plus `test_naive_mix_then_split_would_leak`, which
+    shows the naive order does leak.
+  - `training-recipe.json` now records `split_result` (seed, fractions, sizes,
+    stratified, per-split label counts, per-dataset detail) and a new `mixture`
+    block: strategy name, seed, `split_before_mix`, `target_train_rows`, sizes,
+    label counts, warnings, and per dataset the requested + effective weight,
+    resolved path and rule, `content_hash`, source rows, split sizes, split and
+    sample seeds, realised train rows and up/down-sampling counts (§14, §28.9).
+    `metadata.json` is unchanged in shape — only `training_dataset_ids` content,
+    which now lists **every** contributing dataset.
+  - `synapse-trainer inspect-recipe --recipe R --data ROOT [--json]` and
+    `train --dry-run` — resolve, split and weight the whole mixture and print the
+    plan (per-dataset rows, effective weights, split sizes, label distribution,
+    warnings) **without torch**, so an operator can validate a recipe before
+    burning a run.
+  - **Quality warnings** (§19.10): a dominant class (>90% of the mixture), a
+    class absent from the mixture, a class under 10 training rows, a dataset
+    contributing zero rows after weighting, heavy (≥3×) up-sampling, and an empty
+    val/test split.
+  - `trainer/examples/recipe.multi-dataset.json` + a `trainer/examples/data/`
+    fixture tree exercising all three on-disk layouts.
+- **FreeBSD BPF capture + the OPNsense WAN sensor plugin** (issue #98, EPIC
+  Phase 6; [ADR 0014](docs/adr/0014-freebsd-bpf-capture-and-the-opnsense-sensor-plugin.md),
+  [docs/opnsense-sensor.md](docs/opnsense-sensor.md)).
+  **None of this has been run on FreeBSD or OPNsense — see the caveat at the
+  end of this entry.**
+  - `capture.BPFDevice` — a live capture source backed by FreeBSD `/dev/bpf`,
+    stdlib-only (no `golang.org/x/sys`). Opens the cloning `/dev/bpf` or probes
+    `/dev/bpfN`; `BIOCSBLEN`, `BIOCSETF`, `BIOCSETIF`, `BIOCPROMISC`,
+    `BIOCIMMEDIATE`, `BIOCSRTIMEOUT`, `BIOCSDIRECTION`, `BIOCGDLT`,
+    `BIOCFLUSH`; `Stats.Drops` from `BIOCGSTATS` `bs_drop`. `BPFConfig` adds
+    `Device`, `Direction` (`in`/`out`/`inout` — `in` is what a WAN sensor
+    wants) and `BufferLen` on top of the AF_PACKET options. The device is
+    opened read-only, so it cannot transmit even in principle (§28.17), and an
+    `EACCES` prints the exact `devfs.rules` fix instead of demanding root
+    (§21).
+  - The ioctl request numbers are **derived by hand** from the FreeBSD
+    `sys/ioccom.h` encoding (`bpfioctl.go`, with the derivation written out),
+    checked two ways: a Linux-runnable table test against the twelve published
+    values, and paired compile-time constant assertions against `syscall.BIOC*`
+    on `freebsd/{amd64,arm64}` — so `GOOS=freebsd go build` cannot succeed with
+    a wrong number.
+  - `parseBPFChunk` (`bpfchunk.go`, **no build tag**) splits one `read(2)` into
+    its many `bpf_hdr`-prefixed, `BPF_WORDALIGN`-padded records. `bh_hdrlen` is
+    read per record rather than assumed. Malformed input — short header,
+    over-ceiling `bh_caplen`, a record past the end of the chunk, a corrupt
+    sub-second field — is counted and the good records from the same chunk are
+    still delivered; never a panic (§28.11). Table tests, a fuzz target and a
+    random-mutation loop all run on Linux.
+  - `capture.NewLive(LiveConfig)` — one platform-neutral entry point for live
+    NIC capture (AF_PACKET on Linux, `/dev/bpf` on FreeBSD, a clear error
+    elsewhere). Options a platform cannot honour are rejected, not ignored.
+    Both sources gained `RawPackets()` for undecoded frames; the decoded path
+    keeps its zero-copy decode.
+  - `synapse-sensor pcap-over-ip --iface <nic>` streams a **live NIC** instead
+    of a capture file, with `--promisc`, `--filter`, `--direction`, `--snaplen`
+    and `--bpf-device`. Live capture requires `--authorized` (§28.18). Sensor
+    keepalives now carry the real kernel drop counter
+    (`pcapoverip.ServerConfig.Drops`).
+  - `synapse-sensor pcap-over-ip --connect <daemon>` — the sensor **dials out**,
+    so a firewall behind NAT needs no inbound hole, with capped exponential
+    backoff and jitter. **The SYNPOIP roles do not invert with the transport:**
+    the accepting daemon still sends the ClientHello and the sensor still
+    answers and streams frames, so there is no wire change, no version bump and
+    no role byte (`pcapoverip.ServeConn`, PROTOCOL.md §6).
+    **`synapsed` has no collector endpoint yet**, so `--connect` has nothing to
+    dial; it is exercised end to end against a test collector, and the
+    daemon-side listener is a tracked follow-up.
+  - Build matrix: `make build-freebsd` and `make opnsense-pkg` for
+    `freebsd/{amd64,arm64}`. **The four Linux targets are untouched** (§28.16).
+    `scripts/package-opnsense.sh` builds a real FreeBSD `.pkg` (a `.txz` with
+    `+MANIFEST` / `+COMPACT_MANIFEST` and an absolute-path payload) directly
+    with `tar`/`xz`/`jq`, one per ABI, and self-verifies member order, manifest
+    keys, every per-file checksum against the archived bytes, modes and
+    ownership. `make dist` and the release workflow publish them.
+  - `contrib/opnsense/` — the plugin: an OPNsense MVC model, ACL, menu entry
+    under **Services → SynapseIDS Sensor**, settings and service API
+    controllers, a Volt page, configd actions, templates and an `rc.d` script,
+    plus a FreeBSD port `Makefile`/`pkg-descr`/`pkg-plist`. The build fails if
+    the staged tree and `pkg-plist` drift apart.
+  - `contrib/opnsense/install.sh` — a POSIX-sh installer for the firewall.
+    Refuses to run off OPNsense or as non-root (it never calls `sudo`), picks
+    the package from `pkg config abi`, and **verifies the SHA256 before
+    installing**. `--version`, `--url`, `--grant-bpf`, `--dry-run`,
+    `--uninstall`, `--help`. It never asks for, transmits or logs the bearer
+    token.
+  - Least privilege: the sensor runs as the dedicated unprivileged
+    `_synapseids` user in group `net`, never root, with the BPF device opened
+    read-only. The token lives in the OPNsense config store and in
+    `sensor.token` (`0400 _synapseids:_synapseids`), is passed with
+    `--token-file` so it never enters `ps(1)`, and appears in no log line and in
+    no world-readable file — `sensor.conf` is `0640 root:wheel` and carries
+    flags only (§23). A `fixperms` configd action clamps the modes after every
+    template render. The `authorized` assertion is enforced by the model *and*
+    the CLI (§28.18). The devfs rule that grants BPF access is opt-in, not
+    something `pkg add` does to your firewall behind your back. **Known gap:**
+    the TLS PEM files are named by the config but not yet rendered from it, so
+    an operator places them by hand; `rc.d` refuses to start when a referenced
+    PEM is missing rather than silently downgrading the transport.
+  - **Unverified surface.** This was written and tested on Linux. The BPF
+    source is compile-verified only (the ioctl numbers are machine-checked, the
+    runtime behaviour is not); the package has never been through `pkg add`;
+    the plugin has never been loaded by an OPNsense MVC runtime; no real WAN
+    traffic has been captured. `docs/opnsense-sensor.md` lists the exact
+    commands a maintainer must run on real hardware.
 - **Host profiles, Investigation mode and the classification timeline**
   (issues #39, #40, #41, EPIC Phase 5;
   [ADR 0016](docs/adr/0016-host-and-time-aggregation-for-investigation.md)).
@@ -63,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     labelled stubs instead of an invented baseline or a fabricated zero line.
   - No event type was added — the `event-envelope-v1` enum stays frozen (§28.5-6);
     everything is derived from the records the pipeline already produces.
+
 
 - **Capture-source UI + runtime source management** (issue #32, EPIC Phase 3 —
   **this closes EPIC #3**; [ADR 0013](docs/adr/0013-runtime-capture-source-management.md)).

@@ -20,21 +20,6 @@ import (
 // Close take effect within this window even on a completely idle interface.
 const afpReadTimeout = 250 * time.Millisecond
 
-// bpfRetKeep is the "accept this frame" return value for the built-in cBPF
-// programs. tcpdump uses the same 262144.
-const bpfRetKeep = 0x40000
-
-// Classic BPF opcodes used by the built-in filters. These are a stable part of
-// the Linux ABI; defining them locally keeps the tree free of a BPF library
-// (PROJECT.md §28.16). BPF_LD|BPF_H|BPF_ABS, BPF_JMP|BPF_JEQ|BPF_K,
-// BPF_RET|BPF_K respectively.
-const (
-	bpfLdHAbs = 0x28
-	bpfJeqK   = 0x15
-	bpfRetK   = 0x06
-	ethTypeK  = 12 // byte offset of the EtherType field in an Ethernet header
-)
-
 // AFPacket is a live Source backed by a Linux AF_PACKET raw socket. Each frame
 // is decoded through the same packet.Decode path a PCAP replay uses, so the
 // pipeline and UI behave identically for live and replayed traffic
@@ -152,24 +137,86 @@ func NewAFPacket(cfg AFPacketConfig) (*AFPacket, error) {
 	return a, nil
 }
 
+// LinkType is the link layer AF_PACKET SOCK_RAW delivers. It is always
+// Ethernet: real NICs and loopback both frame that way, and a non-Ethernet
+// link type decode-errors in the read loop rather than being negotiated.
+func (a *AFPacket) LinkType() packet.LinkType { return packet.LinkEthernet }
+
 // Packets streams decoded frames until ctx is cancelled or Close is called. The
 // spawned goroutine owns fd teardown.
 func (a *AFPacket) Packets(ctx context.Context) (<-chan packet.Packet, <-chan error) {
-	a.started.Store(true)
 	out := make(chan packet.Packet, 512)
 	errc := make(chan error, 1)
 
-	go func() {
-		defer close(out)
-		defer close(errc)
-		defer func() { _ = syscall.Close(a.fd) }()
-		a.readLoop(ctx, out, errc)
-	}()
+	a.start(ctx, errc, func(ts time.Time, frame []byte) bool {
+		// AF_PACKET SOCK_RAW delivers the link-layer header; Ethernet framing
+		// covers real NICs and loopback. Non-Ethernet link types (SLL, raw
+		// tunnels) decode-error here and are counted, not fatal — richer link
+		// handling is tracked for a follow-up.
+		pk, derr := packet.Decode(packet.LinkEthernet, ts, frame)
+		if derr != nil {
+			atomic.AddUint64(&a.stats.decodeErr, 1)
+			return true
+		}
+		atomic.AddUint64(&a.stats.decoded, 1)
+		select {
+		case out <- pk:
+			return true
+		case <-ctx.Done():
+			errc <- ctx.Err()
+			return false
+		case <-a.stopc:
+			return false
+		}
+	}, func() { close(out) })
 
 	return out, errc
 }
 
-func (a *AFPacket) readLoop(ctx context.Context, out chan<- packet.Packet, errc chan<- error) {
+// RawPackets streams undecoded link-layer frames, for a sensor that forwards
+// records to a remote synapsed instead of classifying them locally
+// (PROJECT.md §5.3). Each frame is copied out of the shared receive buffer,
+// because the receiver keeps it past the next read; the decoded Packets path
+// deliberately keeps its zero-copy decode. A forwarded frame counts as
+// "decoded" in Stats: the decode happens on the daemon.
+func (a *AFPacket) RawPackets(ctx context.Context) (<-chan RawFrame, <-chan error) {
+	out := make(chan RawFrame, 512)
+	errc := make(chan error, 1)
+
+	a.start(ctx, errc, func(ts time.Time, frame []byte) bool {
+		cp := make([]byte, len(frame))
+		copy(cp, frame)
+		atomic.AddUint64(&a.stats.decoded, 1)
+		select {
+		case out <- RawFrame{TS: ts, Data: cp}:
+			return true
+		case <-ctx.Done():
+			errc <- ctx.Err()
+			return false
+		case <-a.stopc:
+			return false
+		}
+	}, func() { close(out) })
+
+	return out, errc
+}
+
+// start launches the single read goroutine. closeOut closes whichever output
+// channel the caller created.
+func (a *AFPacket) start(ctx context.Context, errc chan error, emit func(time.Time, []byte) bool, closeOut func()) {
+	a.started.Store(true)
+	go func() {
+		defer closeOut()
+		defer close(errc)
+		defer func() { _ = syscall.Close(a.fd) }()
+		a.readLoop(ctx, errc, emit)
+	}()
+}
+
+// readLoop pulls frames off the socket and hands each to emit until emit says
+// stop, ctx is cancelled or Close is called. The slice passed to emit aliases
+// the shared receive buffer and is only valid for that call.
+func (a *AFPacket) readLoop(ctx context.Context, errc chan<- error, emit func(time.Time, []byte) bool) {
 	for {
 		if err := ctx.Err(); err != nil {
 			errc <- err
@@ -200,23 +247,7 @@ func (a *AFPacket) readLoop(ctx context.Context, out chan<- packet.Packet, errc 
 		ts := time.Now().UTC()
 		atomic.StoreInt64(&a.stats.lastUnixNano, ts.UnixNano())
 
-		// AF_PACKET SOCK_RAW delivers the link-layer header; Ethernet framing
-		// covers real NICs and loopback. Non-Ethernet link types (SLL, raw
-		// tunnels) decode-error here and are counted, not fatal — richer link
-		// handling is tracked for a follow-up.
-		pk, derr := packet.Decode(packet.LinkEthernet, ts, a.buf[:n])
-		if derr != nil {
-			atomic.AddUint64(&a.stats.decodeErr, 1)
-			continue
-		}
-		atomic.AddUint64(&a.stats.decoded, 1)
-
-		select {
-		case out <- pk:
-		case <-ctx.Done():
-			errc <- ctx.Err()
-			return
-		case <-a.stopc:
+		if !emit(ts, a.buf[:n]) {
 			return
 		}
 	}
@@ -300,47 +331,24 @@ func htons(v uint16) uint16 {
 	return binary.NativeEndian.Uint16([]byte{byte(v >> 8), byte(v)})
 }
 
-// builtinFilter returns the classic-BPF program for a preset name, or nil for
-// "" / an unknown name (NewAFPacket has already validated the name). Each
-// program loads the EtherType at offset 12 and returns bpfRetKeep or 0.
+// builtinFilter returns the classic-BPF program for a preset name in the shape
+// SO_ATTACH_FILTER wants, or nil for "" / an unknown name (NewAFPacket has
+// already validated the name). The programs themselves live in bpffilter.go so
+// the FreeBSD /dev/bpf source attaches byte-identical filters; struct
+// sock_filter and struct bpf_insn have the same layout, so this is a field
+// copy. Linux keeps bpfRetKeep as the accept length — unlike BPF on FreeBSD,
+// AF_PACKET truncates to its own receive buffer rather than to the filter's
+// return value, so the snaplen is not expressed here.
 func builtinFilter(name string) []syscall.SockFilter {
-	keep := syscall.SockFilter{Code: bpfRetK, K: bpfRetKeep}
-	drop := syscall.SockFilter{Code: bpfRetK, K: 0}
-	ld := syscall.SockFilter{Code: bpfLdHAbs, K: ethTypeK}
-
-	switch name {
-	case "ip":
-		return []syscall.SockFilter{
-			ld,
-			{Code: bpfJeqK, Jt: 0, Jf: 1, K: 0x0800},
-			keep,
-			drop,
-		}
-	case "ip6":
-		return []syscall.SockFilter{
-			ld,
-			{Code: bpfJeqK, Jt: 0, Jf: 1, K: 0x86DD},
-			keep,
-			drop,
-		}
-	case "ip-any":
-		return []syscall.SockFilter{
-			ld,
-			{Code: bpfJeqK, Jt: 1, Jf: 0, K: 0x0800}, // IPv4 -> keep
-			{Code: bpfJeqK, Jt: 0, Jf: 1, K: 0x86DD}, // IPv6 -> keep, else drop
-			keep,
-			drop,
-		}
-	case "not-arp":
-		return []syscall.SockFilter{
-			ld,
-			{Code: bpfJeqK, Jt: 1, Jf: 0, K: 0x0806}, // ARP -> drop
-			keep,
-			drop,
-		}
-	default:
+	insns := builtinFilterInsns(name, bpfRetKeep)
+	if len(insns) == 0 {
 		return nil
 	}
+	prog := make([]syscall.SockFilter, len(insns))
+	for i, in := range insns {
+		prog[i] = syscall.SockFilter{Code: in.Code, Jt: in.Jt, Jf: in.Jf, K: in.K}
+	}
+	return prog
 }
 
 // afpErr wraps a setup failure, turning a permission error into actionable
