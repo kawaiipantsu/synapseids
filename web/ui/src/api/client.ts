@@ -629,14 +629,18 @@ export function getScopedFlows(p: SensorScopeParams & { limit?: number }): Promi
 // Self-contained block at the end of the file.
 //
 // These are the only two calls in this client that treat a 404 as a *state*
-// rather than a failure. GET /api/v1/detections is landing on a sibling branch,
-// so on a build without it the SPA must say "not available in this build" — not
-// spin forever and not log a red error, both of which read as "SynapseIDS is
-// broken" rather than "this feature is not here yet" (PROJECT.md §16). The same
-// code lights up unchanged once the endpoint exists.
+// rather than a failure. The route landed in #117; a daemon predating it — an
+// older binary the SPA has no other way to detect — answers 404, and the honest
+// render for that is "not available in this build", not a spinner and not a red
+// error. Both of those read as "SynapseIDS is broken" instead of "this daemon
+// does not have that yet" (PROJECT.md §16).
 //
-// Nothing here invents a detection. `unavailable` carries no rows at all, and
-// `ok` with zero rows is deliberately a different state.
+// On a current daemon the list route always answers 200: with no alert store
+// configured it returns an empty page, because "no detections" is the honest
+// answer there. So `unavailable` and `ok`-with-zero-rows are different facts and
+// are rendered differently.
+//
+// Nothing here invents a detection: `unavailable` carries no rows at all.
 
 /** Serialise the fixed /api/v1/detections query, dropping unset values. */
 export function detectionQuery(q: DetectionQuery = {}): string {
@@ -653,7 +657,7 @@ export function detectionQuery(q: DetectionQuery = {}): string {
 }
 
 const DETECTIONS_ABSENT =
-  'GET /api/v1/detections is not available in this build — the detections resource is tracked as issue #117.'
+  'this daemon has no GET /api/v1/detections route — the detections resource arrived in issue #117, so the binary predates it.'
 
 /** The empty-but-valid list a well-formed response degrades to. */
 function normalizeList(body: unknown): DetectionList {

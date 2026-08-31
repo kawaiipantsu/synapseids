@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/alert"
 	"github.com/kawaiipantsu/synapseids/internal/api"
 	"github.com/kawaiipantsu/synapseids/internal/audit"
 	"github.com/kawaiipantsu/synapseids/internal/capture"
@@ -107,6 +108,27 @@ func run(args []string) int {
 	ins := insight.New(insight.Options{})
 	defer func() { _ = ins.Close() }()
 
+	// The detection store behind GET /api/v1/detections (issue #117; ADR 0027).
+	// Like insight it runs its own goroutine and is fed by one non-blocking send
+	// per verdict, so the alert policy, the (src, dst, class) dedup and the
+	// events.AlertCreated publish are all off the packet path (PROJECT.md §22).
+	//
+	// It is always constructed, even with alerts.enabled=false: the store then
+	// suppresses everything but still reports counters, so /api/v1/status can say
+	// alerting is off instead of looking like a network with nothing happening.
+	alerts := alert.New(alertPolicy(cfg.Alerts), alert.Options{
+		MaxRecent:   cfg.Alerts.MaxRecent,
+		DedupWindow: time.Duration(cfg.Alerts.DedupWindowSec) * time.Second,
+		Bus:         bus,
+	})
+	defer func() { _ = alerts.Close() }()
+	if cfg.Alerts.Enabled {
+		log.Printf("alerts: enabled (min_confidence=%.2f dedup_window=%ds max_recent=%d alert_on_disagreement=%t)",
+			cfg.Alerts.MinConfidence, cfg.Alerts.DedupWindowSec, cfg.Alerts.MaxRecent, cfg.Alerts.AlertOnDisagreement)
+	} else {
+		log.Printf("alerts: disabled by config — /api/v1/detections will stay empty and no AlertCreated event is published")
+	}
+
 	rt := inference.NewRuntime(
 		inference.NewHeuristic("heuristic-v1", inference.RolePrimary),
 	)
@@ -184,7 +206,7 @@ func run(args []string) int {
 		MaxFlows:         cfg.Capture.MaxFlows,
 	}
 	var flowID atomic.Uint64
-	rc := newReplayController(bus, store, rt, ins, flowOpt, "local", &flowID)
+	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID)
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -280,7 +302,10 @@ func run(args []string) int {
 	if collector != nil {
 		sensors = collector
 	}
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, sensors, rvs)
+	// alerts, ins, trs and rvs are handed over as concrete pointers rather than
+	// through an interface, which is exactly what makes them immune to that bug;
+	// every one of *alert.Store's methods is nil-receiver safe as well.
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, sensors, rvs, alerts)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -295,6 +320,7 @@ func run(args []string) int {
 			Flow: flowOpt, Sensor: "local",
 			IDGen:    func() uint64 { return flowID.Add(1) },
 			Observer: ins,
+			Alerts:   alerts,
 			Records:  sensorRecords,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -326,6 +352,19 @@ func run(args []string) int {
 	time.Sleep(50 * time.Millisecond)
 	log.Printf("synapsed stopped")
 	return 0
+}
+
+// alertPolicy bridges the config block to the alert package's policy. It is a
+// plain translation and validates nothing: config.ValidateAlerts already
+// rejected an out-of-range threshold or an unknown class at load, so a policy
+// that reaches here is known-good (PROJECT.md §23).
+func alertPolicy(a config.Alerts) alert.Policy {
+	return alert.Policy{
+		Enabled:               a.Enabled,
+		MinConfidence:         a.MinConfidence,
+		PerClassMinConfidence: a.PerClassMinConfidence,
+		AlertOnDisagreement:   a.AlertOnDisagreement,
+	}
 }
 
 // hasNICInterface reports whether srcs already contains a "nic" source bound to

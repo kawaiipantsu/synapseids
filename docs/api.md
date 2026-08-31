@@ -61,6 +61,19 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "evicted": 0,
     "max": 200000
   },
+  "alerts": {
+    "enabled": true,
+    "created": 6,
+    "deduped": 302,
+    "suppressed": 0,
+    "evicted": 0,
+    "retained": 6,
+    "max_recent": 1000,
+    "observed": 1176,
+    "dropped": 0,
+    "queue_size": 4096,
+    "dedup_window_sec": 60
+  },
   "models": [
     { "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary" }
   ],
@@ -104,6 +117,23 @@ losing its *earliest* snapshots while keeping the most recent. It is distinct fr
 `storage.disagreements` is the cumulative number of stored classifications whose
 ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
 not just those still in the ring (PROJECT.md §12, §24).
+
+`alerts` is the detection store (issue #117,
+[ADR 0027](adr/0027-detection-dedup-and-derived-severity.md)):
+
+| Key | Meaning |
+|---|---|
+| `enabled` | `alerts.enabled` from config. When `false` nothing alerts, but the counters still report, so "alerting is off" is distinguishable from "nothing happened". |
+| `created` | New detections opened. Exactly equal to the number of `AlertCreated` events published. |
+| `deduped` | Verdicts folded into an existing detection. **No event was published for any of them** — this is the number the WebSocket was spared. |
+| `suppressed` | Verdicts of an alertable class that did not clear their threshold. `normal` is not counted: it is not suppressed, it is not alertable. |
+| `evicted` | Detections dropped by the `max_recent` bound, oldest first. Non-zero means `/api/v1/detections` is a recent window, not a full history. |
+| `retained` | Detections currently held. |
+| `max_recent` | The bound (`alerts.max_recent`, default `1000`). |
+| `observed` | Verdicts the alert store evaluated. |
+| `dropped` | Verdicts the ingest queue could not accept, so they were never evaluated. Non-zero means the alert goroutine fell behind the packet path (PROJECT.md §22, §24). |
+| `queue_size` | Depth of that queue. |
+| `dedup_window_sec` | `alerts.dedup_window_sec`, default `60`. |
 
 ### GET /api/v1/flows
 
@@ -402,6 +432,138 @@ GET /api/v1/classifications?disagreement=true
 GET /api/v1/classifications?class=scan&min_confidence=90
 GET /api/v1/classifications?model=global-v1&limit=500
 ```
+
+### GET /api/v1/detections
+
+The detection feed (issue #117, PROJECT.md §17; see
+[ADR 0027](adr/0027-detection-dedup-and-derived-severity.md)). A *detection* is a
+**deduplicated** finding, not a verdict: every classification that clears its
+confidence threshold is folded into one detection per
+`(src_ip, dst_ip, class)` inside a dedup window, so a 1000-port sweep is one row
+with `count: 1000` rather than 1000 rows. Most recently active first (`last_ts`
+descending, ties by descending `id`). Always `200` on a valid query.
+
+```json
+{
+  "detections": [
+    {
+      "id": 12,
+      "ts": "2026-08-31T18:04:11.123456789Z",
+      "last_ts": "2026-08-31T18:05:02.000000000Z",
+      "count": 7,
+      "class": "brute_force",
+      "severity": "high",
+      "confidence": 0.983,
+      "flow_id": 4231,
+      "flow_ids": [4231, 4232],
+      "src_ip": "10.0.0.5",
+      "dst_ip": "10.10.10.21",
+      "src_port": 51234,
+      "dst_port": 3306,
+      "protocol": "tcp",
+      "disagreement": false,
+      "reason": "brute_force at 98.3% >= 70% threshold",
+      "models": [
+        { "model_id": "heuristic-v1", "role": "primary", "class": "brute_force", "confidence": 0.983 }
+      ]
+    }
+  ],
+  "total": 12,
+  "returned": 12,
+  "evicted": 0
+}
+```
+
+`total` is how many retained detections matched the filter **before** `limit`;
+`returned` is `detections.length`. `evicted` is the store's lifetime eviction
+count — non-zero means you are looking at a recent window, not a history.
+`detections` is always an array, never `null`.
+
+#### Which occurrence each field describes
+
+The dedup key is `(src_ip, dst_ip, class)` and deliberately excludes the ports —
+that is what collapses a port sweep. So the fields do **not** all describe the
+same packet, and which occurrence each comes from is part of the contract:
+
+| Fields | Occurrence |
+|---|---|
+| `ts`, `flow_id`, `src_port`, `dst_port`, `protocol` | the **first**. On a scan, `dst_port` is the first port seen, not "the" port. |
+| `last_ts`, `flow_ids` | the most recent. `flow_ids` holds the 20 most recent **distinct** flow ids, oldest dropped; `flow_id` stays the first one even after the list has rolled. |
+| `confidence`, `reason`, `models` | the **highest-confidence** one. `reason` quotes `confidence`, so the two must agree. |
+| `count` | every occurrence. One long-lived flow can contribute several (a periodic snapshot verdict plus a terminal one), which is why `count` can exceed `flow_ids.length`. |
+| `disagreement` | `true` if **any** occurrence disagreed. |
+
+`severity` is **derived from `class`**, not predicted by a model and not part of
+the frozen `traffic-classes-v1` schema:
+
+| class | severity |
+|---|---|
+| `normal` | *never alerts — no detection is ever created* |
+| `suspicious` | `low` |
+| `scan` | `medium` |
+| `brute_force`, `web_attack` | `high` |
+| `dos_ddos`, `botnet_c2` | `critical` |
+
+The mapping is code, not config, and covering every class in the frozen schema is
+a startup gate: a class with no severity panics `synapsed` at start rather than
+serving `"severity": ""`. See ADR 0027 for why.
+
+#### What creates a detection
+
+The policy is the `alerts` block in `synapse.json` (see
+[the annotated config](../contrib/config/synapse.annotated.md)). A verdict
+becomes a detection when its class is not `normal` **and** either:
+
+- `result.score >= ` the threshold for its class — `alerts.per_class_min_confidence[class]`
+  if present, else `alerts.min_confidence` (default `0.70`; `suspicious` defaults
+  to `0.85`); or
+- `alerts.alert_on_disagreement` is `true` (the default) and the ensemble
+  disagreed, even below the threshold — a disagreement is a finding in its own
+  right (PROJECT.md §12).
+
+`reason` states which of the two fired, in measured values only.
+
+#### `AlertCreated` fires once per *new* detection
+
+A dedup increment publishes **nothing** on the live channel. That is the point: a
+sweep produces one WebSocket event, not a thousand (PROJECT.md §22). The event's
+`data` is the `Detection` object above, so a client needs no follow-up request.
+`status.alerts.created` equals the number of `AlertCreated` events published, and
+`status.alerts.deduped` is the number the channel was spared.
+
+#### Query parameters
+
+All optional and combinable. **This route is stricter than the other collection
+routes**: an unknown parameter name or an unparseable value is a `400`, because on
+a route whose job is "show me what matters", a typo that silently widens the
+result to everything is worse than an error.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Max detections. Default `100`, clamped to `1000`. Non-numeric or `< 1` → `400 bad limit: want a positive integer`. A value above the cap is clamped, not rejected — the cap is server policy, not a client mistake. |
+| `class` | A `traffic-classes-v1` class name. Anything else → `400 unknown class name`. `class=normal` is accepted and always matches nothing. |
+| `severity` | `low` \| `medium` \| `high` \| `critical`. Anything else, including a different case → `400 bad severity: want low, medium, high or critical`. |
+| `min_confidence` | Keeps detections with `confidence >= n`. `n` in `0..1` is a fraction; `n > 1` is read as a `0..100` percentage (so `0.9` and `90` are equivalent), matching `/api/v1/classifications`. Outside `[0,100]` or non-numeric → `400`. |
+| `since` | RFC3339. Keeps detections **active** at or after it (`last_ts >= since`), not "first seen after it" — an ongoing detection that started earlier is still reported. Unparseable → `400 bad since: want an RFC3339 timestamp`. |
+
+Examples:
+
+```text
+GET /api/v1/detections?severity=critical
+GET /api/v1/detections?class=brute_force&limit=20
+GET /api/v1/detections?min_confidence=90&since=2026-08-31T18:00:00Z
+```
+
+A daemon running without an alert store answers `200` with an empty page rather
+than `503`.
+
+### GET /api/v1/detections/{id}
+
+One detection, in the same shape as an element of `detections[]` above. `404
+detection not found` for an unknown or evicted id, `400 bad detection id` for a
+non-numeric one — the same contract as
+[`/api/v1/flows/{id}`](#get-apiv1flowsid). Ids are per-process and start at `1`;
+they do not survive a restart.
 
 ### GET /api/v1/hosts
 
@@ -2235,6 +2397,25 @@ event envelopes** (`event-envelope-v1`):
 
 `data` is the same struct the matching REST endpoint returns. Event types are
 listed in [architecture.md](architecture.md#event-bus-contract).
+
+A new detection arrives as `AlertCreated`, carrying the whole `Detection` object
+so a client needs no follow-up request. It is published **once per new
+detection** — a dedup increment sends nothing, which is what keeps the channel
+quiet under a scan (issue #117, PROJECT.md §22; see
+[`/api/v1/detections`](#get-apiv1detections)):
+
+```json
+[
+  { "type": "AlertCreated", "ts": "2026-08-31T18:04:11.130Z", "seq": 8812,
+    "data": { "id": 12, "ts": "2026-08-31T18:04:11.123456789Z", "last_ts": "2026-08-31T18:04:11.123456789Z",
+              "count": 1, "class": "brute_force", "severity": "high", "confidence": 0.983,
+              "flow_id": 4231, "flow_ids": [4231], "src_ip": "10.0.0.5", "dst_ip": "10.10.10.21",
+              "src_port": 51234, "dst_port": 3306, "protocol": "tcp", "disagreement": false,
+              "reason": "brute_force at 98.3% >= 70% threshold",
+              "models": [{ "model_id": "heuristic-v1", "role": "primary",
+                           "class": "brute_force", "confidence": 0.983 }] } }
+]
+```
 
 A sensor coming and going on the collector shows up here as
 `SensorConnected` / `SensorDisconnected` (both already in the frozen

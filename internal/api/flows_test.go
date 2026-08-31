@@ -87,7 +87,7 @@ func inspectorServer(t *testing.T) http.Handler {
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	bus := events.New()
 	insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
-	return New(cfg, bus, st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	return New(cfg, bus, st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ func TestFlowExplainEvictedFlow(t *testing.T) {
 	for id := uint64(1); id <= 4; id++ {
 		insFlow(t, st, rt, id, 0, "fin_rst", base.Add(time.Duration(id)*time.Second), 1)
 	}
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	// Flow 1 was pushed out of the flow ring.
 	if rr := get(t, h, "/api/v1/flows/1/explain"); rr.Code != http.StatusNotFound {
@@ -245,7 +245,7 @@ func TestFlowExplainVerdictEvicted(t *testing.T) {
 	for id := uint64(1); id <= 4; id++ {
 		insFlow(t, st, rt, id, 0, "fin_rst", base.Add(time.Duration(id)*time.Second), 1)
 	}
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	rr := get(t, h, "/api/v1/flows/1/explain")
 	if rr.Code != http.StatusOK {
@@ -277,7 +277,7 @@ func TestFlowExplainModelNoLongerLoaded(t *testing.T) {
 	// Swap the live model set: the stored verdict still names heuristic-v1.
 	rt.SetModels(inference.NewHeuristic("some-other-model", inference.RolePrimary))
 
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 	got := decode[flowExplain](t, get(t, h, "/api/v1/flows/1/explain"))
 
 	if len(got.Models) != 1 {
@@ -372,7 +372,7 @@ func TestFlowExplainNormalizedInputsFromActiveBundle(t *testing.T) {
 	v := insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
 
 	h := New(cfg, events.New(), st, rt, reg, audit.New(root, func(string, ...any) {}),
-		nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+		nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	got := decode[flowExplain](t, get(t, h, "/api/v1/flows/1/explain"))
 	if len(got.Models) != 1 {
@@ -466,7 +466,7 @@ func TestFlowExplainNormalizerCachedByContentHash(t *testing.T) {
 	st := storage.NewMem(100, 100)
 	rt := inference.NewRuntime(cls)
 	insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
-	srv := New(cfg, events.New(), st, rt, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := New(cfg, events.New(), st, rt, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h := srv.Handler()
 
 	if rr := get(t, h, "/api/v1/flows/1/explain"); rr.Code != http.StatusOK {
@@ -516,7 +516,7 @@ func TestFlowExplainNoActiveModelSaysSo(t *testing.T) {
 	st := storage.NewMem(100, 100)
 	rt := inference.NewRuntime(cls)
 	insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
-	h := New(cfg, events.New(), st, rt, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, reg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	got := decode[flowExplain](t, get(t, h, "/api/v1/flows/1/explain"))
 	m := got.Models[0]
@@ -540,7 +540,7 @@ func TestFlowExplainNilRegistryForTrainedModel(t *testing.T) {
 	// heuristic nor registry-resolvable.
 	rt := inference.NewRuntime(stubClassifier{id: "mystery", role: inference.RolePrimary})
 	insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
 	got := decode[flowExplain](t, get(t, h, "/api/v1/flows/1/explain"))
 	m := got.Models[0]
@@ -618,7 +618,7 @@ func TestFlowSnapshotsHistoryInOrderWithVerdicts(t *testing.T) {
 	insFlow(t, st, rt, 9, 3, "snapshot", base.Add(3*time.Minute), 30)
 	insFlow(t, st, rt, 9, 3, "fin_rst", base.Add(4*time.Minute), 44)
 
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 	got := decode[flowSnapshots](t, get(t, h, "/api/v1/flows/9/snapshots"))
 
 	if got.Retained != 4 || len(got.Versions) != 4 {
@@ -669,7 +669,7 @@ func TestFlowSnapshotsTruncationIsReported(t *testing.T) {
 		insFlow(t, st, rt, 9, i, "snapshot", base.Add(time.Duration(i)*time.Minute), uint64(i))
 	}
 
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 	got := decode[flowSnapshots](t, get(t, h, "/api/v1/flows/9/snapshots"))
 
 	if got.Retained != storage.FlowHistoryCap {
@@ -698,7 +698,7 @@ func TestFlowSnapshotsMissingVerdictIsReportedNotInvented(t *testing.T) {
 		insFlow(t, st, rt, 9, i, "snapshot", base.Add(time.Duration(i)*time.Minute), uint64(i*10))
 	}
 
-	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 	got := decode[flowSnapshots](t, get(t, h, "/api/v1/flows/9/snapshots"))
 
 	if len(got.Versions) != 4 {

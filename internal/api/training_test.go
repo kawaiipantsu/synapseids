@@ -23,7 +23,7 @@ func trainingServer(t *testing.T) http.Handler {
 	cfg.Training.Directory = dir
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	trs := training.Open(dir, audit.New(t.TempDir(), func(string, ...any) {}), func(string, ...any) {})
-	return New(cfg, events.New(), storage.NewMem(100, 100), rt, nil, nil, nil, nil, nil, nil, nil, trs, nil, nil).Handler()
+	return New(cfg, events.New(), storage.NewMem(100, 100), rt, nil, nil, nil, nil, nil, nil, nil, trs, nil, nil, nil).Handler()
 }
 
 func treq(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {

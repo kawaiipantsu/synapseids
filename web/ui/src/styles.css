@@ -2424,6 +2424,26 @@ a.rep-dl-btn:focus-visible {
   padding: 1px 7px;
 }
 
+/* The Dashboard's "Recent detections" card. A four-column grid rather than the
+   shared flex .list-plain row, because the chips, the pair and the
+   count/confidence/age each need a fixed lane — flexing them wraps the pair
+   away from its own severity. */
+.dt-recent li {
+  display: grid;
+  grid-template-columns: 62px minmax(0, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 8px;
+}
+.dt-recent .pair {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-recent .meta {
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* The rationale line under each row: the daemon's own words, plus the per-model
    outputs §12 requires be kept next to the verdict. */
 .dt-why td {

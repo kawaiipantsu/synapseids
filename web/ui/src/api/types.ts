@@ -1336,11 +1336,10 @@ export interface SensorTopology {
 
 
 // ---- detections / alerts (§19.1, §19.4, §18; issue #117) --------------------
-// Self-contained block at the end of the file. GET /api/v1/detections is built
-// on a sibling branch; these mirror its fixed contract exactly, so this SPA
-// lights up the moment the endpoint lands and says "not available in this
-// build" until then (see getDetections in client.ts — a 404 is a state, not an
-// error).
+// Self-contained block at the end of the file. These mirror the contract
+// GET /api/v1/detections serves (internal/alert, ADR 0027) field for field. A
+// daemon older than #117 has no such route at all, and `getDetections` in
+// client.ts turns that 404 into a state rather than an error.
 //
 // A detection is *deduplicated*: one row can stand for many occurrences, so
 // `count` is load-bearing. A 400-port scan and a single probe are both one row,

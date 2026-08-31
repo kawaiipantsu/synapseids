@@ -18,7 +18,7 @@ func newTestServer() http.Handler {
 	bus := events.New()
 	store := storage.NewMem(100, 100)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	return New(cfg, bus, store, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+	return New(cfg, bus, store, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 }
 
 type stubFlowStats struct{ fs FlowStats }
@@ -75,7 +75,7 @@ func TestStatusFlowObjectFromProvider(t *testing.T) {
 	store := storage.NewMem(100, 100)
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	want := FlowStats{Active: 7, Started: 20, Closed: 13, Snapshots: 2, Evicted: 5, Max: 3}
-	h := New(cfg, bus, store, rt, nil, nil, nil, nil, stubFlowStats{want}, nil, nil, nil, nil, nil).Handler()
+	h := New(cfg, bus, store, rt, nil, nil, nil, nil, stubFlowStats{want}, nil, nil, nil, nil, nil, nil).Handler()
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/status", nil))

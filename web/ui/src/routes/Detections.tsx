@@ -25,9 +25,11 @@ import { usePersistedState } from '../lib/persist'
 // (a persisted control bar, "showing N / M", a class select over CLASS_NAMES and
 // a 0-100 min-confidence box) is the Flow Log's.
 //
-// This view must survive the endpoint not existing: /api/v1/detections is on a
-// sibling branch, and until it lands every build answers 404. That is rendered
-// as "not available in this build", never as a spinner or an error banner.
+// This view must survive the endpoint not existing. A daemon older than #117 has
+// no /api/v1/detections route, which is rendered as "not available in this
+// build" — never as a spinner or an error banner — and the polling stops rather
+// than logging a 404 a second forever. That is also what makes the view testable
+// against a fixture with no daemon at all.
 
 const POLL_MS = 2000
 const LIMITS = [50, 100, 250, 500, 1000]
@@ -224,16 +226,17 @@ export function Detections() {
       <div className="page-h">
         <h1>Detections</h1>
         <span className="sub">
-          deduplicated alert feed from <code>GET /api/v1/detections</code> (polled 2s, issue #117) —
-          class, severity and minimum confidence are applied by the daemon
+          deduplicated alert feed from <code>GET /api/v1/detections</code> (polled 2s, §19.1/§19.4) —
+          class, severity, minimum confidence and the time window are applied by the daemon; one row
+          can stand for many occurrences, so read <b>count</b>
         </span>
       </div>
 
       {unavailable ? (
         <div className="mx-partial">
-          <b>Not available in this build.</b> {unavailable} Every other LIVE view keeps working; this
-          one lights up with no further change once the endpoint ships. Nothing is shown here in the
-          meantime — a fabricated detection list would be worse than an empty one (PROJECT.md §16).
+          <b>Not available in this build.</b> {unavailable} Every other LIVE view keeps working, and
+          this one needs no change once the daemon is upgraded. Nothing is shown here in the meantime
+          — a fabricated detection list would be worse than an empty one (PROJECT.md §16).
         </div>
       ) : null}
 

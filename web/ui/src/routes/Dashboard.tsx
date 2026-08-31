@@ -6,7 +6,7 @@ import type { Detection, ModelList, SensorTopology } from '../api/types'
 import { IssueLink, IssueLinks } from '../components/IssueLink'
 import { Sparkline } from '../components/Sparkline'
 import { classColor, severityColor } from '../lib/classes'
-import { fmtAgo, fmtBytes, fmtInt, fmtNum, fmtPct } from '../lib/format'
+import { endpoint, fmtAgo, fmtBytes, fmtInt, fmtNum, fmtPct } from '../lib/format'
 import { Link } from '../lib/hashRouter'
 
 /** Registry / detections poll. Slower than the 1 s counter loop on purpose. */
@@ -258,9 +258,10 @@ function useModelRegistry(): { list: ModelList | null; error: string | null } {
 /**
  * Recent detections (§19.1) over GET /api/v1/detections (issue #117).
  *
- * The endpoint is being built on a sibling branch, so this has to handle a 404
- * as a state: "not available in this build", once, with no retry loop and no
- * console error. `ok` with zero rows is a different, equally honest render.
+ * A daemon older than #117 has no such route, so a 404 is handled as a state —
+ * "not available in this build", once, with no retry loop and no console error.
+ * `ok` with zero rows is a different, equally honest render: a current daemon
+ * with no alert store answers 200 with an empty page.
  */
 function useRecentDetections(): {
   rows: Detection[] | null
@@ -313,8 +314,8 @@ function RecentDetectionsCard() {
         <h3>Recent detections</h3>
         <div className="big">—</div>
         <div className="note">
-          not available in this build · <IssueLink n={117} /> · <code>/api/v1/detections</code>{' '}
-          answered 404
+          <code>/api/v1/detections</code> answered 404 — this daemon predates{' '}
+          <IssueLink n={117} />
         </div>
       </div>
     )
@@ -328,19 +329,19 @@ function RecentDetectionsCard() {
         <div className="foot">none — the endpoint answered with an empty feed</div>
       ) : null}
       {rows != null && rows.length > 0 ? (
-        <ul className="list-plain">
+        <ul className="list-plain dt-recent">
           {rows.map((d) => (
             <li key={d.id}>
-              <span className="dt-sev" style={{ background: severityColor(d.severity) }}>
+              <span className={`dt-sev ${d.severity}`} style={{ background: severityColor(d.severity) }}>
                 {d.severity}
               </span>
               <span className="cls" style={{ background: classColor(d.class) }}>
                 {d.class.toUpperCase()}
               </span>
-              <span className="mono">
-                {d.src_ip} → {d.dst_ip}:{d.dst_port}
+              <span className="mono pair" title={`${d.src_ip} → ${endpoint(d.dst_ip, d.dst_port)}`}>
+                {d.src_ip} → {endpoint(d.dst_ip, d.dst_port)}
               </span>
-              <span className="dim">
+              <span className="dim meta">
                 {d.count > 1 ? `×${fmtInt(d.count)} · ` : ''}
                 {fmtPct(d.confidence, 0)} · {fmtAgo(d.last_ts, now)}
               </span>

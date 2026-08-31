@@ -62,11 +62,11 @@ export const ROUTES: RouteDef[] = [
   // below — a review is about one classification, a detection is a deduplicated
   // alert standing for many.
   { group: 'LIVE', path: '/review', label: 'Review', tag: 'live', live: true, element: <ReviewQueue /> },
-  // Detections (§19.1/§19.4, issue #117): the deduplicated alert feed. The view
-  // is built and wired; GET /api/v1/detections lands on a sibling branch, and
-  // until it does the view renders "not available in this build" rather than a
-  // spinner or an error — so it is `live: true`, because the *view* is real and
-  // its unavailability is a fact it reports about the daemon, not a stub.
+  // Detections (§19.1/§19.4, issue #117): the deduplicated alert feed over
+  // GET /api/v1/detections. Against a daemon older than #117 the route 404s and
+  // the view renders "not available in this build" rather than a spinner or an
+  // error — it stays `live: true` either way, because the *view* is real and that
+  // unavailability is a fact it reports about the daemon, not a stub.
   {
     group: 'LIVE',
     path: '/detections',

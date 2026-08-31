@@ -150,7 +150,7 @@ test('a 404 is "unavailable", not an error and not an empty list', async () => {
   const r = await getDetections()
   assert.equal(r.state, 'unavailable')
   if (r.state !== 'unavailable') return
-  assert.match(r.message, /not available in this build/)
+  assert.match(r.message, /no GET \/api\/v1\/detections route/)
   assert.match(r.message, /#117/)
 })
 
