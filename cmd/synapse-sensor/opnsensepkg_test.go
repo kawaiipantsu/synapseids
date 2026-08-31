@@ -16,6 +16,7 @@ package main
 // silently rejected a bare name.
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -532,4 +533,48 @@ func configdActionCommand(t *testing.T, conf, action string) string {
 	}
 	t.Fatalf("[%s] has no command: line", action)
 	return ""
+}
+
+// setModelNodes() does not exist on OPNsense's ApiMutableModelControllerBase.
+// Calling it made every POST to settings/set fail with "Call to undefined
+// method" -> HTTP 500 -> the GUI's generic "Unexpected error", while GET kept
+// working because getModelNodes() IS real. The settings page therefore looked
+// entirely healthy and Save silently never wrote config.xml -- found only on a
+// live gateway, after the plugin had passed every local check.
+//
+// This guard is deliberately crude: there is no way to resolve OPNsense core's
+// class hierarchy from this repo, so it pins the one name that burned us.
+func TestControllersDoNotCallNonexistentBaseMethods(t *testing.T) {
+	const controllers = "../../contrib/opnsense/src/opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor"
+	banned := map[string]string{
+		"setModelNodes": "does not exist on ApiMutableModelControllerBase; " +
+			"use $this->getModel()->setNodes(...) followed by $this->save()",
+	}
+	err := filepath.WalkDir(controllers, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".php") {
+			return err
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			trimmed := strings.TrimSpace(line)
+			// Comments may name the method in order to explain the trap.
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			for name, why := range banned {
+				if strings.Contains(trimmed, name+"(") {
+					t.Errorf("%s:%d calls %s(), which %s\n\t%s",
+						filepath.Base(path), i+1, name, why, trimmed)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", controllers, err)
+	}
 }

@@ -98,7 +98,24 @@ class SettingsController extends ApiMutableModelControllerBase
             return ['result' => 'failed', 'message' => gettext('POST required.')];
         }
 
-        $result = $this->setModelNodes();
+        // ApiMutableModelControllerBase provides getModelNodes() for the read
+        // side but there is NO symmetric setModelNodes(). Assuming there was
+        // cost an entire hardware bring-up: every POST died with
+        //   Error: Call to undefined method ...::setModelNodes()
+        // which the MVC layer turns into HTTP 500 and the GUI reports as
+        // "Unexpected error, check log for details". GET worked throughout,
+        // because getModelNodes() is real -- so the settings page looked
+        // healthy and Save silently never wrote config.xml.
+        //
+        // Delegate to the base class's own setAction() rather than
+        // reimplementing it. get_class_methods() on a live OPNsense 25.1 shows
+        // setAction() among the PUBLIC methods of
+        // ApiMutableModelControllerBase, so parent::setAction() is guaranteed to
+        // exist -- whereas open-coding setNodes()/save() here would depend on
+        // protected members whose names are exactly what went wrong above.
+        // It returns the same {"result":"saved"} /
+        // {"result":"failed","validations":{...}} shape this method promises.
+        $result = parent::setAction();
 
         if (isset($result['result']) && $result['result'] === 'saved') {
             $result['reconfigure'] = $this->applyConfiguration();
