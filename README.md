@@ -28,7 +28,7 @@
 >
 > **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Hosts, Investigate, Timeline, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
 >
-> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), sensor `flow` / `feature` modes and the sensor-topology view (a `synapse-sensor` agent streaming raw records **does** work, in both directions — see [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md)), and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
+> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), and the sensor-topology view (a `synapse-sensor` agent **does** work, in both directions and in all three `raw` / `flow` / `feature` modes — see [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md) and [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)), and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every other route in the SPA is a "Planned — Phase N" placeholder). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
 
 <br/>
 
@@ -304,7 +304,31 @@ curl -sS http://127.0.0.1:8080/api/v1/captures   # the same peer, kind pcap-over
 synapse classifications                          # flows from the sensor, classified
 ```
 
-A missing or unreadable collector certificate is logged and the daemon keeps serving the API. Sensor `flow` / `feature` modes (#45) and the sensor-topology view (#46) are still open.
+A missing or unreadable collector certificate is logged and the daemon keeps serving the API. The sensor-topology view (#46) is still open.
+
+**Sensor modes — `raw` / `flow` / `feature` (Phase 6, issue #45, [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).** A sensor on a thin WAN link should not ship every frame just so the daemon can rebuild the flows the sensor already built. `--mode` (or `SYNAPSE_SENSOR_MODE`) chooses how much work happens on the sensor and therefore how little crosses the wire:
+
+| `--mode` | runs on the sensor | on the wire | daemon does |
+|---|---|---|---|
+| `raw` *(default)* | nothing | every captured frame | flows → features → classify |
+| `flow` | flow engine | one `flow-record-v1` per closed/snapshotted flow (295 B) | features → classify |
+| `feature` | flow engine **+** feature extraction | one `flow-features-v1` vector + the flow's endpoints and timing (437 B) | classify |
+
+```bash
+# ship flow records instead of frames — same verdicts, ~1.5% of the bandwidth
+synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized \
+    --mode flow --sensor-id edge-1 --location wan --ca collector.crt --token-file poip.token
+
+# ship only the 48 computed features: no packet content ever leaves this host
+synapse-sensor pcap-over-ip --connect ids.example:4789 --iface em0 --authorized \
+    --mode feature --sensor-id edge-fw --location wan --ca collector.crt --token-file poip.token
+
+curl -sS http://127.0.0.1:8080/api/v1/sensors   # "mode": "feature", packets 0, records climbing
+```
+
+`feature` mode is a **privacy** feature as much as a bandwidth one: frames are decoded, folded into counters, reduced to the 48 derived numbers and discarded inside the sensor process, so no packet content is ever put on the wire. Measured end to end (TLS included) on a 68 814-packet / 1 176-flow capture: `raw` ~39 MB, `flow` ~600 KB (**~1.4 %**), `feature` ~740 KB (**~1.8 %**) — and all three produce **identical classifications**, because the mode is a transport optimisation, not a behaviour change. The cost is per *flow*, so the break-even is 4-5 packets per flow; a scan of one-packet flows is the worst case. `feature` records are larger than `flow` records (48 `float64`s cost more than the accumulators behind them), so pick `flow` for bandwidth and `feature` for privacy.
+
+This is SYNPOIP **v2** — two new frame types plus a mode negotiated in the handshake — and v1 peers are unaffected byte for byte. A `flow`/`feature` sensor talking to a v1 daemon is refused with a clear `mode-unsupported`, never silently downgraded to shipping packets. Details and the compatibility matrix: [PROTOCOL.md §2.4, §3.4-3.6, §7](internal/capture/pcapoverip/PROTOCOL.md).
 
 #### 🛡️ OPNsense WAN sensor
 

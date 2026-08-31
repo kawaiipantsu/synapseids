@@ -256,10 +256,10 @@ func TestServeRejectsBadToken(t *testing.T) {
 
 func TestServeRejectsHigherVersion(t *testing.T) {
 	addr, ca := testTLSServer(t, ServerConfig{Token: "tok", LinkType: 1}, blockingStream)
-	_, err := dialSession(t, addr, ca, ClientHello{Version: Version1 + 1, Token: "tok"})
+	_, err := dialSession(t, addr, ca, ClientHello{Version: VersionMax + 1, Token: "tok"})
 	var re *RejectError
 	if !errors.As(err, &re) || re.Code != RejectVersion {
-		t.Fatalf("want RejectVersion for v2 client, got %v", err)
+		t.Fatalf("want RejectVersion for a version above VersionMax, got %v", err)
 	}
 }
 

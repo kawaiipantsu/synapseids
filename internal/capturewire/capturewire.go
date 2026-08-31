@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
+	"github.com/kawaiipantsu/synapseids/internal/capture/pcapoverip"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 )
 
@@ -144,7 +145,7 @@ func ResolveCollectorToken(c config.Collector) (string, error) {
 // client-CA pool for mutual TLS, and the bearer token. config.ValidateCollector
 // must have passed first; a missing or malformed PEM is returned so the daemon
 // can log it and keep serving the API without the collector (PROJECT.md §21).
-func BuildCollector(c config.Collector, logf func(string, ...any)) (*capture.Collector, error) {
+func BuildCollector(c config.Collector, records chan<- pcapoverip.SensorRecord, logf func(string, ...any)) (*capture.Collector, error) {
 	pair, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("collector certificate: %w", err)
@@ -177,6 +178,7 @@ func BuildCollector(c config.Collector, logf func(string, ...any)) (*capture.Col
 		Token:             tok,
 		RequireClientCert: c.ClientCAFile != "",
 		MaxSensors:        c.MaxSensors,
+		Records:           records,
 		Logf:              logf,
 	})
 }

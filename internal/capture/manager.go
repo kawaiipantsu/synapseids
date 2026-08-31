@@ -23,6 +23,10 @@ type SourceMeta struct {
 	Kind   string // "nic", "replay", ...
 	Filter string // human-readable current filter ("" or "(all)" = everything)
 	Origin string // "config" (opened at startup) | "api" (POST /api/v1/captures) | "" unknown
+	// Mode is the sensor mode a remote SYNPOIP peer negotiated: "raw", "flow" or
+	// "feature" (issue #45, PROJECT.md §5.3). "" for a local source, which is
+	// always equivalent to "raw".
+	Mode string
 }
 
 // SourceStatus is one row of GET /api/v1/captures (PROJECT.md §19.14).
@@ -42,6 +46,13 @@ type SourceStatus struct {
 	Error         string    `json:"error"`
 	ConnLatencyMS int64     `json:"connection_latency_ms"` // 0 / not-applicable for a local NIC
 	Origin        string    `json:"origin"`                // "config" | "api" | "" — where the source was added from
+	// Mode is the sensor mode: "raw" (or "" for a local source), "flow" or
+	// "feature". In flow/feature mode no packets cross the wire, so packets,
+	// bytes, pps and bps are 0 by construction and records / record_bytes carry
+	// the throughput (issue #45).
+	Mode        string `json:"mode,omitempty"`
+	Records     uint64 `json:"records,omitempty"`
+	RecordBytes uint64 `json:"record_bytes,omitempty"`
 }
 
 type managedSource struct {
@@ -354,6 +365,10 @@ type latencyReporter interface{ ConnLatencyMS() int64 }
 // filter after connecting (the sensor advertises it in the handshake).
 type filterReporter interface{ DynamicFilter() (string, bool) }
 
+// modeReporter is implemented by sources that only learn their sensor mode after
+// connecting (the sensor declares it in the SYNPOIP v2 accept).
+type modeReporter interface{ SensorMode() (string, bool) }
+
 func (ms *managedSource) status() SourceStatus {
 	st := ms.src.Stats()
 	ms.mu.Lock()
@@ -372,6 +387,9 @@ func (ms *managedSource) status() SourceStatus {
 		Filter:       ms.meta.Filter,
 		Error:        ms.errText,
 		Origin:       ms.meta.Origin,
+		Mode:         ms.meta.Mode,
+		Records:      st.Records,
+		RecordBytes:  st.RecordBytes,
 	}
 	ms.mu.Unlock()
 
@@ -381,6 +399,11 @@ func (ms *managedSource) status() SourceStatus {
 	if fr, ok := ms.src.(filterReporter); ok {
 		if f, known := fr.DynamicFilter(); known && f != "" {
 			ss.Filter = f
+		}
+	}
+	if mr, ok := ms.src.(modeReporter); ok {
+		if m, known := mr.SensorMode(); known && m != "" {
+			ss.Mode = m
 		}
 	}
 	return ss
@@ -397,6 +420,8 @@ func (m *Manager) Stats() Stats {
 		agg.DecodeErr += st.DecodeErr
 		agg.Bytes += st.Bytes
 		agg.Drops += st.Drops
+		agg.Records += st.Records
+		agg.RecordBytes += st.RecordBytes
 		if st.LastTS.After(agg.LastTS) {
 			agg.LastTS = st.LastTS
 		}

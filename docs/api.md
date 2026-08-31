@@ -1527,6 +1527,11 @@ params. Always `200` — an empty array `[]` when no live capture is configured
   dialled in — registered and removed by the collector, not by an operator).
   `config` and `api` sources are removable through `DELETE`; a `collector` row
   goes away when its sensor disconnects.
+- `mode` / `records` / `record_bytes` — for a remote SYNPOIP peer, the sensor mode
+  it negotiated (`raw`, `flow`, `feature`) and its record throughput. Omitted for
+  a local source, which is always equivalent to `raw`. See
+  `GET /api/v1/sensors` for what the modes mean and why `packets` is `0` in the
+  record modes (issue #45).
 
 ### POST /api/v1/captures
 
@@ -1666,7 +1671,33 @@ curl -sS http://127.0.0.1:8080/api/v1/sensors
     "agent_version": "0.1.0-dev",
     "os_arch": "linux/amd64",
     "session_id": "edge-1|wan|0.1.0-dev|linux/amd64-b0dd699a577d5ccd",
-    "source_name": "edge-1"
+    "source_name": "edge-1",
+    "mode": "raw",
+    "protocol_version": 2,
+    "records": 0,
+    "record_bytes": 0
+  }
+]
+```
+
+A `feature`-mode sensor looks like this instead — note that every packet counter
+is `0`, because no frame crossed the wire at all:
+
+```json
+[
+  {
+    "sensor_id": "edge-fw",
+    "location": "wan",
+    "mode": "feature",
+    "protocol_version": 2,
+    "payload_schema": "flow-features-v1",
+    "packets": 0,
+    "bytes": 0,
+    "pps": 0,
+    "bps": 0,
+    "records": 1176,
+    "record_bytes": 508032,
+    "state": "running"
   }
 ]
 ```
@@ -1692,6 +1723,34 @@ curl -sS http://127.0.0.1:8080/api/v1/sensors
 - `source_name` — the name this peer is registered under in
   `GET /api/v1/captures`. Normally the `sensor_id`; a second sensor claiming the
   same id gets `edge-1#<short session>` so both still stream.
+- `mode` — what this sensor is shipping (issue #45, PROJECT.md §5.3;
+  [ADR 0024](adr/0024-sensor-modes-and-synpoip-record-frames.md)):
+  - `raw` — every captured frame. The default, and the only thing SYNPOIP v1 can
+    carry.
+  - `flow` — flows aggregated on the sensor, shipped as `flow-record-v1` records.
+    The daemon extracts features from them and classifies; it does not rebuild
+    the flows.
+  - `feature` — only the 48 computed `flow-features-v1` values plus the flow's
+    endpoints and timing. **No packet content crosses the wire.** The daemon only
+    classifies and stores.
+- `protocol_version` — the SYNPOIP version in force: `1` for a v1 sensor, `2` for
+  one that negotiated the record frames. `raw` sensors may be either.
+- `payload_schema` — the frozen schema id the sensor's record frames conform to
+  (`flow-record-v1` / `flow-features-v1`); absent in `raw` mode. The daemon
+  refuses a session whose schema it does not implement, so a value here is one it
+  has validated.
+- `records` / `record_bytes` — flow or feature records received, and the encoded
+  payload bytes they arrived as. Both `0` in `raw` mode.
+
+> **Reading the counters in a record mode.** A `flow`- or `feature`-mode sensor
+> transfers no packets, so `packets`, `bytes`, `pps`, `bps` and `last_packet`
+> stay `0`. That is an accurate statement about the wire, not a missing
+> measurement — `mode` is what explains it, and `records` / `record_bytes` are
+> the throughput to watch. Health checks that key off `pps` need to consider
+> `records` too.
+
+The same `mode`, `records` and `record_bytes` fields appear on the sensor's
+`GET /api/v1/captures` row.
 
 A sensor's capture row appears in `GET /api/v1/captures` with
 `"kind": "pcap-over-ip-listen"` and `"origin": "collector"`, and is removed when

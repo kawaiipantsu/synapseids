@@ -127,6 +127,45 @@
                 <ValidationMessage>Snap length must be between 64 and 262144 bytes.</ValidationMessage>
             </snaplen>
 
+            <!-- ============================ what to send =================== -->
+            <!--
+                Maps to the `mode` flag: how much of the pipeline runs here on
+                the firewall, and therefore how much crosses the WAN link.
+
+                  raw     - stream every captured frame. Most bandwidth, and the
+                            packet content leaves this host.
+                  flow    - aggregate flows here and send one flow record per
+                            closed flow. Measured at roughly 1.5 percent of the
+                            raw bandwidth on ordinary traffic.
+                  feature - also compute the 48 flow-features-v1 values here and
+                            send only those. NO packet content ever leaves this
+                            host, which is the point of the mode; roughly 1.9
+                            percent of the raw bandwidth.
+
+                The verdicts are identical in all three modes: this is a
+                transport and privacy choice, not a detection one.
+
+                Note the name: the transport posture field below is already
+                called "mode" (listen versus connect), so this one is
+                "send_mode" even though it renders as the `mode` flag.
+
+                The record modes need a SynapseIDS daemon new enough to speak
+                SYNPOIP v2. An older collector refuses the connection with
+                "mode-unsupported" rather than quietly falling back to sending
+                packets, so an operator who chose "feature" for privacy reasons
+                never silently loses that property.
+            -->
+            <send_mode type="OptionField">
+                <default>raw</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <raw>Raw packets - stream every frame (most bandwidth)</raw>
+                    <flow>Flow records - aggregate flows here (least bandwidth)</flow>
+                    <feature>Feature vectors only - no packet content leaves this host</feature>
+                </OptionValues>
+                <ValidationMessage>Choose raw, flow or feature.</ValidationMessage>
+            </send_mode>
+
             <!-- ============================ transport ====================== -->
             <!-- Selects between the mutually exclusive `listen` and `connect` flags. -->
             <mode type="OptionField">

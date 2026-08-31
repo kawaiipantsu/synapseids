@@ -31,8 +31,23 @@ const (
 	// enough to fail fast against a wrong protocol on the socket.
 	Magic = "SYNPOIP\x00"
 
-	// Version1 is the first (and, so far, only) protocol version.
+	// Version1 is the first protocol version: raw packet frames only.
 	Version1 uint16 = 1
+
+	// Version2 adds the sensor record modes (issue #45): the ServerAccept
+	// declares a Mode and the schema id of its payloads, and the stream may carry
+	// FrameFlowRecord / FrameFeatureRecord instead of FramePacket.
+	//
+	// The *fixed* version field of a ClientHello stays at Version1 forever,
+	// because a v1 server rejects any higher value outright (RejectVersion) and
+	// there is no way to retry inside one accepted connection. A client that can
+	// speak v2 therefore keeps proposing 1 in the fixed field and advertises its
+	// ceiling as "max_version" in the hello metadata, which a v1 server ignores.
+	// See PROTOCOL.md §2.3.
+	Version2 uint16 = 2
+
+	// VersionMax is the highest version this implementation speaks.
+	VersionMax = Version2
 
 	// MaxTokenLen caps the bearer token in a ClientHello.
 	MaxTokenLen = 512
@@ -44,6 +59,8 @@ const (
 	MaxSessionIDLen = 128
 	// MaxFilterLen caps the server-advertised filter string in a ServerAccept.
 	MaxFilterLen = 1024
+	// MaxSchemaLen caps the payload schema id in a v2 ServerAccept.
+	MaxSchemaLen = 128
 
 	// MaxFramePayload caps a single post-handshake frame's payload: the
 	// 262144-byte snaplen ceiling the pcap readers already enforce, plus slack
@@ -70,6 +87,13 @@ const (
 	// FrameGoodbye payload is an optional UTF-8 reason. Either peer may send it
 	// to close the stream cleanly.
 	FrameGoodbye FrameType = 0x03
+	// FrameFlowRecord carries one remotely-aggregated flow.Record. v2 and
+	// ModeFlow only; see records.go for the layout.
+	FrameFlowRecord FrameType = 0x04
+	// FrameFeatureRecord carries one flow-features-v1 vector plus the minimal
+	// flow identity needed to render and store a row — and no packet content at
+	// all. v2 and ModeFeature only; see records.go for the layout.
+	FrameFeatureRecord FrameType = 0x05
 )
 
 func (t FrameType) String() string {
@@ -80,8 +104,79 @@ func (t FrameType) String() string {
 		return "keepalive"
 	case FrameGoodbye:
 		return "goodbye"
+	case FrameFlowRecord:
+		return "flow-record"
+	case FrameFeatureRecord:
+		return "feature-record"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", uint8(t))
+	}
+}
+
+// Mode is what a sensor puts on the wire (PROJECT.md §5.3). It is chosen by the
+// sensor, declared in the v2 ServerAccept, and decides which frame types the
+// stream carries.
+type Mode uint8
+
+// Sensor modes.
+const (
+	// ModeRaw streams FramePacket records: every captured frame crosses the
+	// wire. The v1 behaviour, and the default.
+	ModeRaw Mode = 0x00
+	// ModeFlow runs the flow engine on the sensor and streams FrameFlowRecord.
+	// The daemon does not re-run its flow table over them.
+	ModeFlow Mode = 0x01
+	// ModeFeature runs the flow engine *and* feature extraction on the sensor and
+	// streams FrameFeatureRecord: only the 48 derived numbers plus the flow
+	// identity needed to render a row. No packet content crosses the wire.
+	ModeFeature Mode = 0x02
+)
+
+func (m Mode) String() string {
+	switch m {
+	case ModeRaw:
+		return "raw"
+	case ModeFlow:
+		return "flow"
+	case ModeFeature:
+		return "feature"
+	default:
+		return fmt.Sprintf("unknown(0x%02x)", uint8(m))
+	}
+}
+
+// ParseMode maps a mode name to a Mode. "" and "raw" are ModeRaw.
+func ParseMode(s string) (Mode, error) {
+	switch s {
+	case "", "raw":
+		return ModeRaw, nil
+	case "flow":
+		return ModeFlow, nil
+	case "feature":
+		return ModeFeature, nil
+	default:
+		return ModeRaw, fmt.Errorf("pcapoverip: unknown sensor mode %q (want raw, flow or feature)", s)
+	}
+}
+
+// MinVersion is the lowest protocol version that can carry this mode.
+func (m Mode) MinVersion() uint16 {
+	if m == ModeRaw {
+		return Version1
+	}
+	return Version2
+}
+
+// PayloadSchema is the frozen schema id a mode's record frames conform to, or ""
+// for ModeRaw (whose payload is a link-layer frame, described by link_type).
+func (m Mode) PayloadSchema() string {
+	switch m {
+	case ModeFlow:
+		return FlowRecordSchema
+	case ModeFeature:
+		return FeatureRecordSchema
+	default:
+		return ""
 	}
 }
 
@@ -97,6 +192,7 @@ const (
 	RejectBadRequest   RejectCode = 0x03 // malformed or oversized handshake
 	RejectUnavailable  RejectCode = 0x04 // server shutting down / no capacity
 	RejectLinkType     RejectCode = 0x05 // client demanded a link type the server cannot provide
+	RejectMode         RejectCode = 0x06 // sensor is in flow/feature mode and the client cannot receive it
 )
 
 func (c RejectCode) String() string {
@@ -113,6 +209,8 @@ func (c RejectCode) String() string {
 		return "unavailable"
 	case RejectLinkType:
 		return "link-type-unsupported"
+	case RejectMode:
+		return "mode-unsupported"
 	default:
 		return fmt.Sprintf("reject(0x%02x)", uint8(c))
 	}
@@ -140,6 +238,12 @@ type ClientHello struct {
 	// Token is the bearer secret, carried only inside the TLS tunnel and never
 	// logged.
 	Token string
+	// MaxVersion is the highest version the client can be upgraded to. It travels
+	// in the hello metadata as "max_version", *not* in the fixed Version field,
+	// so a v1 server ignores it and accepts at version 1 instead of rejecting the
+	// whole handshake (PROTOCOL.md §2.3). 0 or a value below Version means
+	// "Version only".
+	MaxVersion uint16
 	// SensorID, Filter and Location are advisory metadata echoed into the
 	// capture-sources view; they never affect what the server streams.
 	SensorID string
@@ -147,10 +251,22 @@ type ClientHello struct {
 	Location string
 }
 
+// Ceiling is the highest version this hello can be upgraded to.
+func (h ClientHello) Ceiling() uint16 {
+	if h.MaxVersion > h.Version {
+		return h.MaxVersion
+	}
+	return h.Version
+}
+
 type helloMeta struct {
 	SensorID string `json:"sensor_id,omitempty"`
 	Filter   string `json:"filter,omitempty"`
 	Location string `json:"location,omitempty"`
+	// MaxVersion is the SYNPOIP v2 capability advertisement. A v1 server decodes
+	// the metadata into this same struct minus the field and silently drops it,
+	// which is exactly the backward compatibility this extension point buys.
+	MaxVersion uint16 `json:"max_version,omitempty"`
 }
 
 // MarshalBinary encodes the ClientHello in wire form.
@@ -158,7 +274,13 @@ func (h ClientHello) MarshalBinary() ([]byte, error) {
 	if len(h.Token) > MaxTokenLen {
 		return nil, protoErr("token too long (%d > %d)", len(h.Token), MaxTokenLen)
 	}
-	meta, err := json.Marshal(helloMeta{SensorID: h.SensorID, Filter: h.Filter, Location: h.Location})
+	max := h.MaxVersion
+	if max <= h.Version {
+		max = 0 // omit rather than restate the fixed field
+	}
+	meta, err := json.Marshal(helloMeta{
+		SensorID: h.SensorID, Filter: h.Filter, Location: h.Location, MaxVersion: max,
+	})
 	if err != nil {
 		return nil, protoErr("encoding metadata: %v", err)
 	}
@@ -218,6 +340,9 @@ func ReadClientHello(r io.Reader) (ClientHello, error) {
 			return ClientHello{}, protoErr("decoding metadata: %v", err)
 		}
 		h.SensorID, h.Filter, h.Location = m.SensorID, m.Filter, m.Location
+		if m.MaxVersion > h.Version {
+			h.MaxVersion = m.MaxVersion
+		}
 	}
 	return h, nil
 }
@@ -234,6 +359,17 @@ type ServerAccept struct {
 	Filter string
 	// SessionID identifies this stream in server logs.
 	SessionID string
+
+	// Mode is what the sensor is shipping. It is encoded only when Version >=
+	// Version2; a v1 accept is byte-identical to what it always was and always
+	// means ModeRaw.
+	Mode Mode
+	// PayloadSchema is the frozen schema id every record frame conforms to:
+	// "flow-record-v1" for ModeFlow, "flow-features-v1" for ModeFeature, "" for
+	// ModeRaw. The receiver compares it with the schema it implements and refuses
+	// the session on a mismatch rather than misreading the records (PROJECT.md
+	// §28.5-6). Encoded only when Version >= Version2.
+	PayloadSchema string
 }
 
 // ServerReject is the failure reply to a ClientHello. The server closes the
@@ -251,7 +387,13 @@ func (a ServerAccept) MarshalBinary() ([]byte, error) {
 	if len(a.SessionID) > MaxSessionIDLen {
 		return nil, protoErr("session id too long (%d > %d)", len(a.SessionID), MaxSessionIDLen)
 	}
-	buf := make([]byte, 0, magicLen+1+2+4+2+len(a.Filter)+2+len(a.SessionID))
+	if len(a.PayloadSchema) > MaxSchemaLen {
+		return nil, protoErr("payload schema too long (%d > %d)", len(a.PayloadSchema), MaxSchemaLen)
+	}
+	if a.Version < Version2 && a.Mode != ModeRaw {
+		return nil, protoErr("mode %s needs protocol version %d, not %d", a.Mode, Version2, a.Version)
+	}
+	buf := make([]byte, 0, magicLen+1+2+4+2+len(a.Filter)+2+len(a.SessionID)+1+2+len(a.PayloadSchema))
 	buf = append(buf, Magic...)
 	buf = append(buf, byte(RejectNone))
 	buf = binary.BigEndian.AppendUint16(buf, a.Version)
@@ -260,6 +402,14 @@ func (a ServerAccept) MarshalBinary() ([]byte, error) {
 	buf = append(buf, a.Filter...)
 	buf = binary.BigEndian.AppendUint16(buf, uint16(len(a.SessionID)))
 	buf = append(buf, a.SessionID...)
+	// v2 tail. A v1 client would read these bytes as a frame header, so they are
+	// written only when the client asked to be upgraded and the server answered
+	// with Version2 — see PROTOCOL.md §2.3.
+	if a.Version >= Version2 {
+		buf = append(buf, byte(a.Mode))
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(a.PayloadSchema)))
+		buf = append(buf, a.PayloadSchema...)
+	}
 	return buf, nil
 }
 
@@ -350,7 +500,52 @@ func ReadServerResponse(r io.Reader) (*ServerAccept, error) {
 		return nil, ioErr("accept session id", err)
 	}
 	a.SessionID = string(sid)
+
+	if a.Version < Version2 {
+		return a, nil
+	}
+	var mh [1 + 2]byte
+	if _, err := io.ReadFull(r, mh[:]); err != nil {
+		return nil, ioErr("accept mode", err)
+	}
+	a.Mode = Mode(mh[0])
+	schemaLen := binary.BigEndian.Uint16(mh[1:])
+	if schemaLen > MaxSchemaLen {
+		return nil, protoErr("accept payload schema length %d exceeds %d", schemaLen, MaxSchemaLen)
+	}
+	schema := make([]byte, schemaLen)
+	if _, err := io.ReadFull(r, schema); err != nil {
+		return nil, ioErr("accept payload schema", err)
+	}
+	a.PayloadSchema = string(schema)
 	return a, nil
+}
+
+// ValidateAccept checks the negotiated version, mode and payload schema against
+// what this build implements. A schema id this daemon does not implement is a
+// hard refusal, not a best-effort read: a future flow-features-v2 sensor must be
+// rejected rather than silently misread (PROJECT.md §28.5-6, the same discipline
+// schema.ValidateBundle applies to a model bundle).
+func ValidateAccept(a ServerAccept) error {
+	if a.Version == 0 || a.Version > VersionMax {
+		return protoErr("server negotiated protocol version %d, this build speaks 1..%d", a.Version, VersionMax)
+	}
+	switch a.Mode {
+	case ModeRaw, ModeFlow, ModeFeature:
+	default:
+		return protoErr("server declared unknown mode 0x%02x", uint8(a.Mode))
+	}
+	if a.Version < a.Mode.MinVersion() {
+		return protoErr("mode %s needs protocol version %d, server negotiated %d", a.Mode, a.Mode.MinVersion(), a.Version)
+	}
+	// A v1 accept carries no schema field at all; only hold a v2 peer to it.
+	if a.Version >= Version2 {
+		if want := a.Mode.PayloadSchema(); a.PayloadSchema != want {
+			return protoErr("server declared payload schema %q for mode %s, this build implements %q — refusing the session rather than misreading its records",
+				a.PayloadSchema, a.Mode, want)
+		}
+	}
+	return nil
 }
 
 // WriteFrame writes one post-handshake frame: a type byte, a uint32 big-endian

@@ -25,8 +25,15 @@ type Key struct {
 // KeyOf normalizes a packet's endpoints into a Key and reports whether the packet
 // travels from A to B (forwardFromA).
 func KeyOf(p packet.Packet) (k Key, forwardFromA bool) {
-	sa, sb := p.SrcIP, p.DstIP
-	pa, pb := p.SrcPort, p.DstPort
+	return KeyOfEndpoints(p.SrcIP, p.SrcPort, p.DstIP, p.DstPort, p.Proto)
+}
+
+// KeyOfEndpoints normalizes one directed endpoint pair into a Key and reports
+// whether (sa,pa) is the A side. It is the single place the normalization rule
+// lives, so a Key rebuilt from a record's initiator/responder endpoints — for
+// example a flow record received from a remote sensor — is byte-identical to the
+// Key the local table would have derived from the same packets.
+func KeyOfEndpoints(sa netip.Addr, pa uint16, sb netip.Addr, pb uint16, proto packet.Proto) (k Key, forwardFromA bool) {
 	// Order by IP bytes, then port.
 	less := false
 	switch sa.Compare(sb) {
@@ -38,9 +45,9 @@ func KeyOf(p packet.Packet) (k Key, forwardFromA bool) {
 		less = pa <= pb
 	}
 	if less {
-		return Key{A: sa, B: sb, PortA: pa, PortB: pb, Proto: p.Proto}, true
+		return Key{A: sa, B: sb, PortA: pa, PortB: pb, Proto: proto}, true
 	}
-	return Key{A: sb, B: sa, PortA: pb, PortB: pa, Proto: p.Proto}, false
+	return Key{A: sb, B: sa, PortA: pb, PortB: pa, Proto: proto}, false
 }
 
 // CloseReason explains why a flow record was emitted.

@@ -1,14 +1,17 @@
 # `os-synapseids-sensor` — the SynapseIDS plugin for OPNsense
 
 Turns an OPNsense firewall into an inbound-WAN sensor for a central SynapseIDS
-daemon: capture on the WAN interface through FreeBSD's BPF devices, stream raw
-frames to `synapsed` over the authenticated SYNPOIP transport, and configure it
-all from **Services → SynapseIDS Sensor**.
+daemon: capture on the WAN interface through FreeBSD's BPF devices, stream to
+`synapsed` over the authenticated SYNPOIP transport, and configure it all from
+**Services → SynapseIDS Sensor**.
 
-The firewall only observes. Flow assembly, feature extraction and
-classification happen on the daemon. The sensor never modifies, injects or
-blocks traffic (PROJECT.md §28.17), and it opens the BPF device read-only so it
-could not transmit even if it tried.
+The firewall only observes. Classification always happens on the daemon; the
+**Send** setting chooses whether flow assembly and feature extraction happen
+there too or here on the firewall — see [Choosing what the sensor
+sends](#choosing-what-the-sensor-sends), which is also how you stop packet
+content leaving the box at all. The sensor never modifies, injects or blocks
+traffic (PROJECT.md §28.17), and it opens the BPF device read-only so it could
+not transmit even if it tried.
 
 **Install, configure, verify and troubleshoot are documented in
 [`docs/opnsense-sensor.md`](../../docs/opnsense-sensor.md).** This file covers
@@ -105,6 +108,33 @@ and `package-opnsense.sh` **fails the build** if the staged tree and
 
 It **cannot** prove `pkg(8)` accepts the result. That needs a FreeBSD box.
 
+## Choosing what the sensor sends
+
+The **Send** dropdown (`send_mode` in the model, `--mode` on the command line)
+decides how much of the pipeline runs on the firewall and therefore how much
+crosses the link. Verdicts are identical in all three — this is a bandwidth and
+privacy choice, not a detection one (issue #45,
+[ADR 0024](../../docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).
+
+| Send | leaves the firewall | wire cost | when |
+|------|--------------------|-----------|------|
+| **Raw packets** *(default)* | every captured frame | 100 % | the daemon or the site wants full packet fidelity, and the link can carry it |
+| **Flow records** | one flow record per closed flow | **~1.4 %** | the usual choice for a WAN-attached firewall: ~70× less traffic for the same classifications |
+| **Feature vectors only** | only the 48 computed features, plus each flow's endpoints and timing | **~1.8 %** | **no packet content may leave this host** — a sensitive link, or a site that permits flow telemetry off-box but not payloads |
+
+Measured end to end, TLS included, on a 68 814-packet / 1 176-flow capture.
+The cost of the two record modes is per *flow*, not per packet, so the break-even
+against raw is around 4-5 packets per flow; a port scan of one-packet flows is
+the worst case for them. Note that feature records are slightly *larger* than
+flow records — 48 `float64` values cost more than the counters they came from —
+so pick **Flow records** for bandwidth and **Feature vectors only** for privacy.
+
+The two record modes need a SynapseIDS daemon that speaks SYNPOIP v2. An older
+collector refuses the connection with `mode-unsupported`, which is deliberate: a
+firewall configured for **Feature vectors only** must never quietly start
+shipping packet content because the far end is old. The refusal is logged to
+`/var/log/synapseids/sensor.log`.
+
 ## What is in the plugin
 
 Sources live under `src/`, which maps to `/usr/local` on the target
@@ -112,7 +142,7 @@ Sources live under `src/`, which maps to `/usr/local` on the target
 
 | path | purpose |
 |------|---------|
-| `src/opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml` | the model: capture interface, filter preset, direction, promiscuous, snaplen, mode, addresses, token, TLS trust, sensor id/location and the `authorized` assertion |
+| `src/opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml` | the model: capture interface, filter preset, direction, promiscuous, snaplen, **what to send** (`send_mode`), transport posture (`mode`), addresses, token, TLS trust, sensor id/location and the `authorized` assertion |
 | `.../Sensor.php` | the model class; its `performValidation` is what refuses to save an enabled sensor without `authorized`, without an interface, or with a half-configured mTLS pair |
 | `.../ACL/ACL.xml` | the privilege that gates the page and the API |
 | `.../Menu/Menu.xml` | the **Services → SynapseIDS Sensor** entry |

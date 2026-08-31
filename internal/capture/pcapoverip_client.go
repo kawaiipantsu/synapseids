@@ -48,6 +48,15 @@ type POIPConfig struct {
 	// SensorID / Filter are advisory metadata advertised in the handshake.
 	SensorID string
 	Filter   string
+	// Location is advisory metadata advertised in the handshake, and is attached
+	// to any record this source receives.
+	Location string
+	// Records, when non-nil, is where a `flow`- or `feature`-mode sensor's record
+	// frames are delivered. Setting it is what makes this source advertise a
+	// SYNPOIP v2 ceiling; leaving it nil keeps the source strictly v1, so a
+	// record-mode sensor answers with a typed RejectMode instead of streaming
+	// records nobody consumes (issue #45).
+	Records chan<- pcapoverip.SensorRecord
 	// Timeouts. Zero values fall back to the pcapoverip defaults.
 	DialTimeout       time.Duration
 	HandshakeTimeout  time.Duration
@@ -68,8 +77,15 @@ type PCAPOverIP struct {
 	token      string
 	linkPref   uint32
 	sensorID   string
+	location   string
 	filterAdv  string
 	tlsCfg     *tls.Config
+
+	// route carries record frames when the caller supplied a destination; mode is
+	// filled in from the ServerAccept once the handshake completes.
+	route recordRoute
+	rc    recordCounters
+	mode  atomic.Pointer[string]
 
 	dialTO      time.Duration
 	handshakeTO time.Duration
@@ -155,7 +171,9 @@ func NewPCAPOverIP(cfg POIPConfig) (*PCAPOverIP, error) {
 		token:       cfg.Token,
 		linkPref:    uint32(cfg.LinkType),
 		sensorID:    cfg.SensorID,
+		location:    cfg.Location,
 		filterAdv:   cfg.Filter,
+		route:       recordRoute{ch: cfg.Records, sensor: cfg.SensorID, location: cfg.Location},
 		tlsCfg:      tlsCfg,
 		dialTO:      orDur(cfg.DialTimeout, pcapoverip.DefaultHandshakeTimeout),
 		handshakeTO: orDur(cfg.HandshakeTimeout, pcapoverip.DefaultHandshakeTimeout),
@@ -209,12 +227,16 @@ func (p *PCAPOverIP) run(ctx context.Context, cancel context.CancelFunc, out cha
 		return
 	}
 
+	// The fixed hello version stays at 1 forever; the v2 ceiling rides in the
+	// metadata so a v1 sensor accepts instead of rejecting (PROTOCOL.md §2.3).
 	hello := pcapoverip.ClientHello{
-		Version:  pcapoverip.Version1,
-		LinkType: p.linkPref,
-		Token:    p.token,
-		SensorID: p.sensorID,
-		Filter:   p.filterAdv,
+		Version:    pcapoverip.Version1,
+		MaxVersion: p.route.helloCeiling(),
+		LinkType:   p.linkPref,
+		Token:      p.token,
+		SensorID:   p.sensorID,
+		Location:   p.location,
+		Filter:     p.filterAdv,
 	}
 	sess, err := pcapoverip.ClientHandshake(conn, hello, time.Now().Add(p.handshakeTO))
 	if err != nil {
@@ -222,18 +244,29 @@ func (p *PCAPOverIP) run(ctx context.Context, cancel context.CancelFunc, out cha
 		errc <- fmt.Errorf("pcapoverip: handshake with %s: %w", p.addr, err)
 		return
 	}
+	if verr := pcapoverip.ValidateAccept(sess.Accept()); verr != nil {
+		_ = sess.Close()
+		errc <- fmt.Errorf("pcapoverip: sensor %s: %w", p.addr, verr)
+		return
+	}
 	p.connLatencyMS.Store(time.Since(start).Milliseconds())
+	mode := sess.Mode()
+	p.route.mode = mode
+	ms := mode.String()
+	p.mode.Store(&ms)
 
+	// The link type only governs raw frames. A record-mode sensor ships no frames
+	// at all, so its advertised DLT is irrelevant and must not gate the session.
 	link := packet.LinkType(sess.LinkType())
-	if link != packet.LinkEthernet && link != packet.LinkRaw {
+	if mode == pcapoverip.ModeRaw && link != packet.LinkEthernet && link != packet.LinkRaw {
 		_ = sess.Close()
 		errc <- fmt.Errorf("pcapoverip: sensor %s offered unsupported link type %d", p.addr, sess.LinkType())
 		return
 	}
 	adv := sess.Filter()
 	p.dynFilter.Store(&adv)
-	p.logf("pcapoverip: connected to sensor %s (session %s, protocol v%d, link %d, filter %q)",
-		p.addr, sess.SessionID(), sess.NegotiatedVersion(), sess.LinkType(), adv)
+	p.logf("pcapoverip: connected to sensor %s (session %s, protocol v%d, mode %s, schema %q, link %d, filter %q)",
+		p.addr, sess.SessionID(), sess.NegotiatedVersion(), mode, sess.PayloadSchema(), sess.LinkType(), adv)
 
 	p.mu.Lock()
 	p.sess = sess
@@ -318,6 +351,11 @@ func (p *PCAPOverIP) readLoop(ctx context.Context, sess *pcapoverip.Session, lin
 				return nil
 			}
 
+		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord:
+			if gone := p.route.deliver(ctx, &p.rc, ft, payload); gone {
+				return nil
+			}
+
 		case pcapoverip.FrameKeepalive:
 			if _, drops, ok := pcapoverip.ParseKeepalive(payload); ok {
 				atomic.StoreUint64(&p.stats.drops, drops)
@@ -342,14 +380,24 @@ func (p *PCAPOverIP) Stats() Stats {
 	if last != 0 {
 		lt = time.Unix(0, last).UTC()
 	}
-	return Stats{
+	return p.rc.snapshot(Stats{
 		Packets:   atomic.LoadUint64(&p.stats.packets),
 		Decoded:   atomic.LoadUint64(&p.stats.decoded),
 		DecodeErr: atomic.LoadUint64(&p.stats.decodeErr),
 		Bytes:     atomic.LoadUint64(&p.stats.bytes),
 		LastTS:    lt,
 		Drops:     atomic.LoadUint64(&p.stats.drops),
+	})
+}
+
+// SensorMode reports the mode the sensor negotiated ("raw", "flow" or
+// "feature"), or "" before the handshake completes. The Manager surfaces it as
+// the capture-sources row's mode field.
+func (p *PCAPOverIP) SensorMode() (string, bool) {
+	if m := p.mode.Load(); m != nil {
+		return *m, true
 	}
+	return "", false
 }
 
 // ConnLatencyMS reports the TLS dial + handshake time in milliseconds, or 0

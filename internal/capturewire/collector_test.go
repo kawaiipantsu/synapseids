@@ -41,7 +41,7 @@ func TestBuildCollectorLoadsTLSAndToken(t *testing.T) {
 	if err := config.ValidateCollector(cc); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	col, err := BuildCollector(cc, nil)
+	col, err := BuildCollector(cc, nil, nil)
 	if err != nil {
 		t.Fatalf("BuildCollector: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestBuildCollectorLoadsTLSAndToken(t *testing.T) {
 
 func TestBuildCollectorMissingCert(t *testing.T) {
 	cc := config.Collector{Listen: "127.0.0.1:0", CertFile: "/no/such.crt", KeyFile: "/no/such.key", Authorized: true}
-	if _, err := BuildCollector(cc, nil); err == nil {
+	if _, err := BuildCollector(cc, nil, nil); err == nil {
 		t.Fatal("expected an error for unreadable TLS material")
 	}
 }
@@ -65,7 +65,7 @@ func TestBuildCollectorBadClientCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	cc := config.Collector{Listen: "127.0.0.1:0", CertFile: cert, KeyFile: key, ClientCAFile: bad, Authorized: true}
-	if _, err := BuildCollector(cc, nil); err == nil {
+	if _, err := BuildCollector(cc, nil, nil); err == nil {
 		t.Fatal("expected an error for a client_ca_file with no certificate")
 	}
 }

@@ -94,6 +94,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     more and `/snapshots` surfaces the duplicate in a note, but feature 47 feeds
     the golden vectors and every dataset CSV, so correcting it is a separate
     reviewed change rather than a side effect of this one.
+- **Sensor modes `raw` / `flow` / `feature`, and SYNPOIP v2 record frames**
+  (issue #45, EPIC Phase 6;
+  [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)).
+  `synapse-sensor` can now aggregate flows — and even extract features — on the
+  sensor itself, so a box on a constrained WAN link no longer has to ship every
+  frame for the daemon to rebuild what the sensor already knows.
+  - **`--mode raw|flow|feature`** (default `raw`, or `$SYNAPSE_SENSOR_MODE`).
+    `raw` is unchanged in every respect. `flow` runs `internal/flow` on the
+    sensor and ships `flow-record-v1` records; `feature` runs `internal/flow`
+    **and** `internal/features` and ships only the 48 computed
+    `flow-features-v1` values plus the flow's endpoints, timing and close reason.
+    New `--flow-idle-timeout`, `--flow-max-lifetime`,
+    `--flow-snapshot-interval` and `--flow-max` mirror the daemon's own
+    lifecycle defaults.
+  - **`feature` mode ships no packet content at all.** Frames are decoded, folded
+    into counters, reduced to the 48 derived numbers and discarded inside the
+    sensor process — the encoder is never handed a frame. It is the mode for a
+    link whose traffic is sensitive, or a site that will permit flow telemetry
+    off-box but not payloads.
+  - **Measured**, end to end at the loopback interface (TLS and TCP overhead
+    included), for a 68 814-packet / 1 176-flow nmap capture: `raw` ~39 MB,
+    `flow` ~600 KB (**~1.4 %**, ~70× less), `feature` ~740 KB (**~1.8 %**, ~55×
+    less); the exact SYNPOIP payload is a fixed 295 / 437 bytes per record.
+    The cost is per *flow*, so the break-even is 4-5 packets/flow for `flow` and
+    6-7 for `feature`; a scan of one-packet flows is the worst case and the
+    record modes can lose there. Note `feature` records are *larger* than `flow`
+    records (432 vs 290 payload bytes) — 48 `float64`s cost more than the
+    accumulators they came from, so `flow` is the bandwidth mode and `feature`
+    the privacy mode.
+  - **All three modes classify identically.** The mode is a transport
+    optimisation, not a behaviour change, and it is tested as such: a local
+    replay and `raw`/`flow`/`feature` sensors over a real loopback TLS collector
+    must produce the same ordered set of verdicts. The manual run agrees — 1 176
+    flows and 1 176 classifications in every mode.
+  - **SYNPOIP v2**: new frame types `0x04` flow record and `0x05` feature record,
+    a mode + payload-schema tail on the `ServerAccept`, and a new typed reject
+    `0x06 mode-unsupported`. Byte layouts in
+    `internal/capture/pcapoverip/PROTOCOL.md` §3.4-3.6.
+  - **v1 peers keep working, byte for byte.** The ClientHello's fixed `version`
+    field stays at `1` forever; the v2 ceiling rides as `max_version` in the hello
+    metadata, which a v1 sensor decodes and drops as an unknown key. (Bumping the
+    fixed field cannot work: a v1 server rejects it outright and closes, and
+    there is no in-session retry — a v2 daemon would loop forever against a v1
+    sensor that keeps reconnecting.) The accept's v2 tail is written **only** when
+    the negotiated version is 2, because a v1 client would read those bytes as a
+    frame header. Full compatibility matrix in PROTOCOL.md §2.4, asserted in both
+    directions by `TestNegotiationMatrix`.
+  - **A `flow`/`feature` sensor is never silently downgraded to `raw`.** Talking
+    to a v1 daemon (or a daemon with no record channel wired) it is refused with
+    `0x06`, naming the mode — a `feature` sensor quietly shipping packet content
+    would destroy the property the operator selected the mode for.
+  - **Payloads are schema-bound twice**: the session carries the frozen schema id
+    (`flow-record-v1` / `flow-features-v1`) in the accept and the daemon
+    **refuses** anything it does not implement before reading a frame, so a future
+    `flow-features-v2` sensor is rejected rather than misread (§28.5-6); and every
+    record opens with a one-byte layout version. Every length is bounds-checked
+    before allocation and a malformed record is counted and skipped, never a
+    panic (§28.11).
+  - **Flow ids are remapped.** A sensor's ids are its own counter and collide
+    across sensors and restarts, so every arriving record is reallocated through
+    the daemon's shared `IDGen`; the original is kept as
+    `sensor_flow_id` alongside a new `sensor_mode` on the stored flow record. A
+    `feature`-mode row reads its counters back out of the vector rather than
+    defaulting them to zero, so it never implies a measurement that did not cross
+    the wire.
+  - **Operator visibility**: `mode`, `protocol_version`, `payload_schema`,
+    `records` and `record_bytes` on `GET /api/v1/sensors`, and `mode` / `records`
+    / `record_bytes` on `GET /api/v1/captures`. In a record mode `packets`,
+    `bytes`, `pps` and `bps` are `0` by construction — no frames crossed the wire
+    — and `mode` is what explains it.
+  - **`internal/flow` and `internal/features` are reused, not reimplemented.** Two
+    small supporting changes: `flow.Accumulators` / `WithAccumulators` /
+    `WithDerivedKey` (`internal/flow/wire.go`) make a `Record`'s private
+    accumulators serialisable so `features.Extract` is bit-identical on either
+    side, and the new `flow.Pacer` extracts the `Table.Tick` cadence that was
+    inline in `pipeline.Run` so a sensor and the daemon cannot drift on where
+    flow boundaries fall.
+  - Not yet: the dialled (`--listen`) posture does not accept records — it
+    advertises `max_version: 1` and a record-mode sensor it dials is cleanly
+    rejected — and records are one per frame rather than batched. Both tracked
+    for #46.
+
 
 - **The daemon-side SYNPOIP collector, and real sensor identity** (issues #43 and
   #103, EPIC Phase 6;
