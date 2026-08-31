@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live training dashboard** (issue #35, EPIC Phase 4;
+  [ADR 0019](docs/adr/0019-external-training-runs-reported-over-http.md)). The
+  daemon now mirrors external `synapse-trainer` runs and the SPA renders them
+  live (PROJECT.md §19.8). The Go daemon never launches Python (§5.4): the
+  trainer runs elsewhere and reports progress over HTTP; the daemon is a mirror
+  and a history store, not an orchestrator. No `event-envelope-v1` change — the
+  enum is frozen and has no `Training*` member (§28.5-6), so the dashboard
+  updates by polling a training-job resource, not the event bus.
+  - `internal/training` — the run store. One JSON file per run under
+    `training.directory` (atomic temp-file+rename, corrupt-file tolerant, loaded
+    on start) plus an RWMutex-guarded memory index. A `Run` records `id`, `name`,
+    `status` (`running` | `completed` | `failed` | `stale`), the pass-through
+    `recipe`/`final` blocks, timestamps, `trainer_version`, `epochs_total`,
+    current `epoch`, and a `history` slice of per-epoch progress dicts capped at
+    **1000** (oldest dropped). A `running` run with no update for **15 minutes**
+    reads back as `stale` — a read-time view, never persisted; a later update
+    clears it.
+  - REST `internal/api/training.go`: `POST /api/v1/training` (register → `201`
+    `{id, progress_url}`), `POST /api/v1/training/{id}/progress` (one JSON object
+    per request → `202`; an `{"event":"done"}` dict finishes the run and stores
+    its `metrics` as `final`), `POST /api/v1/training/{id}/fail` (`{reason}` →
+    `202`), `GET /api/v1/training` (list, newest first, `limit`), and
+    `GET /api/v1/training/{id}` (one run with full `history` + `final` — what the
+    SPA polls). The three POST routes are unauthenticated and loopback-only for
+    now (`TODO(#58)`). `TrainingStarted` / `TrainingCompleted` / `TrainingFailed`
+    are written to the audit log under subject type `training`; nothing is
+    published on the event bus.
+  - `config.Training{Directory}` — `./data/training` by default, overridable
+    with `SYNAPSE_TRAINING_DIR`.
+  - Trainer: `synapse_trainer/progress.py` `ProgressReporter` is a real
+    stdlib-only (`urllib.request`) client — it registers the run, POSTs each
+    epoch dict and the `done` dict, and POSTs `/fail` on an exception. Every
+    network operation is best-effort: a dashboard outage is logged and swallowed,
+    never fatal to the run. `synapse-trainer train` gains `--report-to
+    <daemon-url>` (defaulting to `$SYNAPSE_DAEMON_URL`); without it, training runs
+    exactly as before with no reporting. `train_iter`'s per-epoch dict now also
+    carries `batches`/`batches_total`, macro `precision`/`recall`, `accuracy`
+    and `device` (cpu/cuda); the `done` metrics already carry the per-class
+    table, confusion matrix and held-out `test` block.
+  - SPA `ML ▸ Training` (`#/training`, previously a Phase-4 placeholder): a run
+    list with status pills, and for the selected run — status, epoch N/total,
+    elapsed, CPU/GPU (or "not reported"), train/val-loss curves, an accuracy/F1
+    curve, a learning-rate curve, accuracy/precision/recall/F1 cards, and on
+    completion the per-class metrics table and a 7×7 `traffic-classes-v1`
+    confusion-matrix grid. Polls `GET /api/v1/training/{id}` every ~1.5 s while a
+    run is `running`, then stops.
+
 - **Training recipes with multi-dataset weighting** (issue #34, EPIC Phase 4;
   [ADR 0017](docs/adr/0017-multi-dataset-training-mixtures.md)). A recipe's
   `datasets[]` weights now actually shape the training data (PROJECT.md §14:

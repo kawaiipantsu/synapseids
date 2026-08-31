@@ -361,3 +361,94 @@ export interface DatasetCreateInput {
   derive_from?: string
   selection: DatasetSelection
 }
+
+// ============================================================================
+// Training dashboard (§19.8, issue #35, ADR 0019)
+// -------------------------------------------------
+// A training run is an external synapse-trainer process that reports progress
+// to the daemon over HTTP. The SPA polls GET /api/v1/training/{id}. This block
+// is self-contained — a sibling branch also edits this file; keep additions here.
+// ============================================================================
+
+export type TrainingStatus = 'running' | 'completed' | 'failed' | 'stale'
+
+/** One per-epoch progress dict, stored and served verbatim by the daemon.
+ *  Every field is optional: the trainer owns this shape and may add to it. */
+export interface TrainingEpoch {
+  event?: string
+  status?: string
+  epoch?: number
+  epochs?: number
+  batches?: number
+  batches_total?: number
+  train_loss?: number
+  val_loss?: number
+  accuracy?: number
+  val_accuracy?: number
+  val_macro_precision?: number
+  val_macro_recall?: number
+  val_macro_f1?: number
+  lr?: number
+  elapsed_s?: number
+  device?: string
+  [k: string]: unknown
+}
+
+export interface TrainingPerClass {
+  class: string
+  precision: number
+  recall: number
+  f1: number
+  support: number
+}
+
+/** The terminal "done" metrics block (pass-through). */
+export interface TrainingFinal {
+  accuracy?: number
+  macro_precision?: number
+  macro_recall?: number
+  macro_f1?: number
+  train_loss?: number
+  val_loss?: number
+  test_loss?: number
+  epochs_run?: number
+  parameter_count?: number
+  elapsed_s?: number
+  device?: string
+  per_class?: TrainingPerClass[]
+  confusion?: number[][]
+  test?: {
+    accuracy?: number
+    macro_precision?: number
+    macro_recall?: number
+    macro_f1?: number
+    loss?: number
+    per_class?: TrainingPerClass[]
+    confusion?: number[][]
+  }
+  [k: string]: unknown
+}
+
+/** training.Run — GET /api/v1/training/{id}. */
+export interface TrainingRun {
+  id: string
+  name: string
+  status: TrainingStatus
+  recipe?: unknown
+  started_at: string
+  updated_at: string
+  finished_at?: string
+  trainer_version?: string
+  epochs_total: number
+  epoch: number
+  history: TrainingEpoch[]
+  final?: TrainingFinal
+  fail_reason?: string
+}
+
+/** GET /api/v1/training */
+export interface TrainingList {
+  runs: TrainingRun[]
+  history_cap: number
+  stale_after_seconds: number
+}

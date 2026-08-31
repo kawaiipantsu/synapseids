@@ -53,6 +53,11 @@ python -m synapse_trainer train \
     --data   ./data \
     --out    ./bundle \
     --name   flow-classifier-baseline
+
+# same, but stream live progress to a running synapsed for the training dashboard
+python -m synapse_trainer train \
+    --recipe trainer/examples/recipe.json --data ./data --out ./bundle \
+    --report-to http://127.0.0.1:8080        # or set $SYNAPSE_DAEMON_URL
 ```
 
 `--data` is the **dataset root** each `datasets[].id` resolves under (a single
@@ -151,6 +156,35 @@ provably disjoint —
 its companion `test_naive_mix_then_split_would_leak` shows the naive order does
 leak, so the assertion is not vacuous.
 
+## Live progress reporting (`--report-to`)
+
+The Go daemon never launches training (PROJECT.md §5.4). Instead `train` can
+*report* to a running `synapsed` so its `ML ▸ Training` dashboard shows the run
+live (§19.8; [ADR 0019](../docs/adr/0019-external-training-runs-reported-over-http.md)).
+
+```text
+--report-to http://127.0.0.1:8080     # or $SYNAPSE_DAEMON_URL; omit for no reporting
+```
+
+With it set, `synapse_trainer.progress.ProgressReporter` (stdlib
+`urllib.request`, no new dependency):
+
+1. `POST /api/v1/training` — registers `{name, recipe+mixture summary,
+   epochs_total, trainer_version}` and learns a `progress_url`;
+2. `POST <progress_url>` — one per-epoch dict (`epoch`, `batches`/`batches_total`,
+   `train_loss`, `val_loss`, `accuracy`, macro `precision`/`recall`/`f1`, `lr`,
+   `elapsed_s`, `device`), then the terminal `{"event":"done","metrics":{…}}`
+   dict carrying the per-class table, confusion matrix and held-out `test` block;
+3. `POST /api/v1/training/{id}/fail` with `{reason}` if training raises.
+
+**Every network call is best-effort.** A failed POST is logged to stderr and
+swallowed — a dashboard outage never interrupts or fails the training run, and
+without `--report-to` the reporter is a no-op and `train` behaves exactly as
+before. The daemon's write routes are loopback-only for now (issue #58), so
+report to a daemon on the same host (or through an SSH tunnel) until auth lands.
+`tests/test_progress.py` drives the whole flow against a stdlib `http.server`
+stub, including the swallow-on-failure guarantee (numpy-only, always runs).
+
 ## The bundle contract
 
 `export_bundle` always writes these five files. `metadata.json` and
@@ -240,7 +274,8 @@ output is a probability vector over `traffic-classes-v1`.
 | `mixture.py` | no | resolve `datasets[]` under `--data`, gate schema compatibility, split-per-dataset **then** weight/resample the train side, record provenance + imbalance warnings |
 | `train.py` | **yes** | build the MLP, train (optimizer/scheduler/early-stop/class-weighting), stream per-epoch progress, compute metrics (metrics helpers are numpy-only) |
 | `export.py` | export only | write the 5-file bundle; JSON builders are torch-free |
-| `cli.py` | `train` only | `synapse-trainer train` (`--dry-run`) / `inspect-recipe` / `inspect-arch` |
+| `progress.py` | no | `ProgressReporter` — stdlib-only HTTP client that reports a run to a running `synapsed` (register / per-epoch / done / fail); every call best-effort |
+| `cli.py` | `train` only | `synapse-trainer train` (`--dry-run` / `--report-to`) / `inspect-recipe` / `inspect-arch` |
 
 ## Tests
 

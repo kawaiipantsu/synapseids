@@ -663,6 +663,72 @@ derive and delete are written to `models.directory/audit.log` with
 live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
 (see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
 
+### GET /api/v1/training
+
+Every training run the daemon is mirroring, newest first. `?limit` caps the list
+(default 100, max 500).
+
+```json
+{
+  "runs": [ { "id": "20260831T123737Z-75549ac4", "name": "nightly", "status": "completed", "epoch": 3, "epochs_total": 3, "history": [ … ], "final": { … } } ],
+  "history_cap": 1000,
+  "stale_after_seconds": 900
+}
+```
+
+`status` is `running` | `completed` | `failed` | `stale`. A `running` run whose
+last progress update is older than `stale_after_seconds` reads back as `stale` —
+computed on read, never persisted; a later update clears it. With no training
+store wired this returns `{"runs": []}` rather than `503`.
+
+### GET /api/v1/training/{id}
+
+One run with its full `history` (per-epoch progress dicts, capped at
+`history_cap`, oldest dropped) and `final` (the trainer's terminal `done`
+metrics: accuracy, macro precision/recall/F1, per-class table, confusion matrix,
+held-out `test` block). **This is the endpoint the SPA polls**, every ~1.5 s
+while the run is `running`. `404` unknown id, `503` no training store wired.
+
+### POST /api/v1/training
+
+`synapse-trainer` registers a run. The Go daemon never launches training
+(PROJECT.md §5.4); the trainer runs elsewhere and reports here over HTTP
+([ADR 0019](adr/0019-external-training-runs-reported-over-http.md)).
+
+```json
+{ "name": "nightly", "recipe": { … }, "epochs_total": 50, "trainer_version": "0.1.0" }
+```
+
+`201 {"id": "…", "progress_url": "http://…/api/v1/training/{id}/progress"}`.
+`400` bad body, `503` no training store wired.
+
+### POST /api/v1/training/{id}/progress
+
+**One JSON object per request** (a single trailing newline is tolerated, so the
+trainer's JSON-line writer works unchanged). An epoch dict is appended to the
+run's `history`; a dict whose `"event"` is `"done"` finishes the run and stores
+its `"metrics"` object as `final`.
+
+`202`. `400` body is not a JSON object, `404` unknown id, `409` the run has
+already finished, `503` no training store wired.
+
+### POST /api/v1/training/{id}/fail
+
+`{ "reason": "cuda oom" }` → `202`, marks the run `failed`. `404` / `409` / `503`
+as above.
+
+### Training routes are state-changing and unauthenticated
+
+The three `POST /api/v1/training*` routes inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same
+as `POST /api/v1/datasets` and model activation — a trainer on another host would
+need a bearer token or mTLS. `TrainingStarted` / `TrainingCompleted` /
+`TrainingFailed` are written to `models.directory/audit.log` with
+`subject_type: "training"`. There is deliberately no `Training*` event on the
+live bus: `event-envelope-v1`'s type enum is frozen and has no such member (see
+[ADR 0019](adr/0019-external-training-runs-reported-over-http.md)); the dashboard
+updates by polling `GET /api/v1/training/{id}` instead.
+
 ### GET /api/v1/schemas/features
 
 The frozen `flow-features-v1` document, served verbatim from the embedded

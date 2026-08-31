@@ -40,11 +40,22 @@ const (
 	EventDatasetDeleted = "DatasetDeleted"
 )
 
-// Subject types. Every record names what kind of thing it is about, so one log
-// can carry model and dataset lifecycle without ambiguity.
+// Event names for the training-run audit log (PROJECT.md §19.8, §21, §28.15;
+// ADR 0019). A training run is an external process that reports to the daemon
+// over HTTP; these lines are the durable record since event-envelope-v1 has no
+// Training* member and is frozen — nothing is published on the event bus.
 const (
-	SubjectModel   = "model"
-	SubjectDataset = "dataset"
+	EventTrainingStarted   = "TrainingStarted"
+	EventTrainingCompleted = "TrainingCompleted"
+	EventTrainingFailed    = "TrainingFailed"
+)
+
+// Subject types. Every record names what kind of thing it is about, so one log
+// can carry model, dataset and training-run lifecycle without ambiguity.
+const (
+	SubjectModel    = "model"
+	SubjectDataset  = "dataset"
+	SubjectTraining = "training"
 )
 
 // ActorLocal is the only actor value for now: the daemon has no authentication

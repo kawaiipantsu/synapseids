@@ -1,6 +1,6 @@
 """``synapse-trainer`` command-line entry point.
 
-    synapse-trainer train --recipe FILE --data DIR --out DIR [--name N] [--progress-url URL] [--dry-run]
+    synapse-trainer train --recipe FILE --data DIR --out DIR [--name N] [--report-to URL] [--progress-url URL] [--dry-run]
     synapse-trainer inspect-recipe --recipe FILE --data DIR [--json]
     synapse-trainer inspect-arch --recipe FILE
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -98,6 +99,28 @@ def _cmd_train(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # Live progress reporting to a running synapsed (PROJECT.md §19.8; ADR 0019).
+    # --report-to (or $SYNAPSE_DAEMON_URL) turns it on; without it the reporter is
+    # a no-op and training runs exactly as before. Registration and every POST
+    # are best-effort — a dashboard outage must not lose a model.
+    from .progress import ProgressReporter
+
+    reporter = ProgressReporter(
+        args.report_to,
+        logf=(None if args.quiet else lambda m: print(m, file=sys.stderr)),
+    )
+    reporter.start(
+        name=args.name or recipe.name,
+        recipe={"recipe": recipe.to_json(), "mixture": mixture.to_json()},
+        epochs_total=recipe.epochs,
+        trainer_version=__version__,
+    )
+
+    def _on_epoch(m: dict) -> None:
+        if not args.quiet:
+            _print_epoch(m)
+        reporter.handle(m)
+
     try:
         model, metrics = run_training(
             recipe.architecture,
@@ -109,11 +132,15 @@ def _cmd_train(args: argparse.Namespace) -> int:
             Xte_n if len(Xte) else None,
             yte if len(Xte) else None,
             progress_url=args.progress_url,
-            on_epoch=lambda m: _print_epoch(m) if not args.quiet else None,
+            on_epoch=_on_epoch,
         )
     except RuntimeError as exc:
+        reporter.fail(str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # pragma: no cover - defensive: still report the death
+        reporter.fail(f"{type(exc).__name__}: {exc}")
+        raise
 
     from .export import export_bundle
 
@@ -172,7 +199,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     t.add_argument("--out", required=True, help="output directory for the bundle")
     t.add_argument("--name", default=None, help="model name (defaults to the recipe's name)")
-    t.add_argument("--progress-url", default=None, help="POST per-epoch JSON lines here")
+    t.add_argument(
+        "--report-to",
+        default=os.environ.get("SYNAPSE_DAEMON_URL"),
+        metavar="DAEMON_URL",
+        help=(
+            "base URL of a running synapsed (e.g. http://127.0.0.1:8080); the run "
+            "registers there and streams live progress for the training dashboard. "
+            "Defaults to $SYNAPSE_DAEMON_URL. Omit for no reporting."
+        ),
+    )
+    t.add_argument(
+        "--progress-url",
+        default=None,
+        help="low-level: also POST each per-epoch JSON object to this exact URL",
+    )
     t.add_argument("--quiet", action="store_true", help="suppress the mixture plan and per-epoch output")
     t.add_argument(
         "--dry-run",
