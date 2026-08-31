@@ -1,14 +1,19 @@
 <?xml version="1.0"?>
 <!--
-    forms/dialogSensor.xml - form definition for Services -> SynapseIDS Sensor.
+    forms/dialogSensor.xml - the SHARED settings on Services -> SynapseIDS Sensor.
 
     Copyright (C) 2026 SynapseIDS contributors
     All rights reserved. BSD 2-Clause; see Sensor.php for the full text.
 
     Field ids are "<internalModelName>.<model path>", where internalModelName is
-    'sensor' as declared in Api\SettingsController.  The order below is the order
-    the operator reads: what to run, what to capture, where to send it, how to
-    secure it, and finally the authorisation assertion.
+    'sensor' as declared in Api\SettingsController.
+
+    Everything that describes a CAPTURE moved to forms/dialogInstance.xml when
+    the plugin became one process per interface (issue #124): interface, filter,
+    direction, promiscuous, snaplen, what to send, sensor id, location and the
+    authorisation assertion are all per instance now. What is left here is the
+    part there is exactly one of - the collector this firewall talks to and the
+    credentials it presents.
 -->
 <form>
     <field>
@@ -17,81 +22,13 @@
     </field>
     <field>
         <id>sensor.general.enabled</id>
-        <label>Enable sensor</label>
-        <type>checkbox</type>
-        <help>Start synapse-sensor at boot and keep it running.</help>
-    </field>
-    <field>
-        <id>sensor.general.sensor_id</id>
-        <label>Sensor ID</label>
-        <type>text</type>
-        <help>Identifier reported to the daemon (--sensor-id). Shown in the SynapseIDS capture-sources view.</help>
-    </field>
-    <field>
-        <id>sensor.general.location</id>
-        <label>Location</label>
-        <type>text</type>
-        <help>Free-form location label reported to the daemon (--location), e.g. "hq-rack-2".</help>
-    </field>
-
-    <field>
-        <type>header</type>
-        <label>Capture</label>
-    </field>
-    <field>
-        <id>sensor.general.interface</id>
-        <label>Interface</label>
-        <type>select_multiple</type>
-        <style>selectpicker</style>
-        <help>
-            Interface to capture from - normally WAN. Only the first selected interface is used:
-            one synapse-sensor process captures one device (--iface).
-        </help>
-    </field>
-    <field>
-        <id>sensor.general.filter</id>
-        <label>Capture filter</label>
-        <type>dropdown</type>
-        <style>selectpicker</style>
-        <help>Built-in filter preset (--filter). Leave on "All traffic" to capture every frame the interface sees.</help>
-    </field>
-    <field>
-        <id>sensor.general.direction</id>
-        <label>Direction</label>
-        <type>dropdown</type>
-        <style>selectpicker</style>
-        <help>Which direction of traffic to hand to the BPF device (--direction).</help>
-    </field>
-    <field>
-        <id>sensor.general.send_mode</id>
-        <label>Send</label>
-        <type>dropdown</type>
-        <style>selectpicker</style>
-        <help>
-            How much of the analysis runs here on the firewall, and therefore how much crosses the link
-            (--mode). "Raw packets" streams every frame. "Flow records" aggregates flows here and sends one
-            record per flow — around 1.5% of the raw bandwidth on ordinary traffic. "Feature vectors only"
-            also computes the 48 features here and sends nothing else, so &lt;b&gt;no packet content ever leaves
-            this firewall&lt;/b&gt; — around 1.9% of the raw bandwidth. The classifications are identical in all
-            three modes. The two record modes need a SynapseIDS daemon that speaks SYNPOIP v2; an older one
-            refuses the connection rather than silently falling back to sending packets.
-        </help>
-    </field>
-    <field>
-        <id>sensor.general.promiscuous</id>
-        <label>Promiscuous mode</label>
+        <label>Enable sensors</label>
         <type>checkbox</type>
         <help>
-            Also capture frames not addressed to this firewall (--promisc). Required when the interface is
-            fed from a SPAN/mirror port.
+            Master switch. Start the configured sensor instances at boot and keep them running. Each instance
+            also has its own enable checkbox, so a single segment can be taken out of service without
+            disturbing the others.
         </help>
-    </field>
-    <field>
-        <id>sensor.general.snaplen</id>
-        <label>Snap length</label>
-        <type>text</type>
-        <help>Bytes captured per frame (--snaplen). 262144 keeps whole frames; lower it only to save bandwidth.</help>
-        <advanced>true</advanced>
     </field>
 
     <field>
@@ -104,33 +41,27 @@
         <type>dropdown</type>
         <style>selectpicker</style>
         <help>
-            Listen: this firewall is the TLS server and the SynapseIDS daemon dials in (--listen).
-            Connect: this firewall dials the daemon, which works when the firewall is behind NAT (--connect).
-        </help>
-    </field>
-    <field>
-        <id>sensor.general.listen_address</id>
-        <label>Listen address</label>
-        <type>text</type>
-        <help>
-            Listen mode only: host:port the sensor binds (--listen). Restrict this to the management
-            interface address and add a firewall rule; do not expose it to the internet.
+            Listen: this firewall is the TLS server and the SynapseIDS daemon dials in (--listen). Each
+            instance is a separate process and needs its own listen port, which is set on the instance.
+            Connect: this firewall dials the daemon, which works when the firewall is behind NAT (--connect);
+            every instance dials the one collector address below and identifies itself by its own sensor ID.
         </help>
     </field>
     <field>
         <id>sensor.general.address</id>
         <label>Collector address</label>
         <type>text</type>
-        <help>Connect mode only: host:port of the SynapseIDS collector to dial (--connect).</help>
+        <help>Connect mode only: host:port of the SynapseIDS collector every instance dials (--connect).</help>
     </field>
     <field>
         <id>sensor.general.token</id>
         <label>Bearer token</label>
         <type>password</type>
         <help>
-            Shared secret that authenticates the SYNPOIP stream. It is written to a root-only file
-            (/usr/local/etc/synapseids/sensor.token, mode 0400) and passed as --token-file; it is never
-            placed on a command line and never appears in the log.
+            Shared secret that authenticates every SYNPOIP stream from this firewall. It is written to a
+            root-only file (/usr/local/etc/synapseids/sensor.token, mode 0400) and passed as --token-file; it
+            is never placed on a command line and never appears in a log. One token for the firewall, not one
+            per instance: the instances are distinguished by their sensor IDs, not by their credentials.
         </help>
     </field>
 
@@ -143,8 +74,9 @@
         <label>Verify collector certificate</label>
         <type>checkbox</type>
         <help>
-            Connect mode only. When unchecked the sensor runs with --insecure-tls and any host that answers
-            on the collector address can read your traffic. Requires the authorisation confirmation below.
+            Connect mode only. When unchecked every instance runs with --insecure-tls and any host that
+            answers on the collector address can read your traffic. Requires the authorisation confirmation on
+            each enabled instance.
         </help>
     </field>
     <field>
@@ -169,9 +101,9 @@
         <style>formcontrol</style>
         <height>5</height>
         <help>
-            This sensor's own certificate (--cert). In listen mode it is the TLS server certificate; in connect
-            mode it is the mutual-TLS client certificate. Leave both this and the key empty to let the sensor
-            generate a self-signed certificate in memory (lab use only).
+            This firewall's own certificate (--cert), used by every instance. In listen mode it is the TLS
+            server certificate; in connect mode it is the mutual-TLS client certificate. Leave both this and
+            the key empty to let each sensor generate a self-signed certificate in memory (lab use only).
             Saved to /usr/local/etc/synapseids/sensor-cert.pem (0444 root:wheel). A single PEM CERTIFICATE
             block; put any intermediates in the CA field above.
         </help>
@@ -184,30 +116,16 @@
         <style>formcontrol</style>
         <height>5</height>
         <help>
-            Private key belonging to the certificate above (--key). It must be unencrypted: the sensor runs
+            Private key belonging to the certificate above (--key). It must be unencrypted: the sensors run
             unattended and cannot be prompted for a passphrase, so an encrypted key is refused here rather
             than failing at start-up. Saving verifies that it parses and that it really matches the
             certificate above.
             Saved to /usr/local/etc/synapseids/sensor-key.pem, mode 0400 owned by _synapseids, tightened
-            immediately after rendering and re-checked before every start. It is never written to sensor.conf,
-            never passed on a command line and never logged. If it is missing, empty or unparseable the
-            service refuses to start and names the path; it never falls back to an unverified transport.
+            immediately after rendering and re-checked before every start. It is never written to a rendered
+            configuration, never passed on a command line and never logged. If it is missing, empty or
+            unparseable the service refuses to start and names the path; it never falls back to an unverified
+            transport.
         </help>
         <advanced>true</advanced>
-    </field>
-
-    <field>
-        <type>header</type>
-        <label>Authorisation</label>
-    </field>
-    <field>
-        <id>sensor.general.authorized</id>
-        <label>I am authorised to monitor this traffic</label>
-        <type>checkbox</type>
-        <help>
-            Required before the sensor can be enabled. synapse-sensor refuses live capture without
-            --authorized (PROJECT.md 28.18). Only monitor networks you own or have written permission
-            to monitor.
-        </help>
     </field>
 </form>

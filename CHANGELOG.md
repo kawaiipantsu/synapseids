@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OPNsense plugin: one sensor process per interface** (issue #124,
+  [ADR 0030](docs/adr/0030-opnsense-one-sensor-process-per-interface.md)). The
+  plugin ran exactly one sensor on exactly one interface. On a live gateway an
+  operator selected WAN, IoT, DMZ and MGMT in what was then a multi-select and
+  got a single VLAN captured: three segments believed monitored, none of them
+  reporting the difference. PR #132 made the field honest; this makes the plugin
+  able to do what was asked of it.
+  - **Services → SynapseIDS Sensor now holds a list of sensor instances**, one
+    per interface, as a grid with an edit dialog — the core `ArrayField` idiom,
+    copied from `System > Settings > Cron`. Each instance has its own interface,
+    **its own sensor identity**, its own location, its own capture settings
+    (`filter`, `direction`, promiscuous, snaplen, **`send_mode`**), its own listen
+    port, its own rendered configuration, its own pidfile and its own log.
+  - **One process per interface was chosen over merging interfaces into one
+    process** because it gives correct attribution with no protocol change: a
+    packet routed between two monitored segments is legitimately reported twice,
+    by two *named* sensors, instead of two observations silently merging into one
+    flow. The daemon, SYNPOIP and every schema are unchanged.
+  - **Authorisation is per instance and is never inherited** (PROJECT.md §28.18).
+    Being authorised to monitor the WAN uplink is not being authorised to monitor
+    a tenant VLAN, so the assertion is required per instance, is never copied when
+    an instance is added, and is not set by the grid's enable toggle.
+  - **`service synapseids_sensor <verb> [instance]`** — the FreeBSD profile-list
+    idiom (`openvpn`, `nginx`), so every verb works for all instances or one
+    named one, and so does `configctl synapseidssensor <action> [instance]`.
+    Stopping or restarting also sweeps the pidfile of an instance that has been
+    deleted, which would otherwise keep capturing a segment the operator believes
+    they stopped monitoring.
+  - **The selftest is per instance**: the same one-line-per-check output, with the
+    instance name in its own column, so `selftest | grep FAIL` on a firewall with
+    four sensors says *which* one is broken. `synapse-sensor doctor` itself is
+    unchanged — each instance's rendered configuration deliberately carries the
+    same variable names the single-sensor file did.
+  - **An existing configuration is migrated, not lost.** Model 1.0.0 → 1.0.1 with
+    a real OPNsense model migration, run from the package's `post-install`: the
+    interface that was being captured comes back as an enabled, authorised
+    instance with all of its settings; any further interfaces that the old
+    multi-select accepted but never actually captured come back **disabled and
+    unauthorised**, named and visible, for the operator to review.
+
 - **LIVE ▸ Detections — the deduplicated alert feed in the SPA** (the UI half of
   issue #117, built alongside #118). A real filterable view where `#/detections`
   used to be a placeholder: severity, class, occurrence **count**, the 5-tuple,
@@ -344,6 +384,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OPNsense plugin: `helpers.physical_interface()` was trusted to signal
+  failure, and does not.** The core helper is
+  `getNodeByTag('interfaces.'+name+'.if') or name`, so an unresolvable interface
+  identifier comes back *unchanged* — the configd template would have emitted
+  `--iface wan`, a plausible-looking device name that binds to nothing. The
+  fallback lookup now treats a result equal to the identifier as "not found", and
+  the template harness models the helper's real behaviour rather than an imagined
+  empty return. (The `rc.d` `ifconfig` check already refused to start in that
+  state, so this was a wrong diagnosis rather than a silent mis-capture.)
+- **OPNsense plugin: the template harness was not rendering the way configd
+  does.** It used `lstrip_blocks`, `keep_trailing_newline` and `StrictUndefined`,
+  none of which configd sets, and lacked the `do`/`loopcontrols` extensions and
+  the filters configd registers. It now uses configd's `Environment` verbatim,
+  reproduces its trailing-newline fixup, reimplements its `+TARGETS` per-item
+  expansion, and asserts the render for 0, 1 and 4 instances — the single-instance
+  case matters because `config.xml` stores one repeating element as a dict and
+  several as a list.
 - **A `raw`-mode sensor lost 63% of frames to BPF kernel drops because it wrote
   one TLS record — and one syscall — per captured packet** (issue #127;
   [ADR 0029](docs/adr/0029-synpoip-batched-sensor-writes.md)). On an OPNsense WAN

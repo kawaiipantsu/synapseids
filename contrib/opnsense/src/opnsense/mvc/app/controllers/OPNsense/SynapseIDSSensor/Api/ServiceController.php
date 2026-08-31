@@ -80,7 +80,151 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected static $internalServiceName = 'synapseidssensor';
 
     /**
-     * Tail of /var/log/synapseids/sensor.log.
+     * Instance name accepted on a configd command line.
+     *
+     * configd already single-quotes every parameter, so this is not about shell
+     * quoting; it is about a name like "../../etc" turning the log endpoint into
+     * an arbitrary-file reader. The pattern is the model's own Mask, so anything
+     * that could have been saved passes and anything else becomes "" -- which
+     * every action reads as "all instances".
+     *
+     * @param mixed $value raw parameter from the request
+     * @return string the validated name, or '' for all instances
+     */
+    private function instanceParam($value): string
+    {
+        $name = trim((string)$value);
+        return preg_match('/^[a-zA-Z0-9_]{1,32}$/', $name) === 1 ? $name : '';
+    }
+
+    /**
+     * Build the configd command, appending the instance only when there is one.
+     *
+     * @param string $action configd action name
+     * @param mixed  $inst   requested instance, unvalidated
+     * @return string
+     */
+    private function configdCommand(string $action, $inst): string
+    {
+        $name = $this->instanceParam($inst);
+        return $name === '' ? 'synapseidssensor ' . $action : 'synapseidssensor ' . $action . ' ' . $name;
+    }
+
+    /**
+     * Per-instance service control (issue #124).
+     *
+     * The base class's start/stop/restart still act on the whole plugin, which
+     * is what the page's main buttons want. These four are the per-instance
+     * equivalents, and they exist because taking one segment out of service
+     * should not interrupt the capture of the other three.
+     *
+     * @param string|null $instance instance name
+     * @return array {"status": "ok", "response": "..."}
+     */
+    public function instanceStartAction($instance = null)
+    {
+        return $this->instanceAction('start', $instance);
+    }
+
+    /**
+     * @param string|null $instance instance name
+     * @return array
+     */
+    public function instanceStopAction($instance = null)
+    {
+        return $this->instanceAction('stop', $instance);
+    }
+
+    /**
+     * @param string|null $instance instance name
+     * @return array
+     */
+    public function instanceRestartAction($instance = null)
+    {
+        return $this->instanceAction('restart', $instance);
+    }
+
+    /**
+     * @param string|null $instance instance name
+     * @return array
+     */
+    public function instanceStatusAction($instance = null)
+    {
+        return $this->instanceAction('status', $instance);
+    }
+
+    /**
+     * @param string      $action   configd action
+     * @param string|null $instance instance name
+     * @return array
+     */
+    private function instanceAction(string $action, $instance): array
+    {
+        $name = $this->instanceParam($instance);
+        if ($name === '') {
+            return ['status' => 'failed', 'response' => gettext('A sensor instance name is required.')];
+        }
+        $this->sessionClose();
+        $out = (string)(new Backend())->configdRun('synapseidssensor ' . $action . ' ' . $name);
+        return ['status' => 'ok', 'instance' => $name, 'response' => trim($out)];
+    }
+
+    /**
+     * Per-instance running state, for the settings page.
+     *
+     * The core service widget reduces the whole plugin to one word, and with
+     * four sensor processes that word is wrong more often than it is right: one
+     * stopped instance reports the entire service as stopped, and -- far worse
+     * for this plugin in particular -- three stopped instances alongside one
+     * running one could read as healthy on a widget that latched onto the first
+     * "is running" line. So the page shows the breakdown, and it comes from
+     * here: one entry per configured instance, with the rc.d script's own
+     * answer for each.
+     *
+     * @return array {"status":"ok","instances":[{"name":..,"enabled":..,"state":..}, ...]}
+     */
+    public function instancesAction()
+    {
+        $this->sessionClose();
+
+        $model = new \OPNsense\SynapseIDSSensor\Sensor();
+        $backend = new Backend();
+        $out = [];
+
+        foreach ($model->instances->instance->iterateItems() as $node) {
+            $name = $this->instanceParam((string)$node->name);
+            if ($name === '') {
+                continue;
+            }
+            $text = (string)$backend->configdRun('synapseidssensor status ' . $name);
+            $state = 'unknown';
+            if (stripos($text, 'is running') !== false) {
+                $state = 'running';
+            } elseif (stripos($text, 'not running') !== false) {
+                $state = 'stopped';
+            }
+            if ((string)$node->enabled !== '1') {
+                // A disabled instance that is not running is the expected state,
+                // not a fault; saying "stopped" next to three "running" rows
+                // reads as a problem and sends people looking for one.
+                $state = $state === 'running' ? 'running' : 'disabled';
+            }
+            $out[] = [
+                'name' => $name,
+                'enabled' => (string)$node->enabled === '1',
+                'authorized' => (string)$node->authorized === '1',
+                'interface' => (string)$node->interface,
+                'sensor_id' => (string)$node->sensor_id,
+                'state' => $state,
+            ];
+        }
+
+        return ['status' => 'ok', 'instances' => $out];
+    }
+
+    /**
+     * Tail of /var/log/synapseids/<instance>/sensor.log, or of every instance's
+     * log when no instance is named.
      *
      * The bearer token cannot appear here: synapse-sensor reads it from
      * --token-file and never logs its value, and the rc.d wrapper never echoes
@@ -88,9 +232,10 @@ class ServiceController extends ApiMutableServiceControllerBase
      * from the returned text before it leaves the API, so a future logging
      * regression on the Go side cannot turn this endpoint into a token oracle.
      *
+     * @param string|null $instance instance name, or null for every instance
      * @return array {"status": "ok", "log": "..."}
      */
-    public function logAction()
+    public function logAction($instance = null)
     {
         if (!$this->request->isGet() && !$this->request->isPost()) {
             return ['status' => 'failed', 'log' => ''];
@@ -99,7 +244,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         $this->sessionClose();
 
         $backend = new Backend();
-        $log = (string)$backend->configdRun('synapseidssensor log');
+        $log = (string)$backend->configdRun($this->configdCommand('log', $instance));
 
         // The model is instantiated directly rather than through a base-class
         // helper.  ApiMutableServiceControllerBase does expose a getModel(), but
@@ -124,14 +269,19 @@ class ServiceController extends ApiMutableServiceControllerBase
      * material parses and the key pair matches, and that the collector answers a
      * TCP connect.  One `[ OK ]` / `[WARN]` / `[FAIL]` / `[SKIP]` line each.
      *
+     * With no instance name it runs for every configured instance and prints the
+     * instance in its own column on every line, so `grep FAIL` on the output
+     * still says WHICH sensor is broken; with one it checks only that instance.
+     *
      * The command is read-only and prints no secrets -- only paths, modes and
      * certificate subjects.  The configured token is nevertheless redacted from
      * the response, exactly as in logAction(), so that a future change to the
      * selftest output can never turn this endpoint into a token oracle.
      *
+     * @param string|null $instance instance name, or null for every instance
      * @return array {"status": "ok", "output": "..."}
      */
-    public function selftestAction()
+    public function selftestAction($instance = null)
     {
         if (!$this->request->isGet() && !$this->request->isPost()) {
             return ['status' => 'failed', 'output' => ''];
@@ -140,7 +290,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         $this->sessionClose();
 
         $backend = new Backend();
-        $output = (string)$backend->configdRun('synapseidssensor selftest');
+        $output = (string)$backend->configdRun($this->configdCommand('selftest', $instance));
 
         $token = trim((string)(new \OPNsense\SynapseIDSSensor\Sensor())->general->token);
         if ($token !== '') {

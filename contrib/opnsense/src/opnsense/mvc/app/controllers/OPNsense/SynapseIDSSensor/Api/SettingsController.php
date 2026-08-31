@@ -88,6 +88,90 @@ class SettingsController extends ApiMutableModelControllerBase
     }
 
     /**
+     * Grid backing for the sensor instances (issue #124).
+     *
+     * These are the stock ArrayField wrappers from ApiMutableModelControllerBase
+     * -- searchBase/getBase/addBase/setBase/delBase/toggleBase -- exactly as
+     * every core page with a repeating item uses them (System > Settings > Cron
+     * is the reference). Nothing here is bespoke, so nothing here can be
+     * bespokely wrong: the item dialog, its validation messages and its
+     * highlighting all come from the same machinery as the rest of the GUI.
+     *
+     * Validation lives in Sensor::performValidation, which the base class calls
+     * for every one of these; it reports per-instance problems against
+     * `instances.instance.<uuid>.<field>` so the dialog highlights the right box
+     * (validate() rewrites that reference to the dialog's own prefix).
+     *
+     * A save through any of these does NOT re-render or restart anything: the
+     * page calls settings/set afterwards, which is the single place the whole
+     * reconfigure cycle happens. Rendering per row would restart every capture
+     * on the box each time a checkbox moved.
+     *
+     * @return array
+     */
+    public function searchInstanceAction()
+    {
+        return $this->searchBase(
+            'instances.instance',
+            ['enabled', 'name', 'interface', 'sensor_id', 'location', 'send_mode', 'authorized', 'description'],
+            'name'
+        );
+    }
+
+    /**
+     * @param string|null $uuid instance to read, or null for a new one
+     * @return array
+     */
+    public function getInstanceAction($uuid = null)
+    {
+        return $this->getBase('instance', 'instances.instance', $uuid);
+    }
+
+    /**
+     * @return array
+     */
+    public function addInstanceAction()
+    {
+        return $this->addBase('instance', 'instances.instance');
+    }
+
+    /**
+     * @param string $uuid instance to update
+     * @return array
+     */
+    public function setInstanceAction($uuid)
+    {
+        return $this->setBase('instance', 'instances.instance', $uuid);
+    }
+
+    /**
+     * @param string $uuid instance to remove
+     * @return array
+     */
+    public function delInstanceAction($uuid)
+    {
+        return $this->delBase('instances.instance', $uuid);
+    }
+
+    /**
+     * Enable/disable an instance from the grid.
+     *
+     * Note what this deliberately does NOT do: it never touches `authorized`.
+     * Enabling a capture and asserting authorisation for the segment it captures
+     * are two different decisions (PROJECT.md §28.18), so a row that has never
+     * been authorised fails validation here and the operator is sent to the
+     * dialog to make that assertion explicitly.
+     *
+     * @param string      $uuid    instance to toggle
+     * @param string|null $enabled explicit target state, or null to flip
+     * @return array
+     */
+    public function toggleInstanceAction($uuid, $enabled = null)
+    {
+        return $this->toggleBase('instances.instance', $uuid, $enabled);
+    }
+
+    /**
      * Persist the settings and apply them.
      *
      * @return array {"result": "saved"} or {"result": "failed", "validations": {...}}
@@ -138,15 +222,20 @@ class SettingsController extends ApiMutableModelControllerBase
         $backend = new Backend();
         $steps = [];
 
-        // Renders all five targets under /usr/local/etc/synapseids/:
-        // sensor.conf, sensor.token, sensor-ca.pem, sensor-cert.pem and
-        // sensor-key.pem (issue #104).
+        // Renders every target under /usr/local/etc/synapseids/: the instance
+        // index sensor.conf, ONE instances/<name>.conf PER SENSOR INSTANCE
+        // (issue #124), sensor.token, sensor-ca.pem, sensor-cert.pem and
+        // sensor-key.pem (issue #104). configd expands the per-instance target
+        // itself from the bracketed tag in +TARGETS, so there is nothing to
+        // iterate here.
         $steps['template'] = trim($backend->configdRun('template reload OPNsense/SynapseIDSSensor'));
 
         // Templates land as root:wheel 0644 under configd's umask. The two
         // secrets -- the bearer token and the TLS private key -- must not stay
         // that way for even a moment longer than necessary, so this runs
-        // immediately, before the service is touched.
+        // immediately, before the service is touched. It also creates the
+        // per-instance log directories and removes the rendered configuration of
+        // any instance that was just renamed or deleted.
         $steps['fixperms'] = trim($backend->configdRun('synapseidssensor fixperms'));
 
         $enabled = (string)$this->getModel()->general->enabled === '1';

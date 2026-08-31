@@ -39,6 +39,11 @@ Thumbs.db
 *.swp
 *~
 
+# Python bytecode, from the trainer and from the OPNsense template harness
+# (contrib/opnsense/tools/render-templates.py is imported by the smoke checks).
+__pycache__/
+*.pyc
+
 # Python trainer (trainer/)
 trainer/.venv/
 trainer/**/__pycache__/

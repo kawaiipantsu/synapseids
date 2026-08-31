@@ -53,9 +53,18 @@ class SettingsController extends IndexController
     {
         $this->view->title = gettext('SynapseIDS Sensor');
 
-        // Form definition lives in forms/dialogSensor.xml next to this file.
-        // getForm() resolves it relative to the controller directory.
+        // Form definitions live in forms/ next to this file; getForm() resolves
+        // them relative to the controller directory.
+        //
+        //   dialogSensor    the settings there is exactly one of: the collector
+        //                   this firewall talks to and the credentials it uses
+        //   dialogInstance  one capture, edited from the grid. Since issue #124
+        //                   the firewall runs one synapse-sensor process per
+        //                   interface, so this is where the interface, the
+        //                   sensor identity and the per-segment authorisation
+        //                   assertion live.
         $this->view->formDialogSensor = $this->getForm('dialogSensor');
+        $this->view->formDialogInstance = $this->getForm('dialogInstance');
 
         $this->view->pick('OPNsense/SynapseIDSSensor/index');
     }

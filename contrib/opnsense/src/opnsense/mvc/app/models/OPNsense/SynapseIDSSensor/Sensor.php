@@ -34,16 +34,19 @@ use Phalcon\Messages\Message;
 /**
  * Class Sensor
  *
- * Configuration model for the SynapseIDS distributed capture sensor
- * (`synapse-sensor pcap-over-ip`) running on this firewall.
+ * Configuration model for the SynapseIDS distributed capture sensors
+ * (`synapse-sensor pcap-over-ip`) running on this firewall: one process per
+ * captured interface, sharing one transport and one set of secrets.
  *
  * Per-field syntax is declared in Sensor.xml.  This class only adds the
- * *cross-field* rules that a single field cannot express, and mirrors the
- * refusals that the Go binary itself would make at start-up so the operator
- * gets them in the web UI instead of in a log file:
+ * *cross-field* and *cross-instance* rules that a single field cannot express,
+ * and mirrors the refusals that the Go binary itself would make at start-up so
+ * the operator gets them in the web UI instead of in a log file:
  *
- *   - live capture requires an explicit authorization assertion (PROJECT.md
- *     section 28.18 -- `--authorized` is mandatory whenever `--iface` is used);
+ *   - live capture requires an explicit authorization assertion, PER INSTANCE
+ *     (PROJECT.md section 28.18 -- `--authorized` is mandatory whenever
+ *     `--iface` is used, and authorisation for one segment is not authorisation
+ *     for another);
  *   - `--connect` needs a collector address;
  *   - disabling peer verification (`--insecure-tls`) additionally requires the
  *     authorization assertion;
@@ -51,6 +54,19 @@ use Phalcon\Messages\Message;
  *     handshake", which must be a conscious choice;
  *   - a client certificate and its private key are all-or-nothing
  *     (`--cert` and `--key` must be given together).
+ *
+ * The rules that only exist because there is now more than one sensor are all
+ * uniqueness rules, and every one of them protects against a silently
+ * unmonitored segment rather than against a cosmetic clash:
+ *
+ *   - two instances with the same NAME would render to the same configuration
+ *     file, the same pidfile and the same log directory, so one of the two would
+ *     simply never run;
+ *   - two instances with the same LISTEN ADDRESS cannot both bind, so the second
+ *     process to start dies with "address already in use";
+ *   - two instances with the same SENSOR ID destroy the attribution that having
+ *     one process per interface exists to provide;
+ *   - two instances on the same INTERFACE double every flow on that segment.
  *
  * @package OPNsense\SynapseIDSSensor
  */
@@ -92,7 +108,40 @@ class Sensor extends BaseModel
     }
 
     /**
-     * Cross-field validation, run on every save.
+     * Read a leaf of an instance node as a trimmed string.
+     *
+     * @param mixed  $node instance node
+     * @param string $name leaf name
+     * @return string
+     */
+    private function inst($node, string $name): string
+    {
+        if (!isset($node->$name)) {
+            return '';
+        }
+        $leaf = $node->$name;
+        return $leaf === null ? '' : trim((string)$leaf);
+    }
+
+    /**
+     * Model reference of an instance node, used as the message key so that the
+     * grid dialog highlights the right field.  ApiMutableModelControllerBase
+     * rewrites `instances.instance.<uuid>.x` to `instance.x` for a per-item
+     * save and drops every message outside the node being edited, which is
+     * exactly the behaviour wanted here.
+     *
+     * @param mixed  $node  instance node
+     * @param string $field leaf name
+     * @return string
+     */
+    private function ref($node, string $field): string
+    {
+        $reference = isset($node->__reference) ? (string)$node->__reference : 'instances.instance';
+        return $reference . '.' . $field;
+    }
+
+    /**
+     * Cross-field and cross-instance validation, run on every save.
      *
      * @param bool $validateFullModel validate every node instead of only the changed ones
      * @return \Phalcon\Messages\Messages
@@ -102,59 +151,43 @@ class Sensor extends BaseModel
         $messages = parent::performValidation($validateFullModel);
 
         $enabled     = $this->str('enabled') === '1';
-        $authorized  = $this->str('authorized') === '1';
         $verifyPeer  = $this->str('verify_peer') === '1';
         $mode        = $this->str('mode');
-        $interface   = $this->str('interface');
         $address     = $this->str('address');
         $token       = $this->str('token');
         $clientCert  = $this->str('client_cert');
         $clientKey   = $this->str('client_key');
 
+        $instances = [];
+        foreach ($this->instances->instance->iterateItems() as $node) {
+            $instances[] = $node;
+        }
+        $enabledInstances = [];
+        foreach ($instances as $node) {
+            if ($this->inst($node, 'enabled') === '1') {
+                $enabledInstances[] = $node;
+            }
+        }
+
         if ($enabled) {
-            // PROJECT.md section 28.18 / section 21: capturing live traffic is an
-            // authorization decision.  synapse-sensor refuses to start without
-            // --authorized when --iface is set, so refuse it here first.
-            if (!$authorized) {
+            if ($enabledInstances === []) {
                 $this->addError(
                     $messages,
-                    'general.authorized',
+                    'general.enabled',
                     gettext(
-                        'You must confirm that you are authorised to monitor the traffic on the selected ' .
-                        'interface before the sensor can be enabled (PROJECT.md 28.18).'
+                        'The plugin is enabled but no capture instance is. Add one sensor instance per ' .
+                        'interface you want monitored, or turn the plugin off; a sensor with nothing to ' .
+                        'capture reports healthy and monitors nothing.'
                     )
                 );
             }
 
-            if ($interface === '') {
+            if ($mode === 'connect' && $address === '') {
                 $this->addError(
                     $messages,
-                    'general.interface',
-                    gettext('Select the interface to capture from; the sensor has no traffic source without it.')
+                    'general.address',
+                    gettext('In connect mode the address (host:port) of the SynapseIDS collector is required.')
                 );
-            }
-
-            if ($mode === 'connect') {
-                if ($address === '') {
-                    $this->addError(
-                        $messages,
-                        'general.address',
-                        gettext('In connect mode the address (host:port) of the SynapseIDS collector is required.')
-                    );
-                }
-
-                // --insecure-tls is only accepted by the binary together with
-                // --authorized; surface that here rather than at start-up.
-                if (!$verifyPeer && !$authorized) {
-                    $this->addError(
-                        $messages,
-                        'general.verify_peer',
-                        gettext(
-                            'Disabling collector certificate verification exposes the stream to interception. ' .
-                            'Confirm the authorisation checkbox to accept that risk, or enable verification.'
-                        )
-                    );
-                }
             }
 
             if ($token === '') {
@@ -168,6 +201,33 @@ class Sensor extends BaseModel
                 );
             }
         }
+
+        // --insecure-tls is only accepted by the binary together with
+        // --authorized; surface that here rather than at start-up. The
+        // authorisation now lives on the instances, so this asks the question
+        // the binary will ask of every process that is actually going to run.
+        if ($enabled && $mode === 'connect' && !$verifyPeer) {
+            foreach ($enabledInstances as $node) {
+                if ($this->inst($node, 'authorized') !== '1') {
+                    $this->addError(
+                        $messages,
+                        'general.verify_peer',
+                        sprintf(
+                            gettext(
+                                'Disabling collector certificate verification exposes every stream to ' .
+                                'interception, and instance "%s" has not confirmed authorisation. Tick the ' .
+                                'authorisation box on each enabled instance to accept that risk, or enable ' .
+                                'verification.'
+                            ),
+                            $this->inst($node, 'name')
+                        )
+                    );
+                    break;
+                }
+            }
+        }
+
+        $this->validateInstances($messages, $instances, $mode);
 
         // --cert and --key must be supplied together, enabled or not: half a key
         // pair is always a configuration mistake.
@@ -207,6 +267,166 @@ class Sensor extends BaseModel
         $this->validateKeyPairMatches($messages, $clientCert, $clientKey);
 
         return $messages;
+    }
+
+    /**
+     * Per-instance and cross-instance rules.
+     *
+     * Everything here exists to stop a segment being believed monitored while it
+     * is not -- the failure that produced issue #124 in the first place.
+     *
+     * @param \Phalcon\Messages\Messages $messages
+     * @param array                      $instances every instance node
+     * @param string                     $mode      transport posture, listen or connect
+     * @return void
+     */
+    private function validateInstances($messages, array $instances, string $mode): void
+    {
+        $seenNames = [];
+        $seenIds = [];
+        $seenListens = [];
+        $seenIfaces = [];
+
+        foreach ($instances as $node) {
+            $name = $this->inst($node, 'name');
+            $on = $this->inst($node, 'enabled') === '1';
+            $iface = $this->inst($node, 'interface');
+            $sensorId = $this->inst($node, 'sensor_id');
+            $listen = $this->inst($node, 'listen_address');
+            $label = $name !== '' ? $name : gettext('(unnamed)');
+
+            // ---------------------------------------------------------- name
+            if ($name !== '') {
+                if (isset($seenNames[$name])) {
+                    $this->addError($messages, $this->ref($node, 'name'), sprintf(
+                        gettext(
+                            'Another instance is already called "%s". The name is the service profile, the ' .
+                            'configuration file, the pidfile and the log directory, so two instances sharing ' .
+                            'one would leave a single sensor running and the other silently absent.'
+                        ),
+                        $name
+                    ));
+                }
+                $seenNames[$name] = true;
+            }
+
+            // ----------------------------------------------------- interface
+            // A comma means a stored multi-value: a pre-#132 release rendered a
+            // multi-select here while the template used only the first
+            // identifier. One interface per instance, one process per interface.
+            if (strpos($iface, ',') !== false) {
+                $this->addError($messages, $this->ref($node, 'interface'), sprintf(
+                    gettext(
+                        'Instance "%s" stores more than one interface (%s). One sensor process captures one ' .
+                        'device: add a separate instance for each interface.'
+                    ),
+                    $label,
+                    $iface
+                ));
+            } elseif ($iface !== '') {
+                if (isset($seenIfaces[$iface])) {
+                    $this->addError($messages, $this->ref($node, 'interface'), sprintf(
+                        gettext(
+                            'Instance "%s" captures %s, which instance "%s" already captures. Two sensors on ' .
+                            'one interface report every flow on that segment twice.'
+                        ),
+                        $label,
+                        $iface,
+                        $seenIfaces[$iface]
+                    ));
+                }
+                $seenIfaces[$iface] = $label;
+            }
+
+            // ----------------------------------------------------- sensor id
+            if ($sensorId !== '') {
+                if (isset($seenIds[$sensorId])) {
+                    $this->addError($messages, $this->ref($node, 'sensor_id'), sprintf(
+                        gettext(
+                            'Sensor ID "%s" is already used by instance "%s". Running one process per ' .
+                            'interface only gives correct attribution if each one reports a different ' .
+                            'identity to the daemon.'
+                        ),
+                        $sensorId,
+                        $seenIds[$sensorId]
+                    ));
+                }
+                $seenIds[$sensorId] = $label;
+            }
+
+            if (!$on) {
+                // A disabled instance is a record, not a running capture. Only
+                // the uniqueness rules above apply to it, so that enabling it
+                // later cannot silently collide with something.
+                continue;
+            }
+
+            // ------------------------------------------- enabled instances --
+            if ($iface === '') {
+                $this->addError($messages, $this->ref($node, 'interface'), sprintf(
+                    gettext(
+                        'Instance "%s" is enabled but has no interface, so it has no traffic source at all.'
+                    ),
+                    $label
+                ));
+            }
+
+            if ($sensorId === '') {
+                $this->addError($messages, $this->ref($node, 'sensor_id'), sprintf(
+                    gettext(
+                        'Instance "%s" needs a sensor ID: it is how the daemon attributes the flows this ' .
+                        'instance reports, and how you tell its capture apart from the other instances on ' .
+                        'this firewall.'
+                    ),
+                    $label
+                ));
+            }
+
+            // PROJECT.md section 28.18 / section 21. Per instance, and never
+            // inherited: being authorised to monitor the WAN uplink says nothing
+            // about being authorised to monitor a tenant VLAN.
+            if ($this->inst($node, 'authorized') !== '1') {
+                $this->addError($messages, $this->ref($node, 'authorized'), sprintf(
+                    gettext(
+                        'Confirm that you are authorised to monitor the traffic on the interface instance ' .
+                        '"%s" captures before enabling it. Authorisation is per instance and is never ' .
+                        'inherited from another one (PROJECT.md 28.18).'
+                    ),
+                    $label
+                ));
+            }
+
+            if ($mode !== 'listen') {
+                continue;
+            }
+
+            // In listen mode every instance is its own TLS server, so each needs
+            // its own port. Without this the second process to start dies with
+            // "address already in use" and that segment goes unmonitored --
+            // exactly the silent under-coverage this whole change is about.
+            if ($listen === '') {
+                $this->addError($messages, $this->ref($node, 'listen_address'), sprintf(
+                    gettext(
+                        'Instance "%s" needs its own listen address in listen mode, for example 0.0.0.0:4790. ' .
+                        'Every instance is a separate process and they cannot share a port.'
+                    ),
+                    $label
+                ));
+                continue;
+            }
+            if (isset($seenListens[$listen])) {
+                $this->addError($messages, $this->ref($node, 'listen_address'), sprintf(
+                    gettext(
+                        'Instance "%s" listens on %s, which instance "%s" already uses. Give each enabled ' .
+                        'instance its own port, or only the first one to start will be listening.'
+                    ),
+                    $label,
+                    $listen,
+                    $seenListens[$listen]
+                ));
+            }
+            $seenListens[$listen] = $label;
+        }
     }
 
     /**
