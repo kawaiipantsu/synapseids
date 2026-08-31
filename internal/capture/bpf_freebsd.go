@@ -185,12 +185,29 @@ func NewBPFDevice(cfg BPFConfig) (*BPFDevice, error) {
 		}
 	}
 
-	// Deliver each batch as soon as a packet arrives rather than waiting for
-	// the store buffer to fill — an idle link must not sit on a packet for
-	// minutes (PROJECT.md §22, §17).
-	immediate := uint32(1)
-	if err := bpfIoctl(fd, biocIMMEDIATE, unsafe.Pointer(&immediate)); err != nil {
-		return fail("BIOCIMMEDIATE", err)
+	// Immediate mode is OFF by default, deliberately.
+	//
+	// It used to be set unconditionally, to stop an idle link sitting on a
+	// packet. But BIOCSRTIMEOUT below already guarantees that: without immediate
+	// mode read(2) returns when the store buffer fills OR the read timeout
+	// expires, so the worst added latency is one timeout (250ms by default).
+	// This is what libpcap does when given a non-zero timeout.
+	//
+	// What immediate mode DOES do is wake the reader for every single packet,
+	// which defeats the store buffer entirely: one read(2) per frame, and any
+	// pause in the reader (a TLS write to the collector, say) overflows a buffer
+	// that never got to batch. Measured on a live OPNsense WAN sensor:
+	//
+	//   Pid  Netif Flags     Recv   Drop  Match Sblen  Command
+	//   44575 igc2 pif---   64737   5060  48434     0  synapse-sensor   (10% loss)
+	//   72033 igc2 ---s--- 3.2e9  25.2e6  3.2e9  15852  suricata       (0.8% loss)
+	//
+	// Same interface, same moment. The 'i' flag is the difference.
+	if cfg.Immediate {
+		immediate := uint32(1)
+		if err := bpfIoctl(fd, biocIMMEDIATE, unsafe.Pointer(&immediate)); err != nil {
+			return fail("BIOCIMMEDIATE", err)
+		}
 	}
 
 	// The read timeout is what makes Close and context cancellation

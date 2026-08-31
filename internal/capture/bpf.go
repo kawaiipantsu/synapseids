@@ -54,6 +54,19 @@ type BPFConfig struct {
 	// wrong for a WAN sensor sitting on a routed edge.
 	Promiscuous bool
 
+	// Immediate sets BIOCIMMEDIATE: the kernel wakes the reader for every
+	// packet instead of filling the store buffer first.
+	//
+	// Leave it false. ReadTimeout already bounds delivery latency, so immediate
+	// mode adds nothing except one read(2) per frame — which defeats the store
+	// buffer and turns any reader pause into kernel drops. It was on
+	// unconditionally until a live WAN sensor measured 10% loss against
+	// Suricata's 0.8% on the same interface at the same moment.
+	//
+	// Useful only for debugging a low-rate link where per-packet delivery makes
+	// a trace easier to follow.
+	Immediate bool
+
 	// Snaplen bounds how many bytes of each frame the kernel copies. 0 means
 	// DefaultSnaplen; values above DefaultSnaplen are rejected. Unlike
 	// AF_PACKET, BPF has no snaplen ioctl: the limit is the accept length of
