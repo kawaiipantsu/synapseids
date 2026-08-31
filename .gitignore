@@ -9,6 +9,12 @@
 /dist/
 /build/
 
+# Web UI (Node). The built bundle web/dist/ IS committed and embedded by
+# web/web.go; only the transient toolchain state is ignored.
+/web/ui/node_modules/
+/web/ui/.vite/
+/web/ui/*.tsbuildinfo
+
 # Coverage
 coverage.out
 coverage.html

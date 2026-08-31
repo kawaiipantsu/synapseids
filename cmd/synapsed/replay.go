@@ -28,10 +28,11 @@ type replayController struct {
 	sensor  string
 	flowID  *atomic.Uint64
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	src    capture.Source
-	status api.ReplayStatus
+	mu        sync.Mutex
+	cancel    context.CancelFunc
+	src       capture.Source
+	status    api.ReplayStatus
+	flowStats flow.Stats // latest flow-table snapshot from the running pipeline
 }
 
 func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, fo flow.Options, sensor string, flowID *atomic.Uint64) *replayController {
@@ -61,12 +62,15 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 	c.status = api.ReplayStatus{
 		Running: true, ID: id, Source: path, Speed: speed.String(), Started: time.Now(),
 	}
+	c.flowStats = flow.Stats{}
 	c.bus.Publish(events.ReplayStarted, map[string]string{"id": id, "source": path, "speed": speed.String()})
 
 	go c.progress(ctx, pf)
 	go func() {
 		st, runErr := pipeline.Run(ctx, src, c.rt, c.bus, c.store, pipeline.Options{
-			Flow: c.flowOpt, Sensor: c.sensor, IDGen: func() uint64 { return c.flowID.Add(1) },
+			Flow: c.flowOpt, Sensor: c.sensor,
+			IDGen:   func() uint64 { return c.flowID.Add(1) },
+			OnStats: c.setFlowStats,
 		})
 		c.mu.Lock()
 		c.status.Running = false
@@ -104,6 +108,30 @@ func (c *replayController) Status() api.ReplayStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status
+}
+
+// setFlowStats records the latest flow-table counter snapshot from the pipeline.
+// The pipeline calls it on the flow-table tick cadence (~1/s), never per packet.
+func (c *replayController) setFlowStats(s flow.Stats) {
+	c.mu.Lock()
+	c.flowStats = s
+	c.mu.Unlock()
+}
+
+// FlowStats reports the live flow-table counters plus the configured cap, for
+// /api/v1/status (PROJECT.md §22, §24).
+func (c *replayController) FlowStats() api.FlowStats {
+	c.mu.Lock()
+	s := c.flowStats
+	c.mu.Unlock()
+	return api.FlowStats{
+		Active:    s.Active,
+		Started:   s.Started,
+		Closed:    s.Closed,
+		Snapshots: s.Snapshots,
+		Evicted:   s.Evicted,
+		Max:       c.flowOpt.MaxFlows,
+	}
 }
 
 func (c *replayController) progress(ctx context.Context, src capture.Source) {
