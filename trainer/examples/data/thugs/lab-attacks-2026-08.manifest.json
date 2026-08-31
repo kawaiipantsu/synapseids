@@ -1,0 +1,29 @@
+{
+  "id": "thugs/lab-attacks-2026-08",
+  "name": "Lab attack corpus",
+  "description": "synthetic Lab attack corpus fixture for synapse-trainer examples",
+  "location": "thugs-lab",
+  "tags": [
+    "example",
+    "synthetic"
+  ],
+  "created_at": "2026-09-01T00:00:00Z",
+  "source_capture_ids": [],
+  "time_range": {
+    "start": "2026-08-01T00:00:00Z",
+    "end": "2026-08-31T23:59:59Z"
+  },
+  "feature_schema": "flow-features-v1",
+  "output_schema": "traffic-classes-v1",
+  "num_flows": 60,
+  "label_counts": {
+    "scan": 12,
+    "dos_ddos": 12,
+    "brute_force": 12,
+    "web_attack": 12,
+    "botnet_c2": 12
+  },
+  "labeling_source": "lab-scripted",
+  "parent_datasets": [],
+  "content_hash": "sha256:1263ac573491a3ab9daf947cd82c6b24bea6acbb13d2a711ee8b0dbaea069e47"
+}

@@ -1,10 +1,15 @@
 """``synapse-trainer`` command-line entry point.
 
-    synapse-trainer train --recipe FILE --data DIR --out DIR [--name N] [--progress-url URL]
+    synapse-trainer train --recipe FILE --data DIR --out DIR [--name N] [--progress-url URL] [--dry-run]
+    synapse-trainer inspect-recipe --recipe FILE --data DIR [--json]
     synapse-trainer inspect-arch --recipe FILE
 
-``inspect-arch`` needs only numpy; ``train`` needs torch and prints a clear
-message if it is missing.
+``inspect-arch`` and ``inspect-recipe`` need only numpy; ``train`` needs torch
+and prints a clear message if it is missing.  ``inspect-recipe`` (and the
+equivalent ``train --dry-run``) resolves every dataset in the recipe, splits and
+weights them exactly as a real run would, and prints the resulting mixture plan
+— per-dataset rows, effective weights, split sizes, label distribution and
+imbalance warnings — without touching torch.
 """
 
 from __future__ import annotations
@@ -44,31 +49,41 @@ def _cmd_inspect_arch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_dataset(data_path: str):
-    from .dataset import load_csv
-
-    return load_csv(data_path)
-
-
-def _cmd_train(args: argparse.Namespace) -> int:
-    from . import schema
-    from .dataset import load_csv
-    from .normalize import Normalizer
+def _build_mixture(args: argparse.Namespace):
+    """Resolve the recipe's datasets into one weighted mixture (torch-free)."""
+    from .mixture import build_mixture
     from .recipe import load as load_recipe
 
     recipe = load_recipe(args.recipe)
-    ds = load_csv(args.data)
-    schema.check_compatible(ds.meta())
+    return recipe, build_mixture(recipe, args.data)
 
-    split = ds.split(
-        recipe.seed,
-        train=recipe.split["train"],
-        val=recipe.split["val"],
-        test=recipe.split["test"],
-    )
-    Xtr, ytr = ds.subset(split.train)
-    Xva, yva = ds.subset(split.val)
-    Xte, yte = ds.subset(split.test)
+
+def _cmd_inspect_recipe(args: argparse.Namespace) -> int:
+    from .mixture import format_plan
+
+    recipe, mixture = _build_mixture(args)
+    if args.json:
+        print(json.dumps({"recipe": recipe.to_json(), "mixture": mixture.to_json()}, indent=2))
+        return 0
+    print(format_plan(mixture, recipe_name=f"{recipe.name} ({args.recipe})", data_root=str(args.data)))
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    from .mixture import format_plan
+    from .normalize import Normalizer
+
+    recipe, mixture = _build_mixture(args)
+    if not args.quiet:
+        print(format_plan(mixture, recipe_name=f"{recipe.name} ({args.recipe})", data_root=str(args.data)))
+        print()
+    if getattr(args, "dry_run", False):
+        print("dry run: no model trained, no bundle written")
+        return 0
+
+    Xtr, ytr = mixture.X_train, mixture.y_train
+    Xva, yva = mixture.X_val, mixture.y_val
+    Xte, yte = mixture.X_test, mixture.y_test
 
     normalizer = Normalizer(recipe.normalizer).fit(Xtr)
     Xtr_n, Xva_n, Xte_n = (
@@ -103,14 +118,15 @@ def _cmd_train(args: argparse.Namespace) -> int:
     from .export import export_bundle
 
     recipe_json = recipe.to_json()
-    recipe_json["split_result"] = split.to_json()
+    recipe_json["split_result"] = mixture.split_result()
+    recipe_json["mixture"] = mixture.to_json()
     result = export_bundle(
         model,
         recipe.architecture,
         normalizer,
         metrics,
         recipe_json,
-        dataset_ids=[d.id for d in recipe.datasets],
+        dataset_ids=mixture.dataset_ids,
         out_dir=args.out,
         name=args.name or recipe.name,
         trainer_version=__version__,
@@ -149,12 +165,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser("train", help="train a model and write a bundle")
     t.add_argument("--recipe", required=True, help="path to a training-recipe.json")
-    t.add_argument("--data", required=True, help="dataset CSV file or a directory containing one")
+    t.add_argument(
+        "--data",
+        required=True,
+        help="dataset root: each recipe dataset id resolves under it (see inspect-recipe)",
+    )
     t.add_argument("--out", required=True, help="output directory for the bundle")
     t.add_argument("--name", default=None, help="model name (defaults to the recipe's name)")
     t.add_argument("--progress-url", default=None, help="POST per-epoch JSON lines here")
-    t.add_argument("--quiet", action="store_true", help="suppress per-epoch output")
+    t.add_argument("--quiet", action="store_true", help="suppress the mixture plan and per-epoch output")
+    t.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="resolve datasets and print the mixture plan, then stop (no torch needed)",
+    )
     t.set_defaults(func=_cmd_train)
+
+    r = sub.add_parser(
+        "inspect-recipe",
+        help="resolve the recipe's datasets and print the training mixture plan (no torch)",
+    )
+    r.add_argument("--recipe", required=True, help="path to a training-recipe.json")
+    r.add_argument("--data", required=True, help="dataset root the recipe's dataset ids resolve under")
+    r.add_argument("--json", action="store_true", help="emit the resolved recipe + mixture as JSON")
+    r.set_defaults(func=_cmd_inspect_recipe)
 
     a = sub.add_parser("inspect-arch", help="print param count / size / flops (no torch)")
     a.add_argument("--recipe", required=True, help="path to a training-recipe.json")
