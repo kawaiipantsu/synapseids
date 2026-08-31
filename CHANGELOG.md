@@ -41,6 +41,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 2-packet flow reports the single gap with stddev still `0`, a 3-packet flow
   with unequal gaps has a non-zero stddev, and `forward_interarrival_mean` stays
   `0` until a direction has two packets (#72).
+- **Operator SPA** (`web/ui/`) — a TypeScript + React 18 single-page app built
+  with Vite 5, replacing the vanilla-JS rolling-log shell (PROJECT.md §19, §27;
+  issue #20, EPIC #1). Hash-routed (`/#/flow-log`), so `internal/api` is
+  unchanged. The dark-terminal palette, per-class colours and `⟦THUGS⟧ · (c)
+  2026` mark are carried over. Wired Phase-1 views:
+  - **Flow Log** — the vanilla rolling log ported to React and extended:
+    pause/resume that buffers backend events instead of dropping them,
+    resume-to-latest, configurable max retained rows, compact/comfortable
+    density, class / min-confidence / protocol / text-search filters, suspicious
+    / low-confidence / disagreement row highlighting, kiosk full-screen
+    (Fullscreen API), keyboard nav (↑/↓ select, Enter inspect, Space pause), and
+    click-to-open Flow Inspector.
+  - **Flow Inspector** — a drawer over `GET /api/v1/flows/{id}` +
+    `GET /api/v1/schemas/features`: full 5-tuple and direction, timing,
+    packet/byte and TCP metadata, all 48 raw feature values joined to the schema,
+    the full class-probability vector, per-model outputs and the disagreement
+    flag. Normalized inputs, snapshot history and human-review status are labelled
+    Phase-2 stubs.
+  - **Dashboard** — live counters from `/api/v1/status` plus client-side
+    aggregation of the classification stream: classifications/sec and flow-event/sec
+    uPlot sparklines, class and protocol breakdowns, rolling-window top talkers and
+    destination ports, hosts seen, and the loaded-model list. Cards with no data
+    source yet are greyed and marked "needs API".
+  - **Replay control** — the footer path / speed / start / stop / status bar
+    (same endpoints as before) plus a CAPTURE ▸ Replay page with a live
+    ReplayStarted/Progress/Finished event feed.
+  - App shell with the full §19 navigation tree; every non-Phase-1 route renders
+    a "Planned — Phase N" placeholder naming its tracking epic.
+- New Make targets: `web` (build the SPA into `web/dist/`), `web-dev` (Vite dev
+  server proxying `/api` + `/api/v1/stream` to `127.0.0.1:8080`), `web-check`
+  (`tsc --noEmit`).
+- [ADR 0008](docs/adr/0008-react-spa-and-committed-build-output.md) — records the
+  TS + React + Vite 5 stack, uPlot, hash routing and the committed-`web/dist/`
+  decision.
 
 ### Changed
 
@@ -53,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sentinel, not a measured value. Documentation only — matches the
   already-frozen `schemas/features/flow-features-v1.json`; no schema or code
   change.
+- `web/` now embeds the committed Vite build output (`web/dist/`, `//go:embed
+  all:dist`) instead of a single hand-written `index.html`. The Go build stays
+  Node-free, offline and cross-compilable; rebuild the bundle with `make web`
+  and commit `web/dist/` after editing anything under `web/ui/`. `web.FS()` keeps
+  its signature, so `internal/api` is untouched.
+- `make clean` also removes `web/ui/node_modules`, `web/ui/.vite` and
+  `*.tsbuildinfo` (it leaves the committed `web/dist/` in place).
+
+### Removed
+
+- `web/index.html` — the vanilla-JS placeholder shell; its behaviour is ported
+  into the SPA's Flow Log and Replay control.
 
 ### Fixed
 
