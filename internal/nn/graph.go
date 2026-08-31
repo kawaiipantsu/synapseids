@@ -509,7 +509,7 @@ func evalGemm(n node, in func(int) (*tensor, error), set func(*tensor) error) er
 		}
 		r, err := broadcastBinary(yt, c, func(x, cc float32) float32 { return x + beta*cc })
 		if err != nil {
-			return fmt.Errorf("Gemm bias: %w", err)
+			return fmt.Errorf("nn: Gemm bias: %w", err)
 		}
 		return set(r)
 	}
@@ -636,7 +636,7 @@ func evalReshape(in func(int) (*tensor, error), set func(*tensor) error) error {
 	}
 	shp, err := in(1)
 	if err != nil {
-		return fmt.Errorf("Reshape needs a constant shape operand: %w", err)
+		return fmt.Errorf("nn: Reshape needs a constant shape operand: %w", err)
 	}
 	dims := make([]int, len(shp.data))
 	neg := -1
