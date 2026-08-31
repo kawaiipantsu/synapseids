@@ -19,6 +19,16 @@
     "directory": "/var/lib/synapseids/models",
     "primary": ""
   },
+  "alerts": {
+    "enabled": true,
+    "min_confidence": 0.7,
+    "per_class_min_confidence": {
+      "suspicious": 0.85
+    },
+    "alert_on_disagreement": true,
+    "max_recent": 1000,
+    "dedup_window_sec": 60
+  },
   "live": {
     "websocket_batch": "100ms",
     "client_queue_size": 5000

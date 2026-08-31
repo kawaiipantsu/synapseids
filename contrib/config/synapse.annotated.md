@@ -185,6 +185,33 @@ classifier as `primary` regardless of these values.
 | `models.directory` | string (dir path) | `./data/models` | `/var/lib/synapseids/models` | Directory that will be scanned for self-describing model bundles (`model.onnx` + `metadata.json` + `normalizer.json` + …). Env: `SYNAPSE_MODELS_DIR`. |
 | `models.primary` | string (model id) | `""` | `""` | Id of the model to treat as `primary`. Empty = let the runtime pick. Newly trained models are never auto-activated (PROJECT.md §21, §28.10); setting this is the explicit activation step once bundle loading exists. |
 
+## `alerts`
+
+The detection policy and the bounded detection store behind
+`GET /api/v1/detections` (issue #117, PROJECT.md §17; see
+[ADR 0027](../../docs/adr/0027-detection-dedup-and-derived-severity.md)).
+
+A verdict becomes a *detection* when its class is not `normal` **and** either it
+clears the confidence threshold for its class, or the ensemble disagreed and
+`alert_on_disagreement` is set. Detections are then **deduplicated** on
+`(src_ip, dst_ip, class)`, so a 1000-port scan is one detection with
+`count: 1000` and **one** `AlertCreated` event — not a thousand of each.
+
+| Key | Type | Default | This file | Meaning |
+|---|---|---|---|---|
+| `alerts.enabled` | bool | `true` | `true` | `false` suppresses every detection. The store still runs and still reports counters, so `/api/v1/status` says "alerting is off" rather than looking like a quiet network. |
+| `alerts.min_confidence` | float `[0,1]` | `0.70` | `0.7` | Global floor a verdict's `score` must reach. Out of range → the daemon refuses to start. |
+| `alerts.per_class_min_confidence` | object `{class: float[0,1]}` | `{"suspicious": 0.85}` | same | Per-class override of the floor. Keys must be `traffic-classes-v1` class names; `normal` is rejected because it never alerts. **A table in the file replaces the default rather than merging into it.** `suspicious` is the supervised catch-all — the class a model reaches for when it is least sure — so it carries a higher bar by default. |
+| `alerts.alert_on_disagreement` | bool | `true` | `true` | Raise a detection for a *below-threshold* verdict when the alert-driving models predicted more than one top class. A disagreement is a finding in its own right (PROJECT.md §12); the detection's `reason` says so. |
+| `alerts.max_recent` | int `>= 1` | `1000` | `1000` | How many detections are retained. Oldest evicted first and counted as `alerts.evicted` on `/api/v1/status` and on every `/api/v1/detections` response. Detections are **not persisted** — they do not survive a restart. |
+| `alerts.dedup_window_sec` | int `>= 1` | `60` | `60` | How long one `(src_ip, dst_ip, class)` detection keeps absorbing further occurrences before a fresh detection is opened. The window is anchored at the **first** occurrence, not slid forward, so sustained activity re-alerts once per window instead of going permanently quiet. The clock is the record's own timestamp (packet time), so a `--speed max` replay dedups exactly as live capture would. |
+
+**There is no `alerts.severity`.** Severity is derived from the traffic class in
+code — `normal` never alerts; `suspicious`→`low`, `scan`→`medium`,
+`brute_force`/`web_attack`→`high`, `dos_ddos`/`botnet_c2`→`critical` — because a
+per-deployment override could produce a class with an empty severity that no
+filter can select and no operator can triage. Adding the key is a load error.
+
 ## `live`
 
 WebSocket fan-out tuning (PROJECT.md §18, §22).
@@ -227,4 +254,7 @@ external backstop.
   `client_cert_file` / `client_key_file`, or — without `authorized: true` — a
   non-loopback `addr`, `insecure_tls`, or no `token_file`
 - `live.client_queue_size < 1`
+- `alerts.min_confidence` outside `[0,1]`; `alerts.max_recent < 1`;
+  `alerts.dedup_window_sec < 1`; an `alerts.per_class_min_confidence` key that is
+  not a `traffic-classes-v1` class name or is `normal`, or a value outside `[0,1]`
 - any unknown key is present in the file

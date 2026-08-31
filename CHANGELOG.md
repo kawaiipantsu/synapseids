@@ -9,6 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Detections — `/api/v1/detections` and a real `AlertCreated`** (issue #117;
+  [ADR 0027](docs/adr/0027-detection-dedup-and-derived-severity.md)).
+  `AlertCreated` had been in the frozen `event-envelope-v1` list since Phase 1
+  with nothing emitting it, and there was no detection resource at all. There is
+  now.
+  - **`internal/alert`** — an alert `Policy` (per-class confidence thresholds plus
+    optional alert-on-disagreement) and a bounded, **deduplicating** store of
+    recent detections. A verdict becomes a detection when its class is not
+    `normal` and it clears the threshold for that class, or when the ensemble
+    disagreed and `alert_on_disagreement` is set (PROJECT.md §12). Each detection
+    carries `count`, the first and most recent timestamps, the max confidence
+    seen, the flow ids, the tuple, the per-model breakdown and a `reason` built
+    from measured values only.
+  - **A 1000-port sweep is one detection, and one event.** Dedup is on
+    `(src_ip, dst_ip, class)` — the ports are deliberately *not* in the key,
+    because a port sweep varies precisely the field that would be in it. A repeat
+    increments `count`, advances `last_ts`, raises `confidence` and appends the
+    flow id, and **publishes nothing**: `AlertCreated` fires once per *new*
+    detection, so the WebSocket stays quiet under a scan (§22). The window is
+    anchored at the first occurrence rather than sliding, so a sustained attack
+    re-alerts once per window instead of going permanently silent, and the clock
+    is the record's own timestamp — a `--speed max` replay dedups exactly as live
+    capture would (§26).
+  - **`GET /api/v1/detections`** — `limit` (default 100, max 1000), `class`,
+    `severity`, `min_confidence` (0..1 or a 0..100 percentage), `since` (RFC3339,
+    matched against `last_ts`, so an ongoing detection that started earlier is
+    still reported). Reports `total` (matches before `limit`), `returned` and
+    `evicted`. `GET /api/v1/detections/{id}` is the single object, with the same
+    400/404 contract as `/api/v1/flows/{id}`. This route is **stricter** than the
+    older collection routes on purpose: an unknown parameter name or an
+    unparseable value is a `400`, because on a route whose job is "show me what
+    matters", a typo that silently widens the result to everything is worse than
+    an error.
+  - **Severity is derived from the class, never added to the frozen schema.**
+    `normal` never alerts; `suspicious`→`low`, `scan`→`medium`,
+    `brute_force`/`web_attack`→`high`, `dos_ddos`/`botnet_c2`→`critical`. The
+    table is code, not config — a per-deployment override could produce a class
+    with an empty severity that no filter can select — and `alert.init()` panics
+    at startup if the table and `traffic-classes-v1` disagree in *either*
+    direction, so a future class cannot ship a silent `"severity": ""`.
+  - **Nothing was added to the packet path.** `pipeline` publishes
+    `ClassificationCreated` / `ModelDisagreementDetected` as before and
+    deliberately does **not** publish `AlertCreated`: dedup needs mutable state
+    the packet path must not own or lock. `Options.Alerts` gets one non-blocking,
+    **zero-allocation** send per verdict (pinned by
+    `TestObserveDoesNotAllocate`), and the alert store's own goroutine applies the
+    policy, folds the detection and publishes — the same bounded-queue /
+    single-aggregator pattern `internal/insight` established, not a third one. A
+    full queue drops and counts.
+  - **Bounded, and it says so.** `alerts.max_recent` (default 1000) with
+    oldest-first eviction and an `evicted` counter, mirroring `storage.Mem`;
+    `evicted` appears on both `/api/v1/status` and every `/api/v1/detections`
+    response so a client can tell a window from a history. Evicting a detection
+    also drops its dedup entry, so an evicted key can alert again instead of
+    being silently muted. `flow_ids` holds the 20 most recent *distinct* flows
+    while `count` reports every occurrence.
+  - **New `alerts` config block** — `enabled` (true), `min_confidence` (0.70),
+    `per_class_min_confidence` (`{"suspicious": 0.85}`), `alert_on_disagreement`
+    (true), `max_recent` (1000), `dedup_window_sec` (60). Ranges and per-class
+    keys are validated at load and nonsense is *rejected*, not clamped: a
+    threshold of `7` or an override for a class that does not exist is a typo, and
+    silently correcting it would leave the operator believing something is being
+    alerted on. Counters on `/api/v1/status` under `alerts`: `created`, `deduped`,
+    `suppressed`, `evicted`, plus `retained` / `max_recent` / `observed` /
+    `dropped` / `queue_size` / `dedup_window_sec` and `enabled`.
+  - **Measured on a real capture** (68 810 packets, 1 176 flows — browsing + an
+    nmap scan + a MySQL brute force against `10.10.10.21:3306`): **6 detections
+    from 1 176 verdicts, with 302 folded into them**. The brute force is three
+    `high` detections of counts 126 / 121 / 57, one per 60s window. **There is no
+    `scan` detection at all** — the Phase 1 heuristic does not recognise the recon
+    on this capture (#90). The thresholds were not tuned to manufacture a nicer
+    number: a detection feed that reports what the model actually said is the
+    honest input to fixing the model.
+  - **Not done, deliberately:** notification delivery (email/webhook/syslog),
+    anomaly-driven detections (#47), acknowledge/close state per detection, and
+    persistence — detections live in a ring and do not survive a restart. The
+    `#/detections` SPA view is separate work.
+
 - **Traffic matrix and sensor topology** (issues #68 and #46 — **the last two open
   children of EPIC Phase 5 and EPIC Phase 6**;
   [ADR 0026](docs/adr/0026-traffic-matrix-and-sensor-topology.md)). Two
