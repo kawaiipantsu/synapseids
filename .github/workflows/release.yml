@@ -33,6 +33,11 @@ jobs:
         run: |
           make dist
           make deb
+          # The OPNsense installer is documented as
+          #   curl -fsSL .../releases/download/<tag>/install.sh | sh
+          # so it has to BE a release asset. v0.2.0 shipped without it and that
+          # documented command returned 404.
+          cp contrib/opnsense/install.sh dist/install.sh
 
       - name: Publish GitHub release
         env:
@@ -52,4 +57,4 @@ jobs:
             --title "SynapseIDS $GITHUB_REF_NAME" \
             --notes "$notes" \
             $prerelease \
-            dist/*.tar.gz dist/*.deb dist/*.pkg dist/SHA256SUMS
+            dist/*.tar.gz dist/*.deb dist/*.pkg dist/SHA256SUMS dist/install.sh
