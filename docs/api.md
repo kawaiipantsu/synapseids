@@ -44,6 +44,14 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
   "live": { "clients": 1, "accepted": 3, "frames_out": 210, "client_drops": 0 },
+  "flow": {
+    "active": 128,
+    "started": 4210,
+    "closed": 4082,
+    "snapshots": 17,
+    "evicted": 0,
+    "max": 200000
+  },
   "models": [
     { "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary" }
   ],
@@ -61,6 +69,17 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
 `live.client_drops` is the count of WebSocket clients dropped for being too slow
 (see [below](#backpressure)). When a replay is running, `replay` also carries
 `id`, `source`, `speed` and (on failure) `last_error`.
+
+`flow` is the running pipeline's flow table (`internal/api.FlowStats`): `active`
+flows held right now, and lifetime `started` / `closed` / `snapshots` / `evicted`
+counters, alongside the configured cap `max` (`capture.max_flows`, default
+`200000`; override with `SYNAPSE_MAX_FLOWS`). A rising `evicted` means the table
+is at capacity and shedding its least-recently-seen flows — raise `max` if that
+is not expected (PROJECT.md §22, §24). The counters come from the replay
+pipeline; between replays they hold the last run's final snapshot (`active` back
+at `0`), and are all `0` before the first replay. The pipeline also writes a
+throttled warning to the daemon log on the first eviction of a run and every
+1000th after it.
 
 ### GET /api/v1/flows
 

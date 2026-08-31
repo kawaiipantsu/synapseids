@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
+  `started`, `closed`, `snapshots` and `evicted` counters plus the configured
+  `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
+  pressure is observable without attaching to the packet path (PROJECT.md §22,
+  §24). It is sourced from the running replay pipeline's flow table via a new
+  `pipeline.Options.OnStats` hook that fires on the flow-table tick cadence,
+  never per packet.
+- The pipeline logs a throttled warning (the first eviction of a run, then every
+  1000th) when the flow table is full and starts evicting, pointing at
+  `capture.max_flows`.
+
 ## [0.1.0] - 2026-08-31
 
 First tagged release: the Phase 1 vertical slice plus the full build, packaging
