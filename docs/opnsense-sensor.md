@@ -159,9 +159,12 @@ that dials.
 | `/usr/local/etc/synapseids/` | `0750 root:_synapseids` | |
 | `/usr/local/etc/synapseids/sensor.conf` | `0640 root:wheel` | the command-line flags. **No secrets.** |
 | `/usr/local/etc/synapseids/sensor.token` | `0400 _synapseids:_synapseids` | **the bearer token, and nothing else** |
-| `/usr/local/etc/synapseids/peer-ca.pem` | `0444 root:wheel` | peer CA bundle (optional) |
+| `/usr/local/etc/synapseids/sensor-ca.pem` | `0444 root:wheel` | peer CA bundle (optional) |
 | `/usr/local/etc/synapseids/sensor-cert.pem` | `0444 root:wheel` | this sensor's certificate (optional mTLS) |
-| `/usr/local/etc/synapseids/sensor-key.pem` | `0400 _synapseids:_synapseids` | this sensor's private key (optional mTLS) |
+| `/usr/local/etc/synapseids/sensor-key.pem` | **`0400 _synapseids:_synapseids`** | **this sensor's TLS private key** |
+
+All five are rendered by configd from the OPNsense configuration store — nothing
+is placed on the firewall by hand.
 
 **The bearer token never reaches a command line.** It is passed with
 `--token-file`, never `--token`, so it is absent from `ps(1)`, from the
@@ -169,19 +172,19 @@ rendered flag string, from shell history and from every log line. Logs go to
 `/var/log/synapseids/` and never contain it. It also lives in the OPNsense
 configuration store, which is what the UI reads and writes.
 
-The `fixperms` configd action clamps these modes immediately after every
-`template reload`, closing the window in which configd's default umask would
-otherwise leave a freshly rendered token file readable; the `rc.d` script
-re-checks before every start.
+**The TLS private key is treated exactly like the bearer token.** configd renders
+templates as root under its own umask, so the `fixperms` configd action clamps
+all five modes immediately after every `template reload` — closing the window in
+which a freshly rendered secret would sit world-readable — and the `rc.d` script
+re-checks before every start. `service synapseids_sensor selftest` reports the
+modes it actually finds, so this is checkable on the box rather than assumed.
 
-> **Gap: the TLS PEM files are not yet rendered.** The model stores the CA
-> bundle, certificate and key as PEM text, but `sensor.conf` only *names* the
-> three paths above — delivering the text itself needs three more configd
-> template targets, which this package does not yet install. Until then, place
-> the files by hand at those paths. This fails safe: the `rc.d` script refuses
-> to start, naming the missing file, whenever a flag references a PEM that is
-> not on disk, so a missing certificate can never silently downgrade the
-> transport.
+**It fails safe.** The `rc.d` script refuses to start, naming the path, whenever
+a flag references a PEM that is missing, empty or has no `-----BEGIN` line. There
+is no path that turns absent TLS material into an unverified connection. The
+model also refuses at save time to store a blob that is not PEM, a private key
+pasted into a certificate field, a passphrase-protected key, or a key that does
+not match its certificate.
 
 ## 3. Verify
 
@@ -230,7 +233,11 @@ Nobody has run any of this on FreeBSD or OPNsense. Concretely:
   at build time (member order, manifest keys, per-file checksums against the
   archived bytes, modes, ownership), but `pkg(8)` has not accepted it.
 - **The plugin has never been loaded by an OPNsense MVC runtime.** The PHP is
-  `php -l`-clean and the XML/Volt are conventional; that is all.
+  `php -l`-clean, every XML parses, every configd template has been rendered with
+  Jinja2 against a mock context, and the model's validation rules have been
+  exercised against real generated key material
+  (`contrib/opnsense/tools/check-plugin.sh`) — but no Phalcon and no configd has
+  loaded any of it.
 - **No real WAN traffic has been captured**, so throughput, drop behaviour and
   timestamp accuracy under load are unmeasured.
 
@@ -242,13 +249,26 @@ pkg info -F dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
 pkg add     dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
 
 # 2. do the UI pages appear? Services > SynapseIDS Sensor
+#    configure it, save, then:
 
-# 3. does the capture source actually open?
+# 3. THE SELFTEST. One command, one line per check, remedies inline.
+service synapseids_sensor selftest
+
+# 4. does the capture source actually open?
 /usr/local/bin/synapse-sensor pcap-over-ip \
     --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
 
-# 4. does a daemon see packets?  GET /api/v1/captures
+# 5. does a daemon see packets?  GET /api/v1/captures
 ```
 
-Please report what breaks — especially the configd template's interface-name
-lookup, which carries an explicit `TODO(verify):`.
+**Start with the selftest.** It checks the binary, the `_synapseids` account,
+`/dev/bpf*` access, that the configured interface resolved to a device that
+actually exists, that the rendered configuration parses, that the token is
+`0400`, that the TLS material parses and that the certificate matches its key,
+and whether the daemon answers a TCP connect. Every line carries its own remedy;
+the per-line troubleshooting table is in
+[`contrib/opnsense/README.md`](../contrib/opnsense/README.md#troubleshooting-by-output-line).
+
+Please report what breaks — especially anything the selftest's `interface` line
+says, and the value of `synapseids_sensor_iface_src` in the rendered
+`sensor.conf`, which records *which* of the two interface lookups succeeded.

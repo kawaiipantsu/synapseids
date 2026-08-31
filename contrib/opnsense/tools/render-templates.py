@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""Render the configd templates against a mock OPNsense context.
+
+This is a development aid, not part of the package (it is deliberately absent
+from pkg-plist).  OPNsense's configd renders these templates with Jinja2 against
+a context built from config.xml plus a `helpers` object; nothing in this repo can
+run configd, but Jinja2 is Jinja2, so rendering them here catches every syntax
+error, undefined-variable slip and quoting mistake before the plugin reaches a
+firewall.
+
+It also exercises the branch that matters most: the interface-identifier to
+device-name lookup, in all four of its states (resolved via the `interfaces`
+node, resolved via `helpers.physical_interface`, unresolvable, and not
+configured).
+
+    python3 contrib/opnsense/tools/render-templates.py           # print renders
+    python3 contrib/opnsense/tools/render-templates.py --check    # assert only
+
+Exit status is non-zero if any scenario renders something the rc.d script or
+`synapse-sensor doctor` would reject.
+"""
+
+import argparse
+import pathlib
+import re
+import sys
+
+try:
+    import jinja2
+except ImportError:  # pragma: no cover - developer convenience only
+    print("render-templates: jinja2 is not installed (pip install jinja2)", file=sys.stderr)
+    sys.exit(77)
+
+TEMPLATE_DIR = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "src/opnsense/mvc/../service/templates/OPNsense/SynapseIDSSensor"
+).resolve()
+
+
+class Node(dict):
+    """A config.xml subtree.
+
+    configd exposes the configuration as nested dicts and templates reach into
+    it with dotted attribute access, so both must work.
+    """
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+class Helpers:
+    """Stand-in for configd's template helper object."""
+
+    def __init__(self, config, physical=None):
+        self._config = config
+        self._physical = physical or {}
+
+    def exists(self, path):
+        cur = self._config
+        for part in path.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return False
+            cur = cur[part]
+        return True
+
+    def physical_interface(self, ident):
+        return self._physical.get(ident, "")
+
+
+def general(**overrides):
+    node = Node(
+        enabled="1",
+        interface="wan",
+        filter="ip-any",
+        direction="in",
+        promiscuous="1",
+        snaplen="262144",
+        send_mode="raw",
+        mode="listen",
+        listen_address="0.0.0.0:4789",
+        address="",
+        token="a-bearer-token",
+        sensor_id="opnsense-wan",
+        location="dmz/edge",
+        verify_peer="1",
+        ca="",
+        client_cert="",
+        client_key="",
+        authorized="1",
+    )
+    node.update(overrides)
+    return node
+
+
+CERT = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+KEY = "-----BEGIN EC PRIVATE KEY-----\nMHcC\n-----END EC PRIVATE KEY-----"
+
+
+def context(node, interfaces=None, physical=None, with_interfaces=True):
+    config = Node(OPNsense=Node(SynapseIDSSensor=Node(general=node)))
+    if with_interfaces:
+        config["interfaces"] = Node(
+            {k: Node(v) for k, v in (interfaces or {"wan": {"if": "em0"}}).items()}
+        )
+    ctx = dict(config)
+    ctx["helpers"] = Helpers(config, physical)
+    return ctx
+
+
+def parse_sh(text):
+    """Parse the rendered fragment the way the Go doctor does, strictly."""
+    out = {}
+    for lineno, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise AssertionError(f"line {lineno} is not name=value: {line!r}")
+        name, value = line.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise AssertionError(f"line {lineno}: bad variable name {name!r}")
+        if not (value.startswith('"') and value.endswith('"')):
+            raise AssertionError(f"line {lineno}: value is not double quoted: {value!r}")
+        inner = value[1:-1]
+        if '"' in inner:
+            raise AssertionError(f"line {lineno}: embedded double quote: {value!r}")
+        for bad in ("$", "`", ";", "|", "&"):
+            if bad in inner:
+                raise AssertionError(f"line {lineno}: shell metacharacter {bad!r}: {value!r}")
+        out[name] = inner
+    return out
+
+
+def render(env, name, ctx):
+    return env.get_template(name).render(**ctx)
+
+
+SCENARIOS = []
+
+
+def scenario(fn):
+    SCENARIOS.append(fn)
+    return fn
+
+
+@scenario
+def resolved_via_interfaces_node(env):
+    """The primary lookup: config.xml's <interfaces><wan><if>em0</if>."""
+    out = parse_sh(render(env, "sensor.conf", context(general())))
+    assert out["synapseids_sensor_enable"] == "YES", out
+    assert out["synapseids_sensor_iface"] == "em0", out
+    assert out["synapseids_sensor_iface_id"] == "wan", out
+    assert out["synapseids_sensor_iface_src"] == "interfaces.wan.if", out
+    assert out["synapseids_sensor_iface_error"] == "", out
+    assert "--iface em0" in out["synapseids_sensor_args"], out
+    assert "--authorized" in out["synapseids_sensor_args"], out
+    assert "a-bearer-token" not in render(env, "sensor.conf", context(general())), "TOKEN LEAKED"
+    return out
+
+
+@scenario
+def resolved_via_helper(env):
+    """No `interfaces` node at all: fall back to helpers.physical_interface()."""
+    ctx = context(general(), physical={"wan": "vtnet0"}, with_interfaces=False)
+    out = parse_sh(render(env, "sensor.conf", ctx))
+    assert out["synapseids_sensor_iface"] == "vtnet0", out
+    assert out["synapseids_sensor_iface_src"] == "helpers.physical_interface(wan)", out
+    assert out["synapseids_sensor_iface_error"] == "", out
+    assert "--iface vtnet0" in out["synapseids_sensor_args"], out
+    return out
+
+
+@scenario
+def vlan_device_name(env):
+    """A VLAN's device name carries a dot and must survive verbatim."""
+    out = parse_sh(render(env, "sensor.conf", context(general(), interfaces={"wan": {"if": "igb0.10"}})))
+    assert out["synapseids_sensor_iface"] == "igb0.10", out
+    return out
+
+
+@scenario
+def unresolvable_identifier_refuses(env):
+    """Neither lookup works: EMPTY device, populated error, NO --iface flag.
+
+    This is the property that stops a sensor binding to nothing and reporting
+    success.  It must never fall back to the bare identifier.
+    """
+    ctx = context(general(), interfaces={"lan": {"if": "em1"}}, physical={})
+    out = parse_sh(render(env, "sensor.conf", ctx))
+    assert out["synapseids_sensor_iface"] == "", out
+    assert out["synapseids_sensor_iface"] != "wan", "fell back to the bare identifier"
+    assert "could not be resolved" in out["synapseids_sensor_iface_error"], out
+    assert "wan" in out["synapseids_sensor_iface_error"], out
+    assert "--iface" not in out["synapseids_sensor_args"], out
+    # iface_src must name only a lookup that succeeded, so it is empty here.
+    assert out["synapseids_sensor_iface_src"] == "", out
+    return out
+
+
+@scenario
+def no_interface_selected(env):
+    out = parse_sh(render(env, "sensor.conf", context(general(interface=""))))
+    assert out["synapseids_sensor_iface"] == "", out
+    assert out["synapseids_sensor_iface_error"] == "", out
+    assert "--iface" not in out["synapseids_sensor_args"], out
+    return out
+
+
+@scenario
+def multiple_interfaces_takes_the_first(env):
+    ctx = context(general(interface="wan,lan"), interfaces={"wan": {"if": "em0"}, "lan": {"if": "em1"}})
+    out = parse_sh(render(env, "sensor.conf", ctx))
+    assert out["synapseids_sensor_iface"] == "em0", out
+    return out
+
+
+@scenario
+def connect_mode_with_mtls(env):
+    node = general(mode="connect", address="ids.example.net:4789", ca=CERT, client_cert=CERT, client_key=KEY)
+    out = parse_sh(render(env, "sensor.conf", context(node)))
+    args = out["synapseids_sensor_args"]
+    assert "--connect ids.example.net:4789" in args, args
+    assert "--cert /usr/local/etc/synapseids/sensor-cert.pem" in args, args
+    assert "--key /usr/local/etc/synapseids/sensor-key.pem" in args, args
+    assert "--ca /usr/local/etc/synapseids/sensor-ca.pem" in args, args
+    assert "--insecure-tls" not in args, args
+    assert "peer-ca.pem" not in args, "stale PEM path"
+    return out
+
+
+@scenario
+def listen_mode_with_client_ca(env):
+    node = general(mode="listen", ca=CERT, client_cert=CERT, client_key=KEY)
+    args = parse_sh(render(env, "sensor.conf", context(node)))["synapseids_sensor_args"]
+    assert "--client-ca /usr/local/etc/synapseids/sensor-ca.pem" in args, args
+    assert "--ca " not in args, args
+    return args
+
+
+@scenario
+def insecure_tls_only_in_connect_mode(env):
+    node = general(mode="connect", address="ids.example.net:4789", verify_peer="0")
+    args = parse_sh(render(env, "sensor.conf", context(node)))["synapseids_sensor_args"]
+    assert "--insecure-tls" in args, args
+    return args
+
+
+@scenario
+def hostile_config_values_cannot_escape(env):
+    """A config value must never break out of the generated shell word."""
+    node = general(
+        sensor_id="a'; touch /tmp/pwned; '",
+        location='x"$(id)`id`&&whoami|tee>/tmp/x',
+        listen_address="0.0.0.0:4789\nsynapseids_sensor_enable=NO",
+    )
+    # parse_sh itself asserts that no line carries a shell metacharacter, an
+    # embedded double quote or a forged extra assignment.
+    out = parse_sh(render(env, "sensor.conf", context(node)))
+    args = out["synapseids_sensor_args"]
+    for bad in ("'", '"', "`", "$", ";", "|", "&", "<", ">", "\\"):
+        # The only quotes left must be the ones the template itself added around
+        # --sensor-id / --location values.
+        if bad == "'":
+            continue
+        assert bad not in args, f"{bad!r} survived sh(): {args!r}"
+    assert out["synapseids_sensor_enable"] == "YES", "a config value forged an assignment"
+    return out
+
+
+@scenario
+def missing_config_node(env):
+    """Before the model has ever been saved: everything empty, service off."""
+    config = Node(OPNsense=Node())
+    ctx = dict(config)
+    ctx["helpers"] = Helpers(config)
+    out = parse_sh(render(env, "sensor.conf", ctx))
+    assert out["synapseids_sensor_enable"] == "NO", out
+    assert out["synapseids_sensor_iface"] == "", out
+    assert out["synapseids_sensor_iface_error"] == "", out
+    assert out["synapseids_sensor_args"] == "", out
+    return out
+
+
+@scenario
+def token_template_is_the_token_and_nothing_else(env):
+    out = render(env, "sensor.token", context(general()))
+    assert out.strip() == "a-bearer-token", repr(out)
+    assert "#" not in out, "the token file must carry no comment header"
+    return out.strip()
+
+
+@scenario
+def token_template_empty_when_unset(env):
+    out = render(env, "sensor.token", context(general(token="")))
+    assert out.strip() == "", repr(out)
+    return "(empty)"
+
+
+@scenario
+def pem_templates_render_the_blobs(env):
+    node = general(ca=CERT, client_cert=CERT, client_key=KEY)
+    ctx = context(node)
+    for name, want in (
+        ("sensor-ca.pem", CERT),
+        ("sensor-cert.pem", CERT),
+        ("sensor-key.pem", KEY),
+    ):
+        out = render(env, name, ctx)
+        assert out.strip() == want, f"{name}: {out!r}"
+        assert out.endswith("\n"), f"{name} must end with a newline"
+        assert "{" not in out and "#" not in out, f"{name} leaked template text: {out!r}"
+    return "3 PEM targets render exactly their blob"
+
+
+@scenario
+def pem_templates_normalise_crlf(env):
+    """A blob pasted from a Windows editor must not reach disk with CRLF."""
+    node = general(client_key=KEY.replace("\n", "\r\n"))
+    out = render(env, "sensor-key.pem", context(node))
+    assert "\r" not in out, repr(out)
+    assert out.strip() == KEY, repr(out)
+    return "CRLF normalised"
+
+
+@scenario
+def pem_templates_empty_when_unset(env):
+    ctx = context(general())
+    for name in ("sensor-ca.pem", "sensor-cert.pem", "sensor-key.pem"):
+        out = render(env, name, ctx)
+        assert out.strip() == "", f"{name}: {out!r}"
+    return "3 PEM targets render empty (rc.d then refuses to start if referenced)"
+
+
+@scenario
+def targets_file_covers_every_template(env):
+    """+TARGETS, pkg-plist and the template directory must agree."""
+    targets = {}
+    for line in (TEMPLATE_DIR / "+TARGETS").read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        src, dst = line.split(":", 1)
+        targets[src] = dst
+
+    on_disk = {p.name for p in TEMPLATE_DIR.iterdir() if p.name != "+TARGETS"}
+    assert set(targets) == on_disk, f"+TARGETS {sorted(targets)} != directory {sorted(on_disk)}"
+
+    plist = (TEMPLATE_DIR.parents[5] / "pkg-plist").read_text()
+    for name in sorted(on_disk | {"+TARGETS"}):
+        needle = f"opnsense/service/templates/OPNsense/SynapseIDSSensor/{name}"
+        assert needle in plist, f"{needle} is missing from pkg-plist"
+    return f"{len(targets)} targets, all in pkg-plist"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true", help="assert only, print no renders")
+    args = ap.parse_args()
+
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(TEMPLATE_DIR)),
+        undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
+    )
+
+    failures = 0
+    for fn in SCENARIOS:
+        try:
+            result = fn(env)
+        except Exception as exc:  # noqa: BLE001 - report every scenario
+            failures += 1
+            print(f"FAIL  {fn.__name__}: {type(exc).__name__}: {exc}")
+            continue
+        print(f"ok    {fn.__name__}")
+        if not args.check:
+            if isinstance(result, dict):
+                for k, v in result.items():
+                    print(f"          {k}={v!r}")
+            else:
+                print(f"          {result!r}")
+
+    print(f"\n{len(SCENARIOS) - failures}/{len(SCENARIOS)} scenarios passed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

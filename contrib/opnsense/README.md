@@ -21,10 +21,79 @@ must still validate on real hardware.
 > ## ⚠️ Untested on hardware
 >
 > Every part of this — the FreeBSD BPF capture source, the package, the MVC
-> plugin — was written and tested on **Linux**. Cross-builds, unit tests and
-> compile-time ABI assertions pass. Nobody has run it on FreeBSD or OPNsense.
-> See [What a maintainer must
+> plugin — was written and tested on **Linux**. Cross-builds, unit tests,
+> compile-time ABI assertions, a Jinja2 render of every configd template and a
+> stubbed run of the model's validation all pass. Nobody has run it on FreeBSD or
+> OPNsense. See [What a maintainer must
 > validate](#what-a-maintainer-must-validate-on-real-hardware).
+>
+> **The first thing to run on the box is the selftest** — see
+> [Selftest](#selftest). It is designed so one command replaces a remote
+> debugging session.
+
+## Selftest
+
+```sh
+service synapseids_sensor selftest     # on the console
+configctl synapseidssensor selftest    # the same, through configd
+synapse-sensor doctor --help           # the underlying subcommand
+```
+
+or press **Run selftest** on **Services → SynapseIDS Sensor**.
+
+Nine checks, one line each, in this order. Exit status is 1 if any `[FAIL]`
+appeared; a `[WARN]` never fails the run. It is read-only — it never writes,
+chowns or chmods anything — and it prints no secrets, only paths, modes and
+certificate subjects.
+
+```
+[ OK ] binary        synapse-sensor 0.1.0 (abc1234, 2026-08-31) go1.27 freebsd/amd64
+[ OK ] config        /usr/local/etc/synapseids/sensor.conf: enable=YES, 17 flags, transport=connect
+[ OK ] service-user  _synapseids uid=1001 gid=1001 groups=_synapseids,net
+[ OK ] bpf-access    /dev/bpf mode 0640 root:net — readable by group net, which _synapseids is in
+[ OK ] interface     wan -> em0 (via interfaces.wan.if) — exists, flags up|broadcast|running
+[ OK ] token-file    /usr/local/etc/synapseids/sensor.token mode 0400 _synapseids:_synapseids, 44 bytes
+[ OK ] tls-identity  sensor-cert.pem + sensor-key.pem: pair matches, subject "CN=fw1.example", expires 2027-08-31T00:00:00Z
+[ OK ] tls-trust     sensor-ca.pem: 1 certificate(s), subject SynapseIDS Collector CA
+[ OK ] log-sink      /var/log/synapseids mode 0750 _synapseids:wheel; sensor.log 4096 bytes, modified 2026-08-31T12:00:03Z
+[ OK ] collector     ids.example.net:4789: TCP connect succeeded in 3ms (no TLS handshake attempted)
+
+summary: 10 checks, 10 passed, 0 warned, 0 failed, 0 skipped
+selftest: PASSED
+```
+
+(`tls-identity` and `tls-trust` are two lines from one check, so a full run
+prints ten.)
+
+### Troubleshooting, by output line
+
+| line | what it means | what to do |
+|---|---|---|
+| `[FAIL] config` — *no such file* | the configd template has never rendered | press Save on the settings page, or `configctl template reload OPNsense/SynapseIDSSensor && configctl synapseidssensor fixperms` |
+| `[FAIL] config` — *shell metacharacter* / *not name=value* | `sensor.conf` was hand-edited, or a template escaping bug | never edit it; re-render. This file is sourced by `rc.d` as **root** |
+| `[FAIL] config` — *`--authorized` is absent* | the authorisation checkbox is not ticked | tick it. `synapse-sensor` refuses live capture without it (PROJECT.md §28.18) |
+| `[WARN] config` — *not enabled* | saved but disabled | tick **Enable** |
+| `[FAIL] service-user` | `pkg add`'s `post-install` did not run | `pkg install -f os-synapseids-sensor`, or `pw useradd _synapseids -d /nonexistent -s /usr/sbin/nologin -G net` |
+| `[WARN] service-user` — *not in group net* | the devfs rule grants `bpf*` to group `net` | `pw groupmod net -m _synapseids` |
+| `[FAIL] bpf-access` | **the sensor would capture nothing** | run the installer with `--grant-bpf`, or the two `devfs.rules` commands the line prints |
+| `[FAIL] interface` — *does not exist* | **the worst case: bound to nothing** | the line lists the devices that *do* exist. Check **Interfaces → Assignments** and `ifconfig -l`, then re-save |
+| `[FAIL] interface` — *could not be resolved* | the configd template could not turn the identifier into a device name | re-select the interface and save. The message names both lookups it tried; please report it — this is the assumption most likely to be wrong |
+| `[WARN] interface` — *device is down* | BPF attaches but sees no traffic | bring the interface up |
+| `[FAIL] token-file` — *readable by more than the owner* | configd's umask window was not closed | `configctl synapseidssensor fixperms` |
+| `[FAIL] token-file` — *empty* | no bearer token: any peer completing the handshake would be accepted | enter one on the settings page |
+| `[FAIL] tls-identity` — *no such file* | a flag names a PEM that is not on disk | `configctl template reload OPNsense/SynapseIDSSensor`. **The service refuses to start in this state by design** — it never downgrades to an unverified transport |
+| `[FAIL] tls-identity` — *readable by more than its owner* | the private key is not `0400` | `configctl synapseidssensor fixperms` |
+| `[FAIL] tls-identity` — *do not match each other* | certificate and key are from different pairs | re-paste both; the model normally catches this at save time |
+| `[FAIL] tls-identity` — *EXPIRED* / *not valid until* | certificate dates | reissue, or check the clock: `date; service ntpd status` |
+| `[FAIL] tls-trust` — *not a certificate* | a private key was pasted into the CA field | clear it and paste the CA bundle |
+| `[WARN] tls-trust` — *`--insecure-tls`* | the collector is **not** verified | paste the collector CA and untick "do not verify" |
+| `[WARN] log-sink` — *does not exist* / *empty* while the service runs | `daemon(8)`'s `-f` is suppressing output — the one assumption still unverified | drop `-f` from `command_args` in `/usr/local/etc/rc.d/synapseids_sensor`. **Capture is unaffected; only the log is** |
+| `[FAIL] collector` | no TCP path to the daemon | check `synapsed` has a `capture.collector` block listening, and the outbound rule |
+| `[WARN] collector` — *bindable but nothing is listening* | listen mode, sensor not running | `service synapseids_sensor start` |
+| `[FAIL] collector` — *cannot bind* | the listen address is wrong for this host | fix it, or switch to **connect** mode (better behind NAT) |
+
+If the selftest passes and the daemon still sees nothing, the remaining suspect is
+the BPF read path itself — see [Known soft spots](#known-soft-spots).
 
 ## Installing
 
@@ -50,6 +119,28 @@ against the release `SHA256SUMS` before installing**, then `pkg add -f`s it and
 refreshes configd. Flags: `--version <tag>`, `--url <base>` (private mirror),
 `--grant-bpf`, `--dry-run`, `--uninstall`, `--help`. Re-running upgrades in
 place.
+
+Serving it from a LAN host instead of GitHub:
+
+```sh
+sh install.sh --url http://10.0.0.10/synapseids            # version read from the mirror's SHA256SUMS
+sh install.sh --url http://10.0.0.10/synapseids --version v0.2.0
+sh install.sh --url http://10.0.0.10/synapseids --dry-run  # print every step, change nothing
+```
+
+With `--url` the installer never contacts `api.github.com` — it discovers the
+version from the mirror's own `SHA256SUMS` — so an air-gapped install works. The
+mirror must serve the `.pkg` and a `SHA256SUMS` listing it; both
+`<hash>␣␣<name>` and `<hash>␣␣./<name>` lines are accepted. `--dry-run` routes
+every mutating command through a printer, so it touches nothing.
+
+The file name is reconstructed from the firewall's own `pkg config abi`
+(`FreeBSD:14:amd64` → `…-freebsd14-amd64.pkg`, `FreeBSD:14:aarch64` →
+`…-freebsd14-arm64.pkg`). That derivation and the one in
+`scripts/package-opnsense.sh` are pinned against each other by
+`TestOPNsensePackageABIDerivation` in `make test`, and against the real artefacts
+by `tools/check-install-derivation.sh` — a mismatch there is a 404 that reads
+like a missing release.
 
 **The installer never handles the bearer token.** It does not ask for one,
 accept one on the command line, transmit one or log one — the token is entered
@@ -152,39 +243,74 @@ Sources live under `src/`, which maps to `/usr/local` on the target
 | `.../forms/dialogSensor.xml` | the form definition the Volt page renders |
 | `src/opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/index.volt` | the settings page, including the authorisation warning |
 | `src/opnsense/service/conf/actions.d/actions_synapseidssensor.conf` | the configd actions the API calls |
-| `src/opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS` | maps the two templates to their destinations |
-| `.../sensor.conf` | renders the command-line flags — **no secrets** |
+| `src/opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS` | maps the five templates to their destinations |
+| `.../sensor.conf` | renders the command-line flags plus the resolved capture device and how it was resolved — **no secrets** |
 | `.../sensor.token` | renders the bearer token, and nothing else |
-| `src/etc/rc.d/synapseids_sensor` | the FreeBSD service script: fixes ownership, checks BPF access, and runs the sensor as `_synapseids` under `daemon(8)` |
+| `.../sensor-ca.pem` | renders the peer CA bundle (`0444`) |
+| `.../sensor-cert.pem` | renders this sensor's certificate (`0444`) |
+| `.../sensor-key.pem` | renders this sensor's **private key** (`0400 _synapseids`) |
+| `src/etc/rc.d/synapseids_sensor` | the FreeBSD service script: fixes ownership, checks BPF access, **refuses to start unless the resolved capture device exists**, and runs the sensor as `_synapseids` under `daemon(8)`. Also provides the `selftest` verb |
 
 Plus `/usr/local/bin/synapse-sensor`, the cross-compiled static binary.
+
+### Development harnesses (not packaged)
+
+`contrib/opnsense/tools/` holds what makes this more than a `php -l` claim. None
+of it is in `pkg-plist`:
+
+```sh
+sh   contrib/opnsense/tools/check-plugin.sh             # everything below, plus php -l / XML / sh -n
+python3 contrib/opnsense/tools/render-templates.py      # render every configd template (Jinja2, mock context)
+php  contrib/opnsense/tools/test-sensor-model.php       # Sensor::performValidation against real key material
+sh   contrib/opnsense/tools/check-install-derivation.sh # install.sh vs. the real dist/*.pkg
+```
+
+`render-templates.py` covers the interface-identifier lookup in all four of its
+states, which is the assumption most likely to be wrong on real hardware.
+`shellcheck` is **not** run — it is not installed in the environment this was
+developed in, so no claim is made about it. `sh -n` is what runs.
 
 ## Secrets
 
 All paths are under `/usr/local/etc/synapseids/` (itself `0750
 root:_synapseids`).
 
+All five files are **rendered by configd** from the OPNsense configuration
+store; nothing is copied to the firewall by hand.
+
 | file | mode / owner | contents |
 |------|--------------|----------|
 | `sensor.conf` | `0640 root:wheel` | the command-line flags. **No secrets.** |
 | `sensor.token` | `0400 _synapseids:_synapseids` | **the bearer token, and nothing else** |
-| `peer-ca.pem` | `0444 root:wheel` | peer CA bundle (optional) |
+| `sensor-ca.pem` | `0444 root:wheel` | peer CA bundle (optional) |
 | `sensor-cert.pem` | `0444 root:wheel` | this sensor's certificate (optional mTLS) |
-| `sensor-key.pem` | `0400 _synapseids:_synapseids` | this sensor's private key (optional mTLS) |
+| `sensor-key.pem` | **`0400 _synapseids:_synapseids`** | **this sensor's TLS private key** |
 
 The token reaches the sensor through `--token-file`, never `--token`, so it is
 absent from `ps(1)`, from the rendered flag string, from shell history and from
-every log line (PROJECT.md §23). It is also held in the OPNsense configuration
-store, which is what the UI reads and writes. The `fixperms` configd action
-clamps these modes immediately after every `template reload` — closing the
-window in which configd's default umask would leave a freshly rendered token
-readable — and the `rc.d` script re-checks before every start.
+every log line (PROJECT.md §23). Only the *paths* of the PEM files reach `argv`.
 
-**Known gap:** the model stores the TLS PEM material, but `sensor.conf` only
-*names* the three paths; rendering the text itself needs three more configd
-template targets that this package does not yet install, so for now an operator
-places those files by hand. It fails safe — `rc.d` refuses to start, naming the
-missing file, whenever a flag references a PEM that is not on disk.
+**The two secrets — the token and the private key — are clamped identically.**
+configd renders templates as root under its own umask, so the `fixperms` configd
+action runs **immediately after** every `template reload` (from both
+`Api\SettingsController::applyConfiguration` and
+`Api\ServiceController::reconfigureAction`), and the `rc.d` `start_precmd`
+re-checks before every start. `synapse-sensor doctor` reports the modes it finds,
+so the property is checkable on the box rather than assumed.
+
+**It fails safe.** `rc.d` refuses to start — naming the path — whenever a flag
+references a PEM that is missing, empty or has no `-----BEGIN` line. There is no
+code path that turns absent TLS material into `--insecure-tls`. Additionally the
+model refuses at *save* time to store a blob that is not PEM, a private key
+pasted into a certificate field, an encrypted key (Go's `crypto/tls` cannot use
+one and an unattended firewall has nowhere to type a passphrase), or a key that
+does not match its certificate.
+
+> The CA file was called `peer-ca.pem` in the first cut of this plugin
+> ([ADR 0014](../../docs/adr/0014-freebsd-bpf-capture-and-the-opnsense-sensor-plugin.md));
+> it is `sensor-ca.pem` now that all five rendered files share one prefix
+> ([ADR 0028](../../docs/adr/0028-opnsense-tls-material-and-selftest.md)). No
+> released package ever installed the old name.
 
 ## Least privilege
 
@@ -243,22 +369,47 @@ ls -ld /var/log/synapseids /usr/local/etc/synapseids
 
 # 3. Do the UI pages load?  Services > SynapseIDS Sensor
 #    Does the form refuse to save without the "authorised" checkbox?
+#    Does it refuse a mismatched certificate/key pair, and an encrypted key?
 #    Does the ACL show up under System > Access > Groups?
+#    Does the "Run selftest" button return output?
 
-# 4. Do the configd templates render, with the right modes?
+# 4. Do all FIVE configd templates render, with the right modes?
 configctl template reload OPNsense/SynapseIDSSensor
-ls -l /usr/local/etc/synapseids/          # sensor.conf 0640 root:wheel, sensor.token 0400 _synapseids
+configctl synapseidssensor fixperms
+ls -l /usr/local/etc/synapseids/
+#   sensor.conf      0640 root:wheel
+#   sensor.token     0400 _synapseids:_synapseids
+#   sensor-ca.pem    0444 root:wheel
+#   sensor-cert.pem  0444 root:wheel
+#   sensor-key.pem   0400 _synapseids:_synapseids     <- the one that matters
 grep -c . /usr/local/etc/synapseids/sensor.conf   # and confirm the token is NOT in it
 
-# 5. Does the BPF capture actually work? (the biggest unknown)
-/usr/local/bin/synapse-sensor pcap-over-ip \
-    --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
+# 4b. THE BIG ONE: did the interface identifier resolve to a real device?
+grep synapseids_sensor_iface /usr/local/etc/synapseids/sensor.conf
+#   synapseids_sensor_iface="em0"                     <- must be a device, not "wan"
+#   synapseids_sensor_iface_src="interfaces.wan.if"   <- or helpers.physical_interface(wan)
+#   synapseids_sensor_iface_error=""                  <- must be empty
+# If iface_src says helpers.physical_interface(), the primary lookup failed and
+# that is worth reporting upstream. If iface_error is non-empty, the service will
+# refuse to start and say so, which is the intended behaviour.
+
+# 5. Run the selftest FIRST. It covers 2, 4, 4b and 6 in one command.
+service synapseids_sensor selftest
 
 # 6. Does the service run as the unprivileged user?
 service synapseids_sensor start
 ps -o user,command -p "$(cat /var/run/synapseids_sensor.pid)"
 
-# 7. Does a daemon see packets?
+# 6b. Is anything reaching the log? (the kept daemon(8) -f question)
+ls -l /var/log/synapseids/sensor.log
+# Empty while the service runs => drop -f from command_args in
+# /usr/local/etc/rc.d/synapseids_sensor. Capture is unaffected either way.
+
+# 7. Does the BPF capture actually work? (the biggest remaining unknown)
+/usr/local/bin/synapse-sensor pcap-over-ip \
+    --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
+
+# 8. Does a daemon see packets?
 curl -s http://<synapsed>:8080/api/v1/captures | jq
 ```
 
@@ -274,17 +425,28 @@ Two that are not OPNsense-API questions at all, and matter most:
   the `_synapseids` account — and that the Services page appears without a
   manual `service configd restart`.
 
-Then the places where an OPNsense API name could not be confirmed from here.
-Each is marked in the source with a `TODO(verify):` comment explaining the
-alternative, so `grep -rn 'TODO(verify)' src/` is the checklist:
+Then the places where an OPNsense API name could not be confirmed from a Linux
+build host. There were nine `TODO(verify):` markers in `src/`; **eight are now
+resolved and one is deliberately kept**, so `grep -rn 'TODO(verify)' src/` is a
+one-line checklist. Four of the eight were resolved by *removing* the dependency
+rather than confirming it. Full reasoning in
+[ADR 0028](../../docs/adr/0028-opnsense-tls-material-and-selftest.md).
 
-| file | what to confirm |
-|------|-----------------|
-| `templates/…/sensor.conf` | **the most likely thing to be wrong.** Does the configd Jinja context expose a top-level `interfaces` node whose child key is `if`, so `interfaces.wan.if` renders `em0`? Some templates use a helper such as `helpers.physical_interface()` instead. The lookup falls back to emitting the bare identifier, which makes `synapse-sensor` fail loudly at device open rather than capture the wrong interface. |
-| `models/…/Sensor.xml` | an empty `OptionValues` key cannot be written in XML, so the "All traffic" (empty `--filter`) choice relies on `Required=N` + `<BlankDesc>`. If the dropdown widget does not offer a blank entry, an explicit sentinel value is needed. |
-| `models/…/Sensor.php` | `\Phalcon\Messages\Message` (Phalcon 4/5, OPNsense 21.1+) vs `\Phalcon\Validation\Message` (Phalcon 3). |
-| `controllers/…/Api/SettingsController.php` | that `getModelNodes()` / `setModelNodes()` exist on this core's `ApiMutableModelControllerBase`. |
-| `controllers/…/Api/ServiceController.php` | that `ApiMutableServiceControllerBase` exposes a protected `getModel()` — used only for redacting the token out of the log response. |
-| `actions.d/actions_synapseidssensor.conf` | whether configd's `script_output` returns stdout on a non-zero exit. `onestatus` exits 1 when stopped, so `; exit 0` is appended; drop it if unnecessary. |
-| `etc/rc.d/synapseids_sensor` | whether `daemon -f` (redirect to `/dev/null`) defeats `-S -T` (syslog capture) on FreeBSD 14. If syslog stays empty, drop `-f` or add `-o /var/log/synapseids/sensor.log`. The UI log viewer reads that path, so syslogd must be pointed at it. |
-| `views/…/index.volt` | the `saveFormToEndpoint()` argument order on this core, and whether the base layout already provides `#service_status_container`. |
+**Still carried as a `TODO(verify)`:**
+
+| file | what to confirm | failure mode if the assumption is wrong |
+|------|-----------------|------------------------------------------|
+| `etc/rc.d/synapseids_sensor` | whether `daemon(8)`'s `-f` (supervisor std fds → `/dev/null`) also defeats `-o` / `-S -T` capture of the **child's** output on FreeBSD 14. `-f` is kept because configd reads this script to EOF and a supervisor holding that pipe open would hang the GUI's Start button. | **Capture is unaffected**; only `sensor.log` stays empty. The selftest's `log-sink` line says so and prints the remedy (drop `-f`). |
+
+**Resolved, but still worth an eye on the box** — each now fails loudly rather
+than silently, so a wrong guess is visible immediately:
+
+| file | assumption | how it fails if wrong |
+|------|-----------|------------------------|
+| `templates/…/sensor.conf` | that the configd Jinja context exposes a top-level `interfaces` node with an `if` child, so `interfaces.wan.if` → `em0`. Reasoned from the fact that the template already reads `OPNsense.…` out of the same dict. `helpers.physical_interface()` is tried second. | **Never binds to the wrong device and never to nothing.** Unresolvable → empty device + a recorded error → `rc.d` refuses to start; resolved-but-absent → `ifconfig` check refuses and lists the real devices. Check `synapseids_sensor_iface_src` to see which lookup won. |
+| `models/…/Sensor.xml` | `Required=N` + `<BlankDesc>` renders a blank "All traffic" dropdown entry (a `BaseListField` feature). | Cosmetic: the blank entry is not offered and only the four presets are selectable. Cannot produce a dead sensor. |
+| `models/…/Sensor.php` | `\Phalcon\Messages\Message` — Phalcon 4/5, i.e. OPNsense 21.1+. The package is only built for FreeBSD 14 ABIs (OPNsense 24.x/25.x), so pre-21.1 is out of scope. | Class-not-found on save: loud, immediate, first use. |
+| `controllers/…/Api/SettingsController.php` | `getModelNodes()`/`setModelNodes()` on `ApiMutableModelControllerBase` (present since 19.7). | Method-not-found on load/save: loud and immediate. |
+| `controllers/…/Api/ServiceController.php` | *removed* — the model is now instantiated directly instead of via a base-class `getModel()`. | n/a. |
+| `actions.d/actions_synapseidssensor.conf` | *removed* — `; exit 0` makes configd's non-zero `script_output` behaviour irrelevant, deliberately, rather than depending on the answer. | n/a. |
+| `views/…/index.volt` | `saveFormToEndpoint(url, formid, ok, disable_dialog, fail)` — the 20.x+ signature; and that a duplicate `#service_status_container` is harmless. | A visibly dead Save button plus a browser-console error. The status pill next to it is ours and always populates. |

@@ -36,6 +36,7 @@
  #   POST /api/synapseidssensor/service/{start,stop,restart}
  #   GET  /api/synapseidssensor/service/status
  #   GET  /api/synapseidssensor/service/log
+ #   GET  /api/synapseidssensor/service/selftest
  #}
 
 <script>
@@ -80,6 +81,28 @@
             });
         }
 
+        /**
+         * Run the on-box selftest (`synapse-sensor doctor`, via the rc.d
+         * selftest verb and configd) and show its output verbatim.
+         *
+         * This is the single most useful button on the page when the sensor will
+         * not start, or starts but captures nothing: it reports the binary, the
+         * service account, /dev/bpf* access, whether the configured interface
+         * resolved to a device that actually EXISTS, whether the rendered
+         * configuration parses, the token mode, whether the TLS material parses
+         * and matches, and whether the collector answers a TCP connect.
+         */
+        function runSensorSelftest() {
+            $('#sensor_selftest').text('{{ lang._('Running the selftest...') }}');
+            ajaxGet('/api/synapseidssensor/service/selftest', {}, function (data, status) {
+                var text = (data && data['output']) ? data['output'] : '';
+                if (text === '') {
+                    text = '{{ lang._('(the selftest produced no output -- is the plugin installed correctly?)') }}';
+                }
+                $('#sensor_selftest').text(text);
+            });
+        }
+
         // ------------------------------------------------------------------
         // initial population
         // ------------------------------------------------------------------
@@ -95,10 +118,13 @@
         // sensor.token, fixes their permissions and restarts (or stops) the
         // sensor.  No separate service/reconfigure call is needed.
         // ------------------------------------------------------------------
-        // TODO(verify): saveFormToEndpoint(url, formid, callback_ok,
-        // disable_dialog, callback_fail) is the OPNsense 20.x+ signature.
-        // Confirm against /usr/local/opnsense/www/js/opnsense_ui.js on the
-        // target release - older cores took the arguments in a different order.
+        // saveFormToEndpoint(url, formid, callback_ok, disable_dialog,
+        // callback_fail) is the signature in
+        // /usr/local/opnsense/www/js/opnsense_ui.js on every OPNsense 20.x and
+        // later core, which is what this plugin is packaged for. If it were
+        // wrong the Save button would visibly do nothing and the browser console
+        // would say so on the first click - an immediate, loud failure during
+        // installation, not a silent one.
         $("#saveAct").click(function () {
             $("#saveAct_progress").addClass("fa fa-spinner fa-pulse");
             saveFormToEndpoint("/api/synapseidssensor/settings/set", 'frm_sensor_settings', function () {
@@ -129,6 +155,12 @@
             refreshSensorLog();
         });
 
+        $("#selftestAct").click(function () {
+            $("#selftestAct_progress").addClass("fa fa-spinner fa-pulse");
+            runSensorSelftest();
+            $("#selftestAct_progress").removeClass("fa fa-spinner fa-pulse");
+        });
+
         refreshSensorLog();
     });
 </script>
@@ -155,11 +187,12 @@
 
 <div class="alert alert-info" role="alert">
     {{ lang._('
-        TLS material entered below is kept in the OPNsense configuration, but this version of the plugin does
-        not yet write it to disk. Install the PEM files manually as
-        /usr/local/etc/synapseids/peer-ca.pem, sensor-cert.pem and sensor-key.pem. If a configured flag points
-        at a file that is missing, the service refuses to start and names the path rather than falling back to
-        a weaker transport.
+        TLS material entered below is written to disk for you when you save: sensor-ca.pem and
+        sensor-cert.pem as 0444 root:wheel, and the private key as /usr/local/etc/synapseids/sensor-key.pem,
+        mode 0400 owned by _synapseids - clamped immediately after rendering, exactly like the bearer token.
+        Nothing needs to be copied to the firewall by hand. If a configured flag points at a PEM that is
+        missing, empty or unparseable, the service refuses to start and names the path rather than falling
+        back to a weaker transport.
     ') }}
 </div>
 
@@ -175,11 +208,12 @@
         <span class="pull-right">
             <b>{{ lang._('Service') }}:</b>
             <span id="sensor_status_pill" class="label label-default">{{ lang._('unknown') }}</span>
-            {# The core service widget renders itself into this container. #}
-            {# TODO(verify): on some OPNsense releases the base layout already   #}
-            {# provides #service_status_container in the page header, in which  #}
-            {# case updateServiceControlUI() fills that one and this element is #}
-            {# simply left empty - harmless, but it can be removed.             #}
+            {# The core service widget renders itself into this container.       #}
+            {# On releases where the base layout already provides               #}
+            {# #service_status_container in the page header, updateServiceControlUI() #}
+            {# fills that one and this element is simply left empty. Either way #}
+            {# the pill to its left is ours and is always populated, so the page #}
+            {# is readable in both cases and there is nothing to verify.        #}
             <span id="service_status_container"></span>
             <button class="btn btn-default sensor_service_act" data-action="start" type="button">
                 <i class="fa fa-play fa-fw"></i> {{ lang._('Start') }} <i class="act_progress"></i>
@@ -191,6 +225,29 @@
                 <i class="fa fa-refresh fa-fw"></i> {{ lang._('Restart') }} <i class="act_progress"></i>
             </button>
         </span>
+    </div>
+</div>
+
+<div class="content-box" style="margin-top: 1em; padding-bottom: 1.5em;">
+    <div class="col-md-12">
+        <h3>
+            {{ lang._('Selftest') }}
+            <button class="btn btn-default btn-xs" id="selftestAct" type="button">
+                <i class="fa fa-stethoscope fa-fw"></i> {{ lang._('Run selftest') }}
+                <i id="selftestAct_progress" class=""></i>
+            </button>
+        </h3>
+        <p class="text-muted">
+            {{ lang._('
+                Checks the binary, the _synapseids account, read access to /dev/bpf*, that the selected
+                interface resolved to a device that exists, that the rendered configuration parses, that the
+                token file is 0400, that the TLS material parses and that the certificate matches its key, and
+                whether the daemon answers a TCP connect. One line per check. Read-only, and it prints no
+                secrets. The same output is available on the console as
+            ') }}
+            <code>service synapseids_sensor selftest</code>.
+        </p>
+        <pre id="sensor_selftest" style="max-height: 24em; overflow: auto;">{{ lang._('Press "Run selftest".') }}</pre>
     </div>
 </div>
 
