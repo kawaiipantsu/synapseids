@@ -97,7 +97,7 @@ export interface Ingest {
 }
 
 export interface Rollup {
-  /** Per-second classification counts, oldest→newest, up to WINDOW entries. */
+  /** Per-second classification counts, oldest→newest, up to SPARK_WINDOW entries. */
   clsPerSec: number[]
   /** Per-second closed/updated flow counts. */
   flowPerSec: number[]
@@ -138,8 +138,7 @@ interface StreamContextValue {
 // ---------------------------------------------------------------------------
 
 /** Seconds of sparkline history every Dashboard series keeps. */
-export const SPARK_WINDOW = 90
-const WINDOW = SPARK_WINDOW
+const SPARK_WINDOW = 90
 const ROLL_WINDOW_MS = 5 * 60 * 1000 // top-talkers / ports / hosts window
 const RECENT_CAP = 20_000 // hard cap on the rolling-window event log
 const REPLAY_LOG_CAP = 60
@@ -381,8 +380,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       a.flowPerSec.push(a.flowPending)
       a.clsPending = 0
       a.flowPending = 0
-      if (a.clsPerSec.length > WINDOW) a.clsPerSec.splice(0, a.clsPerSec.length - WINDOW)
-      if (a.flowPerSec.length > WINDOW) a.flowPerSec.splice(0, a.flowPerSec.length - WINDOW)
+      if (a.clsPerSec.length > SPARK_WINDOW) a.clsPerSec.splice(0, a.clsPerSec.length - SPARK_WINDOW)
+      if (a.flowPerSec.length > SPARK_WINDOW) a.flowPerSec.splice(0, a.flowPerSec.length - SPARK_WINDOW)
 
       const cutoff = now - ROLL_WINDOW_MS
       if (a.recent.length && a.recent[0]!.t < cutoff) {

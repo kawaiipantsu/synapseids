@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { getClassifications, getDetections } from '../api/client'
-import type { Detection, DetectionList, Severity } from '../api/types'
-import type { Classification } from '../api/types'
+import type { Classification, Detection, DetectionList, Severity } from '../api/types'
 import { SEVERITIES } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
 import { CLASS_NAMES, classColor, severityColor } from '../lib/classes'
@@ -43,7 +42,7 @@ const WINDOWS: Array<[string, number]> = [
   ['24h', 1440],
 ]
 
-export function SeverityChip({ s }: { s: Severity }) {
+function SeverityChip({ s }: { s: Severity }) {
   return (
     <span className={`dt-sev ${s}`} style={{ background: severityColor(s) }}>
       {s}
