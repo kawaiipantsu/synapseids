@@ -1887,3 +1887,59 @@ table.rv-table .rv-tuple {
     flex-basis: 100%;
   }
 }
+
+
+/* ---------------------------------------------------------------------------
+   Downloadable investigation reports (issue #66, ADR 0023).
+
+   Self-contained block appended at the end of the file on purpose: several
+   sibling branches also edit styles.css, so keeping this addition isolated makes
+   a merge a concatenation rather than a conflict.
+
+   Only the two small download affordances live here — the report document itself
+   ships its own inline <style> from internal/report/html.go and shares none of
+   this stylesheet, because it has to render standalone from file://.
+   --------------------------------------------------------------------------- */
+
+.rep-dl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--edge);
+}
+.rep-dl-lbl {
+  color: var(--dim);
+}
+a.rep-dl-btn {
+  display: inline-block;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 4px 9px;
+  color: var(--ink);
+  text-decoration: none;
+  font: inherit;
+  line-height: 1.2;
+}
+a.rep-dl-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+}
+a.rep-dl-btn:focus-visible {
+  outline: 1px solid var(--accent);
+}
+.rep-dl-scope {
+  font-size: 11px;
+}
+@media (max-width: 900px) {
+  .rep-dl {
+    border-left: 0;
+    padding-left: 0;
+  }
+  .rep-dl-scope {
+    display: none;
+  }
+}

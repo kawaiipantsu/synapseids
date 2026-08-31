@@ -231,6 +231,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `#/detections` is untouched — it remains a "Planned — Phase 5" placeholder,
     since nothing emits `AlertCreated` yet.
 
+- **Downloadable investigation reports** (issue #66, EPIC Phase 5;
+  [ADR 0023](docs/adr/0023-downloadable-investigation-reports.md)). An operator
+  can now hand an investigation to someone else as one self-contained artefact —
+  a ticket attachment, an e-mail to a peer team, the record next to an incident
+  write-up (PROJECT.md §19.3, §19.4).
+  - `GET /api/v1/reports/host/{ip}?format=json|html&from=&to=` — a host
+    investigation report. `{ip}` is re-parsed with `net/netip` (`400` on a
+    non-literal, `404` on an unobserved address).
+  - `GET /api/v1/reports/range?from=&to=&format=&class=…` — the same artefact for
+    a time window. Both routes reuse the `/api/v1/classifications` filter dialect
+    (`class`, `model`, `min_confidence`, `disagreement`) verbatim and echo the
+    applied predicates back in the report.
+  - Both formats are downloads: `Content-Disposition: attachment; filename=…`,
+    plus `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. The
+    filename's scope segment is reduced to `[a-z0-9._-]`, so a packet-derived
+    address can neither escape the quoted header parameter nor produce a
+    traversal when the browser writes the file.
+  - **New package `internal/report`.** Builds the artefact from live state
+    (`storage.Store`, `internal/insight`, `inference.Runtime`) and renders it.
+    Deterministic given the same state, so its content is unit-testable. It
+    carries the generation time and the exact daemon version/commit/build date,
+    the scope, the host profile, the in-scope class breakdown, the timeline, top
+    peers/ports/protocols, the active model set, and the **notable flows** —
+    every verdict that disagreed across models or was not `normal` — each with
+    its tuple, timing, volume, **per-model outputs** and the named raw
+    `flow-features-v1` values behind it, plus a legend so those values are
+    interpretable offline.
+  - **Honesty rules, enforced structurally.** `coverage` (machine-readable) and
+    `notes` (prose) come before the findings.
+    - Behavioural baselines and anomaly scores are Phase 7: the report always
+      carries an explicit "not available in this build" warning stating that the
+      absence of an anomaly finding does **not** mean the traffic was checked
+      against a baseline and found normal. No empty chart that reads as clean.
+    - `storage.Mem` evicts and `insight`'s host map and top-N lists are capped, so
+      the report reads their eviction/prune counters and says **"PARTIAL VIEW"**
+      naming the limit whenever one bit: store eviction, the 5000-verdict scan
+      budget filling, a window starting before retention, host eviction, a pruned
+      top-N, dropped observations, late timeline samples, or a verdict that
+      outlived its flow record (marked per flow, never zeroed).
+    - The notable-flow table is capped at **500** (`limit=`, max 2000) and says
+      **"TRUNCATED"** with both counts when the cap bites.
+  - **HTML output is one standalone file** rendered with `html/template`: a single
+    inline `<style>` in the project's dark palette plus a `@media print` block, no
+    external stylesheet, no CDN, no `<script>`, no `<img>`, no webfont — it opens
+    from `file://` with no network access. `html/template` is the injection
+    control, not a style choice: every value in a report is packet- or
+    request-derived and therefore untrusted (§21, §28.11). A test feeds eleven
+    hostile payloads (`<script>alert(1)</script>`,
+    `"><img src=x onerror=alert(1)>`, CSS/CRLF/`<title>` breakouts and more)
+    through the host address, peer address, protocol, sensor, close reason, model
+    ID, class name and filter echo, and asserts a tag-level scan of the output
+    finds no element or attribute outside an allowlist; a negative control renders
+    the same template through `text/template` and asserts the payload *does*
+    survive there.
+  - **SPA:** a **Download report** control (HTML / JSON) on
+    `#/investigate?host=<ip>` that carries the currently-brushed timeline range
+    and the active class/disagreement filters, and a per-row `report` link on
+    `#/hosts`. Rendering stays server-side; both are plain `<a href>`
+    navigations, so the browser's own download path is used. The client grows
+    ~0.35 KB gzip.
+
 - **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
   [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
   materialised dataset's structure (PROJECT.md §19.11): per-feature

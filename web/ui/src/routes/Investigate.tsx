@@ -5,6 +5,7 @@ import {
   getHostFlows,
   getHosts,
   getTimeline,
+  hostReportURL,
   type BucketWidth,
 } from '../api/client'
 import { useStream } from '../api/stream'
@@ -50,6 +51,59 @@ function BarRow({ label, value, max, color }: { label: string; value: number; ma
       </span>
       <span className="n">{fmtInt(value)}</span>
     </div>
+  )
+}
+
+/**
+ * Download report (issue #66, ADR 0023). Two plain links, because the daemon
+ * sends `Content-Disposition: attachment` and the browser's own download path is
+ * better than anything a fetch+Blob would give us.
+ *
+ * The URL carries whatever the operator has already framed: the brushed timeline
+ * range and the active class/disagreement filters. That is the natural
+ * interaction — they have narrowed the view to what they care about, and the
+ * artefact should describe exactly that, not silently widen back to everything.
+ */
+function ReportLinks({
+  host,
+  range,
+  bucket,
+  classFilter,
+  disagreeOnly,
+}: {
+  host: string
+  range: Range | null
+  bucket: BucketWidth
+  classFilter: string
+  disagreeOnly: boolean
+}) {
+  const p = {
+    from: range?.from,
+    to: range?.to,
+    bucket,
+    class: classFilter || undefined,
+    disagreement: disagreeOnly || undefined,
+  }
+  const scope = range ? 'brushed range' : 'retained window'
+  return (
+    <span className="rep-dl">
+      <span className="rep-dl-lbl">download report</span>
+      <a
+        className="rep-dl-btn"
+        href={hostReportURL(host, { ...p, format: 'html' })}
+        title={`standalone HTML report for ${host} — ${scope}`}
+      >
+        HTML
+      </a>
+      <a
+        className="rep-dl-btn"
+        href={hostReportURL(host, { ...p, format: 'json' })}
+        title={`JSON report for ${host} — ${scope}`}
+      >
+        JSON
+      </a>
+      <span className="rep-dl-scope dim">{scope}</span>
+    </span>
   )
 }
 
@@ -213,6 +267,13 @@ export function Investigate() {
           auto-refresh
         </label>
         <button onClick={load}>refresh</button>
+        <ReportLinks
+          host={host}
+          range={range}
+          bucket={bucket}
+          classFilter={classFilter}
+          disagreeOnly={disagreeOnly}
+        />
         <span className="spacer" />
         <span className="dim">{connected ? 'stream live' : 'stream down'}</span>
       </div>

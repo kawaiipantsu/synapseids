@@ -351,7 +351,7 @@ curl -sS -X DELETE http://127.0.0.1:8080/api/v1/captures/lo
 | `--limit N` | `20` | — |
 | `--speed S` | `1` | — |
 
-**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `datasets/{ref}/stats` (GET) · `training` (GET/POST) · `training/{id}` (GET) · `training/{id}/progress` (POST) · `training/{id}/fail` (POST) · `review/queue` (GET) · `review` (GET) · `review/stats` (GET) · `review/{flow_id}` (GET/PUT/POST) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
+**REST** (`/api/v1`): `status` · `flows` · `flows/{id}` · `classifications` · `hosts` · `hosts/{ip}` · `hosts/{ip}/flows` · `hosts/{ip}/classifications` · `timeline` · `reports/host/{ip}` (GET, `format=json|html`) · `reports/range` (GET, `format=json|html`) · `models` · `captures` (GET/POST) · `captures/{name}` (GET/DELETE) · `datasets` (GET/POST) · `datasets/{ref}` (GET/DELETE) · `datasets/{ref}/download` (GET) · `datasets/{ref}/stats` (GET) · `training` (GET/POST) · `training/{id}` (GET) · `training/{id}/progress` (POST) · `training/{id}/fail` (POST) · `schemas/features` · `schemas/classes` · `replay` (GET/POST) · `replay/stop` (POST) · `stream` (WebSocket).
 
 `{ref}` is a url-escaped `<id>@<version>` — a dataset id may contain one `/`
 (`thugs/lab-attacks-2026-08`), so the whole reference travels as one segment.
