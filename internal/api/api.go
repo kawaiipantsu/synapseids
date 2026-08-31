@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -203,8 +204,118 @@ func (s *Server) handleFlow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, fr)
 }
 
+// classFilterScan is how many recent verdicts a filtered query walks before it
+// caps at the requested limit. The memory store has no indexes, so a filter is a
+// linear scan of the newest window; a predicate-pushdown backend (SQLite) will
+// replace this.
+const classFilterScan = 5000
+
 func (s *Server) handleClassifications(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.RecentClassifications(limitParam(r, 100, 5000)))
+	q := r.URL.Query()
+	limit := limitParam(r, 100, 5000)
+
+	f, ok := parseClassFilters(w, q)
+	if !ok {
+		return // parseClassFilters already wrote a 400
+	}
+	if f.empty() {
+		writeJSON(w, http.StatusOK, s.store.RecentClassifications(limit))
+		return
+	}
+
+	rows := s.store.RecentClassifications(classFilterScan)
+	out := make([]storage.Classification, 0, limit)
+	for _, c := range rows {
+		if f.match(c) {
+			out = append(out, c)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// classFilters holds the optional GET /api/v1/classifications query predicates.
+// Every field is additive: a request with none of them keeps the legacy
+// behaviour (newest `limit`, max 5000).
+type classFilters struct {
+	disagreement bool    // disagreement=true  → only Result.Disagreement rows
+	class        string  // class=<name>       → Result.Class == name (validated)
+	model        string  // model=<id>         → any Result.Models[].ModelID == id
+	minConf      float64 // min_confidence=... → Result.Score >= threshold (0..1)
+	hasMinConf   bool
+}
+
+func (f classFilters) empty() bool {
+	return !f.disagreement && f.class == "" && f.model == "" && !f.hasMinConf
+}
+
+func (f classFilters) match(c storage.Classification) bool {
+	if f.disagreement && !c.Result.Disagreement {
+		return false
+	}
+	if f.class != "" && c.Result.Class != f.class {
+		return false
+	}
+	if f.hasMinConf && c.Result.Score < f.minConf {
+		return false
+	}
+	if f.model != "" {
+		found := false
+		for _, m := range c.Result.Models {
+			if m.ModelID == f.model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// parseClassFilters reads the query params, validating as it goes. On a bad
+// value it writes a 400 and returns ok=false.
+func parseClassFilters(w http.ResponseWriter, q url.Values) (classFilters, bool) {
+	var f classFilters
+
+	f.disagreement = q.Get("disagreement") == "true"
+
+	if v := q.Get("class"); v != "" {
+		if !validClassName(v) {
+			http.Error(w, "unknown class name", http.StatusBadRequest)
+			return f, false
+		}
+		f.class = v
+	}
+
+	f.model = q.Get("model")
+
+	if v := q.Get("min_confidence"); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil || n < 0 {
+			http.Error(w, "bad min_confidence", http.StatusBadRequest)
+			return f, false
+		}
+		if n > 1 { // accept a 0..100 percentage, like the web UI's slider
+			n /= 100
+		}
+		f.minConf, f.hasMinConf = n, true
+	}
+
+	return f, true
+}
+
+// validClassName reports whether name is a traffic-classes-v1 class.
+func validClassName(name string) bool {
+	for _, c := range schema.TrafficClassesV1().Classes {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {

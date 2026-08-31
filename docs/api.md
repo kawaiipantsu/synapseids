@@ -40,6 +40,7 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "classifications": 128,
     "flows_evicted": 0,
     "classifications_evicted": 0,
+    "disagreements": 3,
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
@@ -61,6 +62,10 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
 `live.client_drops` is the count of WebSocket clients dropped for being too slow
 (see [below](#backpressure)). When a replay is running, `replay` also carries
 `id`, `source`, `speed` and (on failure) `last_error`.
+
+`storage.disagreements` is the cumulative number of stored classifications whose
+ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
+not just those still in the ring (PROJECT.md §12, §24).
 
 ### GET /api/v1/flows
 
@@ -110,8 +115,8 @@ close record supersedes an earlier snapshot).
 
 ### GET /api/v1/classifications
 
-Recent ensemble verdicts, newest first — this is the rolling-log feed. Query:
-`limit` (default `100`, max `5000`). `200` → JSON array of `Classification`:
+Recent ensemble verdicts, newest first — this is the rolling-log feed. `200` →
+JSON array of `Classification`:
 
 ```json
 [
@@ -145,12 +150,39 @@ Recent ensemble verdicts, newest first — this is the rolling-log feed. Query:
 ]
 ```
 
-`result.class` / `class_id` / `score` are the primary model's top class.
-`result.models[]` holds every model's full output — `scores` is the 7-element
-`traffic-classes-v1` distribution (PROJECT.md §12: store per-model outputs, not
-just the combined decision). `disagreement` is `true` when more than one distinct
-non-anomaly class is predicted across the ensemble; the pipeline also emits a
-`ModelDisagreementDetected` event in that case.
+`result.class` / `class_id` / `score` are the verdict-driving model's top class —
+the first `primary`-role model, or, absent any primary, the first
+non-`experimental` model. `result.models[]` holds **every** model's full output —
+`scores` is the 7-element `traffic-classes-v1` distribution (PROJECT.md §12: store
+per-model outputs, not just the combined decision). `disagreement` is `true` when
+the alert-driving models — every role **except `experimental` and `anomaly`** —
+predict more than one distinct top class; the pipeline also emits a
+`ModelDisagreementDetected` event in that case, carrying the same per-model
+breakdown.
+
+#### Query parameters
+
+All optional and combinable. With none of them the response is the newest `limit`
+verdicts unchanged. When any filter is present the endpoint scans the most recent
+5000 stored verdicts, applies the predicates, and returns the newest `limit`
+matches (the in-memory store has no indexes; a SQLite backend will push these
+down).
+
+| Param | Meaning |
+|---|---|
+| `limit` | Max rows returned. Default `100`, clamped to `5000`. Missing / non-numeric / `< 1` → default. |
+| `disagreement` | `disagreement=true` returns only rows where `result.disagreement` is set. Any other value is ignored. |
+| `class` | `class=<name>` returns only rows whose `result.class` equals `<name>`. `<name>` must be a `traffic-classes-v1` class (`normal`, `scan`, `dos_ddos`, `brute_force`, `botnet_c2`, `web_attack`, `suspicious`); anything else → `400 unknown class name`. |
+| `model` | `model=<id>` returns only rows where some `result.models[].model_id` equals `<id>` (matches shadow/experimental models too, since their output is still recorded). |
+| `min_confidence` | `min_confidence=<n>` returns only rows where `result.score >= n`. `n` in `0..1` is a fraction; `n > 1` is read as a `0..100` percentage (so `0.9` and `90` are equivalent, matching the web UI's slider). Negative or non-numeric → `400 bad min_confidence`. |
+
+Examples:
+
+```text
+GET /api/v1/classifications?disagreement=true
+GET /api/v1/classifications?class=scan&min_confidence=90
+GET /api/v1/classifications?model=global-v1&limit=500
+```
 
 ### GET /api/v1/models
 

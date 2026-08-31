@@ -13,10 +13,11 @@ type Mem struct {
 	byID      map[uint64]FlowRecord
 	flowEvict uint64
 
-	cls      []Classification
-	clsHead  int
-	clsFull  bool
-	clsEvict uint64
+	cls         []Classification
+	clsHead     int
+	clsFull     bool
+	clsEvict    uint64
+	clsDisagree uint64
 }
 
 // NewMem returns a Mem with the given capacities (each floored at 1).
@@ -60,6 +61,9 @@ func (m *Mem) PutClassification(c Classification) {
 	if m.clsFull {
 		m.clsEvict++
 	}
+	if c.Result.Disagreement {
+		m.clsDisagree++
+	}
 	m.cls[m.clsHead] = c
 	m.clsHead = (m.clsHead + 1) % len(m.cls)
 	if m.clsHead == 0 {
@@ -98,6 +102,7 @@ func (m *Mem) Stats() Stats {
 		Classifications: ringLen(m.clsHead, m.clsFull, len(m.cls)),
 		FlowsEvicted:    m.flowEvict,
 		ClassEvicted:    m.clsEvict,
+		Disagreements:   m.clsDisagree,
 		Driver:          "memory",
 	}
 }
