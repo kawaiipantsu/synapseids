@@ -149,10 +149,12 @@ func (a Architecture) IsZero() bool {
 	return a.InputSize == 0 && a.OutputSize == 0 && len(a.Hidden) == 0
 }
 
-// ValidateArchitecture reports whether a model's declared input and output
-// layers still match this build's frozen feature and output schemas. The hidden
-// layers are the trainer's to choose; the edge layers are not (PROJECT.md §10,
-// §28.6).
+// ValidateArchitecture reports whether an architecture is buildable for this
+// build: its input and output layers must match the frozen feature and output
+// schemas (the edge layers are locked, not the trainer's to choose — PROJECT.md
+// §10, §28.6), and every editable hidden layer must have a positive width, a
+// supported activation, an in-range dropout and — if residual — a matching
+// previous width. The hidden-stack rules mirror the trainer's architecture.py.
 func ValidateArchitecture(a Architecture) error {
 	if a.InputSize != flowFeaturesV1.InputSize {
 		return fmt.Errorf("architecture.input_size %d != %s input_size %d", a.InputSize, flowFeaturesV1.Schema, flowFeaturesV1.InputSize)
@@ -160,7 +162,7 @@ func ValidateArchitecture(a Architecture) error {
 	if a.OutputSize != trafficClassesV1.OutputSize {
 		return fmt.Errorf("architecture.output_size %d != %s output_size %d", a.OutputSize, trafficClassesV1.Schema, trafficClassesV1.OutputSize)
 	}
-	return nil
+	return validateHiddenStack(a)
 }
 
 // ValidateBundle reports whether a model bundle's feature/output contract matches

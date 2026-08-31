@@ -78,7 +78,7 @@ respected.
 | `packet` | Bounds-checked decode of Ethernet/VLAN/IPv4/IPv6/TCP/UDP/ICMP into the normalized `Packet` (timestamps, tuple, TCP flags/window, lengths). Never keeps payload bytes. | stdlib only | anything else in the tree |
 | `capture` | `Source` interface + adapters. Phase 1: `PCAPFile` (classic pcap plus a minimal read-only pcapng reader — SHB/IDB/EPB/SPB, Ethernet or RAW) and `Replay` (paces an inner source to wall-clock × speed). `Stats` counters. | `packet` | `flow`, `features`, `inference`, `storage`, `events`, `api` |
 | `flow` | `Key` (direction-normalized 5-tuple), `Record` (raw accumulators + derived-stat methods), `Table` (lifecycle: open, fold, snapshot, close, evict, TIME_WAIT grace). Single-goroutine. | `packet` | `features`, `inference`, `capture`, `storage`, `events`, `api` |
-| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle` and `Architecture` + `ValidateArchitecture` for model bundles. `init()` panics on drift. | `schemas` | everything else internal |
+| `schema` | The frozen contracts: typed views of `flow-features-v1`, `traffic-classes-v1`, `BundleMeta` + `ValidateBundle`, and `Architecture` + `ValidateArchitecture` plus the shared `ParameterCount` / `ApproxBytes` / `RoughFLOPs` / `LayerBreakdown` estimate math (ported from the trainer). `init()` panics on drift. | `schemas` | everything else internal |
 | `features` | `Extract(flow.Record) → Vector` (the 48 `flow-features-v1` values); `Normalizer` interface with `Identity` / `Log1p` and the fitted `Affine` (`NewStandardNormalizer` / `NewMinMaxNormalizer`). No raw-IP arithmetic. | `flow`, `packet`, `schema` | `inference`, `storage`, `events`, `capture`, `api` |
 | `nn` | Dependency-free, CGO-free ONNX executor for the feed-forward MLPs the trainer emits: a hand-rolled protobuf-wire reader plus a batch-1, all-`float32`, deterministic graph runner over a fixed op subset (`Gemm`, `MatMul`, `Add`, `Relu`/`LeakyRelu`/`Sigmoid`/`Tanh`, `BatchNormalization`, `Dropout`, `Softmax`, `Identity`, `Flatten`, `Reshape`, `Constant`). Unknown op → load error; malformed model → error, never a panic. `Load`/`LoadFile`/`Model.Run`. See [ADR 0005](adr/0005-go-onnx-inference-runtime.md). | stdlib only | everything else internal |
 | `inference` | `Classifier` interface, `Role`, `Runtime` (scores a vector through every model, records each `ModelOutput`, flags disagreement, picks the primary; `Activate` / `Deactivate` / `SetModels` swap the live model set atomically under an `RWMutex`), the rule-based `Heuristic`, and `ONNXModel` — the adapter that makes a loaded `nn.Model` a `Classifier` (with an optional per-model `Normalizer`). | `features`, `schema`, `nn` | `storage`, `events`, `capture`, `flow`, `api`, `pipeline` |
@@ -230,8 +230,11 @@ feature.
   WebSocket, polls `/api/v1/status` once a second, fans event batches to
   subscribers, and keeps rolling client-side aggregates for the Dashboard.
 - **Wired views:** Dashboard, the full-screen Flow Log, the Flow Inspector
-  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), and Replay
-  control. Every other §19 route is a "Planned — Phase N" placeholder.
+  (`GET /api/v1/flows/{id}` joined to `GET /api/v1/schemas/features`), Replay
+  control, and the ML ▸ Architecture builder (`POST
+  /api/v1/architecture/estimate`; locked 48/7 edges, editable hidden stack, live
+  parameter/size/FLOP estimates, `schema.Architecture` export). Every other §19
+  route is a "Planned — Phase N" placeholder.
 
 ## Model bundles
 
@@ -320,7 +323,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Anomaly / location / global / experimental model roles wired end to end | `internal/nn` runs ONNX MLPs; `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle; `internal/registry` records it with lineage; `POST /api/v1/models/{id}/activate` compiles it and swaps it into `inference.Runtime` as the single `RolePrimary`, `deactivate` restores `inference.Heuristic` (issues #24–#26; [ADR 0009](adr/0009-model-registry-lineage-and-explicit-activation.md)). Multi-model ensembles (a trained primary *and* a shadow/anomaly peer at once) are not wired yet — `Runtime.SetModels` is the seam. The offline `synapse-trainer` lives in `trainer/` ([ADR 0007](adr/0007-python-trainer-and-bundle-export.md)). | see EPIC: Phase 2 / 7 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
-| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
+| The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector, Replay control and the Architecture builder wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |
 | Anomaly model, model compare, drift, human review, datasets, training UI | — | see EPIC: Phase 4, Phase 5, Phase 7 |
 | YAML config, retention sweeper, host/investigation/detection API groups | JSON config; rings are size-bounded, not time-bounded | see EPIC: Phase 2 ([ADR 0002](adr/0002-flow-features-v1-frozen-and-json-config.md)), Phase 5 |
 

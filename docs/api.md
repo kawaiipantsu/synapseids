@@ -330,6 +330,55 @@ The frozen `flow-features-v1` document, served verbatim from the embedded
 The frozen `traffic-classes-v1` document, verbatim from
 `schemas/outputs/traffic-classes-v1.json`. `200`, `application/json`.
 
+### POST /api/v1/architecture/estimate
+
+Parameter, size and FLOP math for a candidate `flow-classifier-v1` hidden stack
+— the compute behind the ML ▸ Architecture builder (PROJECT.md §10, §19.9). Pure
+compute: no auth, no state.
+
+Body (JSON, capped at 64 KiB) is a `schema.Architecture`. Only `hidden` is read;
+`input_size` / `output_size` are **locked** to the frozen feature and output
+schemas (48 / 7) and forced server-side regardless of what is sent.
+
+```json
+{
+  "hidden": [
+    { "width": 64, "activation": "relu", "dropout": 0.3, "batchnorm": true },
+    { "width": 32, "activation": "relu" }
+  ]
+}
+```
+
+- `200` — always, when the body parses:
+
+  ```json
+  {
+    "valid": true,
+    "parameter_count": 5575,
+    "approx_bytes": 22300,
+    "rough_flops": 10688,
+    "layers": [
+      { "name": "hidden_1 (+bn)", "in": 48, "out": 64, "params": 3264 },
+      { "name": "hidden_2", "in": 64, "out": 32, "params": 2080 },
+      { "name": "output", "in": 32, "out": 7, "params": 231 }
+    ]
+  }
+  ```
+
+  When the hidden stack is not buildable — a width `<= 0`, a `dropout` outside
+  `[0, 1)`, an `activation` other than `relu` / `leaky_relu` / `sigmoid` /
+  `tanh`, or a `residual` layer whose previous width differs — `valid` is
+  `false` and `error` carries the reason. The math fields are still returned as
+  a best-effort estimate.
+- `400` `bad request body: expected a schema.Architecture JSON object` —
+  unparseable JSON.
+
+The formulas match `internal/schema/architecture.go` and the trainer's
+`trainer/synapse_trainer/architecture.py`: a Dense `prev -> w` layer is
+`w*prev + w` parameters, an affine `BatchNorm1d(w)` adds `2*w`, `approx_bytes` is
+`parameter_count * 4` (fp32), and `rough_flops` is `2*prev*w` summed over the
+Dense layers.
+
 ### GET /api/v1/replay
 
 Current replay state. `200` → the `replay` object from `/status`. `503`

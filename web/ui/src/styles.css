@@ -598,6 +598,134 @@ table.mini td.num {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------------------------------------------------------------- architecture builder */
+
+.arch {
+  max-width: 1120px;
+}
+.arch-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  margin: 4px 0 4px;
+}
+.arch-node {
+  border: 1px solid var(--edge);
+  border-radius: 10px;
+  background: var(--panel2);
+  padding: 10px 14px;
+}
+.arch-node.locked {
+  border-style: dashed;
+  text-align: center;
+  color: var(--dim);
+  letter-spacing: 0.5px;
+}
+.arch-node.locked b {
+  color: var(--ink);
+  font-size: 15px;
+}
+.arch-node.locked .tag {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  margin-left: 6px;
+}
+.arch-conn {
+  align-self: center;
+  width: 2px;
+  height: 14px;
+  background: var(--edge);
+}
+.arch-layer {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 12px;
+  align-items: start;
+}
+.arch-layer .idx {
+  color: var(--dim);
+  text-align: right;
+  padding-top: 6px;
+}
+.arch-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+}
+.arch-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dim);
+}
+.arch-fields input[type="number"] {
+  width: 76px;
+}
+.arch-fields .hint {
+  color: var(--suspicious);
+  font-size: 11px;
+}
+.arch-ops {
+  display: flex;
+  gap: 4px;
+}
+.arch-ops button {
+  padding: 3px 8px;
+}
+.arch-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.arch-warn {
+  border: 1px solid var(--suspicious);
+  border-radius: 8px;
+  background: rgba(255, 209, 102, 0.08);
+  color: var(--suspicious);
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+.arch-warn.err-banner {
+  border-color: var(--dos);
+  background: rgba(255, 92, 108, 0.08);
+  color: var(--dos);
+}
+.arch-warn ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.arch-json {
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre;
+  color: var(--ink);
+}
+.arch-io textarea {
+  width: 100%;
+  min-height: 96px;
+  margin-top: 4px;
+  background: var(--panel2);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+}
+.arch .thugs {
+  letter-spacing: 1px;
+}
+
 @media (max-width: 720px) {
   .app-body {
     grid-template-columns: 1fr;

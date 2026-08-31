@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Architecture Builder** (issue #22, PROJECT.md §19.9). New `POST
+  /api/v1/architecture/estimate`: given a `schema.Architecture` body it returns
+  `{valid, error?, parameter_count, approx_bytes, rough_flops, layers[]}`. The
+  input/output layers are forced to the locked 48 / 7 regardless of the request
+  (§10). The parameter/size/FLOP math is a new shared `schema.Architecture`
+  method set — `ParameterCount`, `ApproxBytes`, `RoughFLOPs`, `LayerBreakdown` —
+  ported line-for-line from `trainer/synapse_trainer/architecture.py` so a UI
+  estimate agrees with what the trainer reports. `schema.ValidateArchitecture`
+  now also checks the hidden stack (width, activation, dropout range, residual
+  width match), mirroring the trainer.
+- The operator SPA's **ML ▸ Architecture** route is now wired (was a
+  "Planned — Phase 4" placeholder): locked `INPUT 48` / `OUTPUT 7` blocks, an
+  editable hidden-layer stack (add / delete / reorder, per-layer width /
+  activation / dropout / batchnorm / residual with the residual toggle disabled
+  and explained unless the previous width matches), a live estimates panel with
+  a per-layer parameter breakdown, a non-blocking "obviously excessive" warning
+  banner (any width > 2048, or total params > 50× the baseline net), and
+  copy / download / paste of the `schema.Architecture` JSON. The working draft
+  persists to `localStorage`.
 - **Model registry with lineage + explicit activation** (issue #26, EPIC Phase 2;
   [ADR 0009](docs/adr/0009-model-registry-lineage-and-explicit-activation.md)).
   - `internal/registry` records one entry per validated bundle — the §11
@@ -47,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `event-envelope-v1` enum — no new type added).
   - `model.Metadata` gains an additive optional `derived_from` field (absent =
     lineage root); the validation contract is unchanged.
+
 - `/api/v1/status` now carries a `flow` object — the live flow table's `active`,
   `started`, `closed`, `snapshots` and `evicted` counters plus the configured
   `max` (`capture.max_flows` / `SYNAPSE_MAX_FLOWS`) — so oldest-idle eviction
