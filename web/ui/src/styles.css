@@ -1143,6 +1143,206 @@ th .caret {
   }
 }
 
+/* =====================================================================
+   Dataset Explorer (PROJECT.md §19.11; issues #37/#67) — routes/DatasetExplorer.tsx
+   Owned by the feature/dataset-explorer branch. Sibling branches: append
+   your own clearly-marked block rather than editing this one.
+   ===================================================================== */
+
+.dx-picklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dx-picklist li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--edge);
+}
+
+.dx-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.dx-bar-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 56px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.dx-bar-label {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-bar-track {
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden;
+}
+.dx-bar-fill {
+  display: block;
+  height: 100%;
+}
+.dx-bar-val {
+  text-align: right;
+  color: var(--ink);
+}
+
+.dx-sidebyside {
+  margin-top: 12px;
+}
+
+/* correlation heatmap */
+.dx-heatwrap {
+  margin-top: 8px;
+}
+.dx-heat {
+  display: block;
+  image-rendering: pixelated;
+  border: 1px solid var(--edge);
+}
+.dx-heat-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 5;
+}
+
+/* feature distribution grid */
+.dx-fgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.dx-fcard {
+  text-align: left;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+}
+.dx-fcard:hover {
+  border-color: var(--accent);
+}
+.dx-fname {
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-fmeta {
+  font-size: 10px;
+  color: var(--dim);
+}
+.dx-mini {
+  display: block;
+  width: 100%;
+  height: 34px;
+}
+.dx-degenerate {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--dim);
+}
+.dx-tag,
+.dx-fname .dx-tag {
+  margin-left: 4px;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--edge);
+  color: var(--dim);
+}
+
+.dx-detail {
+  margin-top: 12px;
+  border-color: var(--accent);
+}
+.dx-detail-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dx-detail-svg {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+}
+.dx-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+/* PCA scatter */
+.dx-pca-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.dx-pca-ctl label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.dx-pca-wrap {
+  overflow-x: auto;
+}
+.dx-pca {
+  display: block;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+}
+.dx-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.dx-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.dx-warn {
+  color: var(--suspicious);
+}
+
+
 /* ==========================================================================
    ML ▸ Training dashboard (§19.8, issue #35, ADR 0019)
    Self-contained block — a sibling branch also edits this file; keep the

@@ -12,6 +12,7 @@ import type {
   Dataset,
   DatasetCreateInput,
   DatasetList,
+  DatasetStats,
   FeatureSchema,
   FlowRecord,
   HostProfile,
@@ -111,6 +112,12 @@ export function datasetDownloadURL(id: string, version: string): string {
 
 export function getDatasets(): Promise<DatasetList> {
   return getJSON<DatasetList>('/api/v1/datasets')
+}
+
+/** GET /api/v1/datasets/{ref}/stats — the Dataset Explorer bundle (§19.11,
+ *  issues #37/#67). Big but bounded; the daemon caches it per content hash. */
+export function getDatasetStats(id: string, version: string): Promise<DatasetStats> {
+  return getJSON<DatasetStats>(`/api/v1/datasets/${datasetRef(id, version)}/stats`)
 }
 
 export interface DatasetMutationResult {

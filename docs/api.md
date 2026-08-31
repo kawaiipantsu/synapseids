@@ -644,6 +644,81 @@ followed by `label`; every data row is 48 floats and a `traffic-classes-v1` clas
 name. This is exactly what `trainer/synapse_trainer/dataset.py` `load_csv` reads,
 with no adaptation. `400` / `404` / `503` as above.
 
+### GET /api/v1/datasets/{ref}/stats
+
+The **Dataset Explorer** bundle (PROJECT.md §19.11; issues #37 and #67). Every
+value is derived server-side from the immutable `dataset.csv` and cached by the
+version's `content_hash`, so repeated calls are cheap and byte-for-byte
+identical. Read-only, unauthenticated. `400` bad ref · `404` unknown version ·
+`500` the CSV on disk is unreadable/malformed · `503` no dataset manager wired.
+
+```jsonc
+{
+  "ref": "thugs/lab-attacks-2026-08@v1",
+  "content_hash": "sha256:7bb0e464…",
+  "row_count": 1124,
+  "feature_count": 48,
+
+  "feature_stats": [               // one entry per flow-features-v1 feature, schema order
+    {
+      "index": 3, "name": "bytes_forward", "unit": "bytes", "norm": "log1p",
+      "min": 0, "max": 4.1e6, "mean": 5123.4, "stddev": 90211.7,
+      "p25": 40, "p50": 220, "p75": 1460,
+      "degenerate": false,         // true ⇒ every row equal; bin_* are null
+      "log_scale": true,           // histogram edges are log1p-spaced
+      "bin_edges": [ /* 25 */ ], "bin_counts": [ /* 24 */ ]
+    }
+  ],
+
+  "label_distribution": {
+    "classes": [ /* 7 traffic-classes-v1 names */ ],
+    "counts": [817,304,1,0,0,2,0], "fractions": [0.727, …],
+    "total": 1124,
+    "unknown": {},                 // labels in the CSV that are not schema classes
+    "manifest_mismatch": false     // CSV counts vs the manifest's label_counts
+  },
+
+  "correlation": {                 // 48×48 Pearson, row-major flattened
+    "names": [ /* 48 feature names */ ],
+    "size": 48,
+    "matrix": [ /* size*size floats; matrix[i*size+j] = corr(i,j) */ ]
+  },
+
+  "ports": {                       // from the source_port / destination_port features
+    "top_destination": [ { "port": 3306, "count": 400 }, … ],  // ≤ 20, count desc
+    "top_source": [ … ],
+    "distinct_destination": 214, "distinct_source": 968
+  },
+  "protocols": { "tcp": 923, "udp": 197, "icmp": 4, "other": 0 },
+
+  "outliers": {
+    "rule": "row's max |z-score| over the 48 features exceeds the threshold; …",
+    "threshold": 6, "cap": 100,
+    "count": 81,                   // total that exceed the threshold
+    "rows": [                      // ≤ cap, worst first
+      { "row": 4, "label": "normal", "max_z": 31.1,
+        "features": [ { "index": 3, "name": "bytes_forward", "value": 4.1e6, "z": 31.1 }, … ] }
+    ]
+  },
+
+  "pca": {                         // top 3 components of the standardised matrix
+    "components": 3,
+    "loadings": [ [ /* 48 */ ], [ /* 48 */ ], [ /* 48 */ ] ],  // eigenvectors, sign-fixed
+    "explained_variance": [0.174, 0.146, 0.110],               // eigenvalue_k / trace
+    "eigenvalues_total": 46,       // trace = count of non-degenerate features
+    "jacobi_sweeps": 11,
+    "projection": [ { "pc1": …, "pc2": …, "pc3": …, "label": "scan", "row": 12 }, … ],
+    "projection_sampled": false,   // true ⇒ a fixed-stride sample was taken
+    "projection_cap": 5000         // …because row_count exceeded this
+  }
+}
+```
+
+`row` in `outliers` and `pca.projection` is the 0-based index into `dataset.csv`
+(the CSV carries no flow-id column); rows are ordered by flow id. The PCA is a
+stdlib-only cyclic Jacobi eigensolve of the correlation matrix — see
+[ADR 0020](adr/0020-dataset-explorer-and-in-tree-pca.md); UMAP is deferred.
+
 ### DELETE /api/v1/datasets/{ref}
 
 Remove a dataset version. Immutability protects a version's contents, not its

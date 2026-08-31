@@ -4,6 +4,7 @@ import { Placeholder } from '../components/Placeholder'
 import { Architecture } from './Architecture'
 import { CaptureSources } from './CaptureSources'
 import { Dashboard } from './Dashboard'
+import { DatasetExplorer } from './DatasetExplorer'
 import { Datasets } from './Datasets'
 import { FlowLog } from './FlowLog'
 import { Hosts } from './Hosts'
@@ -81,9 +82,19 @@ export const ROUTES: RouteDef[] = [
     live: true,
     element: <Training />,
   },
-  // The Dataset Manager (§19.10) is live. The Dataset Explorer (§19.11 —
-  // feature distributions, correlations, PCA) is issue #37 and is not here.
+  // The Dataset Manager (§19.10) and the Dataset Explorer (§19.11 — feature
+  // distributions, correlations, outliers, protocol/port splits, PCA
+  // projection; closes issues #37 and #67) are both live. The Explorer opens
+  // per dataset via #/dataset-explorer?ref=<id>@<version>.
   { group: 'ML', path: '/datasets', label: 'Datasets', tag: 'live', live: true, element: <Datasets /> },
+  {
+    group: 'ML',
+    path: '/dataset-explorer',
+    label: 'Dataset Explorer',
+    tag: 'live',
+    live: true,
+    element: <DatasetExplorer />,
+  },
   {
     group: 'ML',
     path: '/architecture',

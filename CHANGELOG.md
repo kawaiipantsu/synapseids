@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dataset Explorer** (issues #37 and #67, EPIC Phase 4;
+  [ADR 0020](docs/adr/0020-dataset-explorer-and-in-tree-pca.md)). Visualises a
+  materialised dataset's structure (PROJECT.md §19.11): per-feature
+  distributions and 24-bucket histograms, the label distribution cross-checked
+  against the manifest, the 48×48 Pearson correlation matrix, protocol and
+  destination-port splits, a bounded outlier list, and a PCA projection. #67's
+  "PCA / UMAP feature-space views" is folded in and closed here; UMAP is
+  deferred.
+  - `GET /api/v1/datasets/{ref}/stats` — the whole bundle as JSON, read-only.
+    Computed from the immutable `dataset.csv` on disk and cached by the
+    version's `content_hash`, so repeated calls are cheap and byte-identical.
+    `pca.projection` is capped at 5000 rows (`projection_sampled` flags a
+    fixed-stride sample); the correlation matrix is a fixed 48×48.
+  - **In-tree PCA, stdlib `math` only.** The standardised covariance is the
+    correlation matrix, decomposed by a bounded, deterministic cyclic Jacobi
+    eigensolve; the top 3 sign-fixed eigenvectors, their explained-variance
+    ratios and every row's projection are returned. No BLAS/LAPACK, no new
+    dependency (PROJECT.md §27, §28.16).
+  - **Outlier rule:** a row whose largest per-feature `|z-score|` exceeds 6.0,
+    reported worst-first with its top offending features, list capped at 100.
+  - **SPA:** a new `ML ▸ Dataset Explorer` view
+    (`#/dataset-explorer?ref=<id>@<version>`, reachable from each row's
+    **explore** link on ML ▸ Datasets): label bar, canvas correlation heatmap,
+    a grid of 48 expandable mini-histograms with quartile markers, an SVG PCA
+    scatter with a PC-axis selector, protocol/port bars and the outlier table.
+    All PCA maths is server-side; the client grows ~4 KB gzip.
 - **Live training dashboard** (issue #35, EPIC Phase 4;
   [ADR 0019](docs/adr/0019-external-training-runs-reported-over-http.md)). The
   daemon now mirrors external `synapse-trainer` runs and the SPA renders them

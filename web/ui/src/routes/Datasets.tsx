@@ -22,8 +22,8 @@ import { usePersistedState } from '../lib/persist'
 // ML ▸ Datasets (PROJECT.md §19.10, issue #33). A dataset is a first-class,
 // versioned, immutable object: this view lists what has been cut, and cuts new
 // ones from the stored classifications using the same filters the flow log
-// uses. The distribution/correlation/PCA explorer is §19.11 (issue #37) and is
-// deliberately not here.
+// uses. The distribution/correlation/PCA explorer is §19.11 (issues #37/#67):
+// each row's "explore" link opens it at #/dataset-explorer?ref=<id>@<version>.
 
 const POLL_MS = 5000
 const PROTOS = ['', 'TCP', 'UDP', 'ICMP', 'ICMPv6', 'IP']
@@ -234,6 +234,13 @@ function DatasetRow({
         <td className="ds-actions">
           <a
             className="ds-dl"
+            href={`#/dataset-explorer?ref=${encodeURIComponent(ref)}`}
+            title={`open the Dataset Explorer for ${ref} (§19.11)`}
+          >
+            explore
+          </a>
+          <a
+            className="ds-dl"
             href={datasetDownloadURL(d.id, d.version)}
             title={`download ${d.csv_file} — ${d.columns.length} columns`}
           >
@@ -374,7 +381,8 @@ export function Datasets() {
         <span className="sub">
           versioned, immutable, content-hashed training sets cut from stored classifications —{' '}
           <code>GET/POST /api/v1/datasets</code> (§14, §19.10). Feature distributions, correlations
-          and PCA are the Dataset Explorer (§19.11), not this view.
+          and PCA are the <a href="#/dataset-explorer">Dataset Explorer</a> (§19.11) — use a row&rsquo;s{' '}
+          <b>explore</b> link.
         </span>
       </div>
 
