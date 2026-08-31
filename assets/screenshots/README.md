@@ -9,7 +9,7 @@ Regenerate them after a UI change; see [How these were made](#how-these-were-mad
 
 | | |
 |---|---|
-| [`webui-dashboard.png`](webui-dashboard.png) | **LIVE ▸ Dashboard** (§19.1) — live counters from `/api/v1/status`, uPlot classifications/sec and flow-event/sec sparklines, class and protocol breakdowns, rolling top talkers and destination ports. Cards with no data source yet are greyed and marked *needs API*. |
+| [`webui-dashboard.png`](webui-dashboard.png) | **LIVE ▸ Dashboard** (§19.1) — live counters from `/api/v1/status`, `/api/v1/captures`, `/api/v1/sensors/topology` and `/api/v1/models`. uPlot sparklines for classifications/sec, flow-events/sec, **packets/sec and throughput** — the last two derived from the cumulative capture/sensor/replay counters, since the API reports totals, not rates. **Active flows** is the live flow-table size. Class and protocol breakdowns, rolling top talkers and destination ports. The shot is taken with a live `tcpdump`-kind capture source *and* a PCAP replay both feeding the pipeline, which is why every ingest number is non-zero. The two cards that are still greyed (anomaly rate, inference latency) name the **open issue** that tracks them — #47 and #55 — rather than a development phase (issue #118). |
 | [`webui-flow-log.png`](webui-flow-log.png) | **LIVE ▸ Flow Log** (§19.2) — the primary product view. Rows append live off the WebSocket; pause/resume buffers instead of dropping, plus density, max-rows, class / min-confidence / protocol / text filters and a kiosk toggle. |
 | [`webui-flow-log-brute-force.png`](webui-flow-log-brute-force.png) | Flow Log filtered to `brute_force` — a real MySQL credential-stuffing run against `10.10.10.21:3306`, picked out of ordinary browsing traffic. |
 | [`webui-flow-log-scan.png`](webui-flow-log-scan.png) | Flow Log filtered to `scan` while a port-scan capture replays. |
@@ -55,3 +55,17 @@ deliberately dependency-free (§28.16). To redo them:
 Note that several views only look interesting while data is flowing: the Flow Log
 keeps a bounded window of recent rows in the browser, so a class filter finds
 nothing unless traffic of that class is streaming at the time.
+
+The Dashboard's packets/sec and throughput cards need **two consecutive samples**
+before they can show a rate at all — one cumulative reading is not a rate, and the
+card says "measuring…" until it has both. `--virtual-time-budget` therefore does
+*not* work for this view: it fast-forwards the page's clock while the daemon's
+counters advance in real time, so every derived rate collapses to ~0. Give the
+page real seconds instead — e.g. load a wrapper page whose own `load` event is
+blocked by a deliberately slow subresource, and iframe the dashboard inside it.
+
+There is deliberately **no screenshot of `#/detections` with detections in it.**
+`GET /api/v1/detections` does not exist yet (issue #117), and everything in this
+directory is real daemon output — a fixture-fed screenshot would be exactly the
+mockup this file promises not to contain. The view's own honest render on this
+build is the sentence "not available in this build".
