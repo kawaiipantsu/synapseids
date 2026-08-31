@@ -138,6 +138,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/classifications", s.handleHostClassifications)
 	mux.HandleFunc("GET /api/v1/timeline", s.handleTimeline)
+	mux.HandleFunc("GET /api/v1/reports/host/{ip}", s.handleHostReport)
+	mux.HandleFunc("GET /api/v1/reports/range", s.handleRangeReport)
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
 	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)

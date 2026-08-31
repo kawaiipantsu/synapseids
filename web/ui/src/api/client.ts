@@ -17,6 +17,7 @@ import type {
   FlowRecord,
   HostProfile,
   ModelInfo,
+  ReportFormat,
   TimelineSeries,
   TrainingList,
   TrainingRun,
@@ -292,4 +293,59 @@ export function getTrainingRuns(limit = 50): Promise<TrainingList> {
 
 export function getTrainingRun(id: string): Promise<TrainingRun> {
   return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
+}
+
+// ---- downloadable investigation reports (§19.4, issue #66, ADR 0023) -------
+// Self-contained block at the end of the file; sibling branches also edit
+// client.ts.
+//
+// Rendering is entirely server-side: these helpers only build the attachment
+// URL, and the browser performs the download by navigating to it. There is no
+// fetch/Blob dance, so a large HTML report never has to sit in JS memory and the
+// Content-Disposition filename the daemon chose is the one the user gets.
+
+export interface ReportParams {
+  format: ReportFormat
+  /** RFC3339 window bounds — the SPA passes the brushed timeline range here. */
+  from?: string
+  to?: string
+  bucket?: BucketWidth
+  /** The same filter dialect as /api/v1/classifications. */
+  class?: string
+  model?: string
+  min_confidence?: number
+  disagreement?: boolean
+  /** Notable-flow cap; the daemon defaults to 500 and clamps at 2000. */
+  limit?: number
+}
+
+function reportQuery(p: ReportParams): string {
+  const q = new URLSearchParams({ format: p.format })
+  if (p.from) q.set('from', p.from)
+  if (p.to) q.set('to', p.to)
+  if (p.bucket) q.set('bucket', p.bucket)
+  if (p.class) q.set('class', p.class)
+  if (p.model) q.set('model', p.model)
+  if (p.min_confidence != null && p.min_confidence > 0) {
+    q.set('min_confidence', String(p.min_confidence))
+  }
+  if (p.disagreement) q.set('disagreement', 'true')
+  if (p.limit != null) q.set('limit', String(p.limit))
+  return '?' + q.toString()
+}
+
+/**
+ * GET /api/v1/reports/host/{ip} — a host investigation report.
+ *
+ * The address is packet-derived and therefore untrusted (§28.11): it is
+ * URL-encoded here and re-parsed with net/netip by the daemon, which answers
+ * 400 if it is not an IP literal.
+ */
+export function hostReportURL(ip: string, p: ReportParams): string {
+  return '/api/v1/reports/host/' + encodeURIComponent(ip) + reportQuery(p)
+}
+
+/** GET /api/v1/reports/range — a time-window report. */
+export function rangeReportURL(p: ReportParams): string {
+  return '/api/v1/reports/range' + reportQuery(p)
 }

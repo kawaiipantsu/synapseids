@@ -17,6 +17,10 @@ are taken verbatim from the Go structs in `internal/storage/storage.go`,
   or `< 1` → the endpoint default. `> max` → clamped to max.
 - **Errors** — `text/plain` body, one line, via `http.Error`. Status codes are
   listed per route.
+- **Downloads** — three routes are attachments rather than JSON documents:
+  `GET /api/v1/datasets/{ref}/download`, and the two report routes with
+  `format=html`, which return `text/html; charset=utf-8`. All three set
+  `Content-Disposition: attachment`.
 - **Not under `/api`** — `GET /` (and any unmatched path) serves the static web
   UI: the embedded `web/index.html`, or a directory when `server.web_root` /
   `SYNAPSE_WEB_ROOT` is set.
@@ -363,6 +367,169 @@ classifications instead — a ring per host would be unbounded.
 `anomaly_available` is **always `false`**: the anomaly-score series (§19.6) needs
 the Phase 7 anomaly model, and the API reports its absence rather than returning a
 fabricated zero series.
+
+### GET /api/v1/reports/host/{ip}
+
+A **downloadable host investigation report** (PROJECT.md §19.3, §19.4; issue #66,
+[ADR 0023](adr/0023-downloadable-investigation-reports.md)): one self-contained
+artefact an operator can attach to a ticket or mail to a peer team.
+
+| Param | Meaning |
+|---|---|
+| `format` | `json` (default) or `html`. Anything else → `400 bad format`. |
+| `from`, `to` | Inclusive RFC3339 window bounds. `to` before `from` → `400`. Omit both for "whatever is retained". |
+| `bucket` | Timeline resolution: `1s`, `10s` (default) or `1m`. Anything else → `400 bad bucket`. |
+| `limit` | Notable-flow cap. Default **500**, clamped at **2000**. Non-positive → `400 bad limit`. |
+| `class`, `model`, `min_confidence`, `disagreement` | Exactly the `GET /api/v1/classifications` filter dialect, applied to the verdicts the report covers. The applied predicates are echoed back in `scope.filter`. |
+
+`{ip}` is re-parsed and canonicalised with `net/netip`: a non-literal is
+`400 bad host address`, and an address the aggregation index has never observed is
+`404 host not found`. `::ffff:10.0.0.1` and `10.0.0.1` address the same report.
+
+Both formats are served as a download:
+
+```
+Content-Type: application/json                 (format=json)
+Content-Type: text/html; charset=utf-8         (format=html)
+Content-Disposition: attachment; filename="synapseids-host-10.10.10.22-20260831T131500Z.json"
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+```
+
+The filename's scope segment is reduced to `[a-z0-9._-]`, so a packet-derived
+address can neither break out of the quoted header parameter nor produce a
+traversal when the browser writes the file (§28.11).
+
+**`format=json`** is the `report.Report` struct verbatim:
+
+```json
+{
+  "schema": "investigation-report-v1",
+  "generated_at": "2026-08-31T13:15:00Z",
+  "generator": {
+    "product": "synapseids",
+    "version": "0.1.0-dev",
+    "commit": "6afcf43",
+    "built_at": "2026-08-31T12:58:04Z",
+    "dirty": false,
+    "feature_schema": "flow-features-v1",
+    "output_schema": "traffic-classes-v1"
+  },
+  "scope": { "kind": "host", "host": "10.10.10.22", "unbounded": true },
+  "coverage": {
+    "partial": true,
+    "store_driver": "memory",
+    "flows_retained": 5000, "flows_evicted": 0,
+    "classifications_retained": 5000, "classifications_evicted": 1240,
+    "scan_limit": 5000, "scan_scanned": 5000, "scan_exhausted": true,
+    "oldest_retained": "2026-08-31T13:02:11Z",
+    "range_starts_before_retention": false,
+    "hosts_tracked": 27, "host_cap": 2048, "hosts_evicted": 0,
+    "key_cap": 128, "keys_pruned": 3072,
+    "observations_dropped": 0, "timeline_late": 0,
+    "notable_flow_cap": 500, "notable_candidates": 1041,
+    "notable_flows_truncated": true, "flow_records_missing": 0,
+    "baseline_available": false,
+    "anomaly_available": false
+  },
+  "notes": [
+    { "code": "baseline_unavailable", "level": "warning",
+      "text": "Behavioural baseline and anomaly scoring are not available in this build (Phase 7, …). Absence of an anomaly finding here does NOT mean the traffic was checked against a baseline and found normal." },
+    { "code": "partial_topn_pruned", "level": "warning",
+      "text": "PARTIAL VIEW: per-host top-N lists are capped at 128 distinct ports and peers and 3072 low-count keys have been pruned. …" }
+  ],
+  "summary": {
+    "classifications": 1124, "disagreements": 0, "non_normal": 1041,
+    "distinct_flows": 1124, "distinct_hosts": 6,
+    "first_verdict": "2026-08-31T13:02:11Z", "last_verdict": "2026-08-31T13:04:52Z"
+  },
+  "host": { "…": "the insight.Profile from GET /api/v1/hosts/{ip}" },
+  "classes":   [ { "class": "scan", "class_id": 1, "count": 1035, "share": 0.9209 } ],
+  "timeline":  { "source": "retained-classifications", "bucket_sec": 10, "buckets": [], "anomaly_available": false },
+  "top_peers": [ { "ip": "10.10.10.21", "flows": 1024 } ],
+  "top_ports": [ { "port": 3306, "flows": 61 } ],
+  "protocols": [ { "proto": "tcp", "flows": 1124 } ],
+  "models":    [ { "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary" } ],
+  "notable_flows": [
+    {
+      "flow_id": 8123,
+      "reasons": ["non_normal_verdict"],
+      "ts": "2026-08-31T13:04:52Z",
+      "proto": "tcp",
+      "initiator_ip": "10.10.10.22", "initiator_port": 45122,
+      "responder_ip": "10.10.10.21", "responder_port": 3306,
+      "class": "brute_force", "class_id": 3, "score": 0.918,
+      "disagreement": false,
+      "models": [ { "model_id": "heuristic-v1", "role": "primary", "class": "brute_force", "score": 0.918 } ],
+      "record_available": true,
+      "duration_sec": 0.41, "fwd_packets": 8, "bwd_packets": 6,
+      "fwd_bytes": 612, "bwd_bytes": 430, "close_reason": "fin",
+      "features": [ { "name": "flow_duration", "value": 0.41, "unit": "seconds" } ]
+    }
+  ],
+  "feature_legend": [ { "name": "flow_duration", "unit": "seconds", "calc": "last_seen - first_seen" } ]
+}
+```
+
+**Honesty contract.** `coverage` and `notes` come *before* the findings on
+purpose — the caveats are part of the finding.
+
+- `baseline_available` and `anomaly_available` are **always `false`** in this
+  build, and the `baseline_unavailable` note is **unconditional** while they are.
+  A report never contains an empty anomaly chart that could be read as "checked
+  and clean".
+- `coverage.partial` is `true` whenever any bound bit: the record ring evicted,
+  the 5000-verdict scan budget filled, the requested `from` predates the oldest
+  retained verdict, the host map evicted, a per-host top-N list was pruned,
+  observations were dropped, verdicts missed their timeline bucket, the
+  notable-flow list truncated, or a listed verdict outlived its flow record. Each
+  gets its own `notes[]` entry naming the limit and the counters.
+- A notable flow whose `FlowRecord` has been evicted carries
+  `record_available: false` and an **empty** `features` array — never a row of
+  zeroes.
+
+**Notable-flow selection** is every in-scope verdict that either disagreed across
+models or landed on a class other than `normal`, ranked disagreements-first, then
+by descending confidence, then newest, then flow ID. `feature_legend` documents
+the fixed named subset carried per flow — the raw values this build's classifier
+reads, **not** a ranked per-flow attribution (that is Phase 7).
+
+**`format=html`** returns one standalone document: a single inline `<style>` in
+the project's dark palette with a `@media print` block, tables for the flows,
+ports and peers, and CSS/inline-SVG bars for the class mix and the timeline.
+There is **no** external stylesheet, no CDN, no `<script>`, no `<img>` and no
+webfont, so it opens correctly from `file://` with no network access. It renders
+through Go's `html/template`, whose contextual escaping is what stops a crafted
+hostname, sensor name or filter string from injecting markup into a document an
+operator opens in a browser (§21, §28.11).
+
+### GET /api/v1/reports/range
+
+The same artefact for a time window rather than one host. Identical parameters
+minus the path address; `scope.kind` is `"range"`, there is no `host` block, and
+`top_peers` / `top_ports` / `protocols` are the busiest addresses, service ports
+and protocols in the window rather than one host's profile lists.
+
+```
+GET /api/v1/reports/range?from=2026-08-31T13:00:00Z&to=2026-08-31T13:10:00Z&class=scan&format=html
+Content-Disposition: attachment; filename="synapseids-range-20260831T131500Z.html"
+```
+
+An unfiltered range report's `timeline.source` is `insight-ring` — the
+incrementally maintained ring, exact within its own (wider) window. Any
+classification filter switches it to `retained-classifications`, bucketed on
+demand from the scanned verdicts, exactly like `GET /api/v1/timeline`.
+
+### Report routes are read-only but concentrate sensitive telemetry
+
+Both routes are read-only, so unlike model activation they carry no
+explicit-action gate. But a report is a **concentrated** dump: one request yields
+every observed peer of a host, its service ports, its volume, its verdicts and
+the raw feature values behind them, packaged as a file designed to be forwarded
+and re-opened elsewhere. They inherit the daemon's loopback-only default and the
+standing requirement for an authenticating proxy on any non-loopback listener
+(PROJECT.md §21) — and unlike a live API response, a leaked artefact cannot be
+un-shared. `TODO(#58)`.
 
 ### GET /api/v1/models
 

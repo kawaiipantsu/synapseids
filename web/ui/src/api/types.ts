@@ -584,3 +584,100 @@ export interface TrainingList {
   history_cap: number
   stale_after_seconds: number
 }
+
+// ---------------------------------------------------------------------------
+// Downloadable investigation reports (issue #66, ADR 0023).
+//
+// Self-contained block, appended at the end of the file on purpose: several
+// sibling branches also edit types.ts, and keeping this addition isolated makes
+// a merge a concatenation rather than a conflict.
+//
+// The SPA never renders a report itself — rendering is server-side, and the
+// download is a plain browser navigation to the attachment URL. These types
+// exist so the query builder in api/client.ts is typed, and so a future view
+// that wants to preview a report's coverage block has something to read.
+// ---------------------------------------------------------------------------
+
+/** report.ScopeKind — what a report is about. */
+export type ReportScopeKind = 'host' | 'range'
+
+/** The two rendering formats GET /api/v1/reports/* accepts. */
+export type ReportFormat = 'json' | 'html'
+
+/** report.Scope — exactly what was asked for. */
+export interface ReportScope {
+  kind: ReportScopeKind
+  host?: string
+  from?: string
+  to?: string
+  unbounded: boolean
+  filter?: string
+}
+
+/** report.Note — one explicit statement about what the report does not know. */
+export interface ReportNote {
+  code: string
+  level: 'info' | 'warning'
+  text: string
+}
+
+/**
+ * report.Coverage — every limit that applied and every discard the daemon had
+ * already made. `partial` is the single flag a consumer can branch on.
+ */
+export interface ReportCoverage {
+  partial: boolean
+  store_driver: string
+  flows_retained: number
+  flows_evicted: number
+  classifications_retained: number
+  classifications_evicted: number
+  scan_limit: number
+  scan_scanned: number
+  scan_exhausted: boolean
+  oldest_retained?: string
+  range_starts_before_retention: boolean
+  hosts_tracked: number
+  host_cap: number
+  hosts_evicted: number
+  key_cap: number
+  keys_pruned: number
+  observations_dropped: number
+  timeline_late: number
+  notable_flow_cap: number
+  notable_candidates: number
+  notable_flows_truncated: boolean
+  flow_records_missing: number
+  /** Always false in this build — behavioural baselines are Phase 7. */
+  baseline_available: boolean
+  /** Always false in this build — anomaly scoring is Phase 7. */
+  anomaly_available: boolean
+}
+
+/** report.Report — the JSON artefact, for reference by any future consumer. */
+export interface InvestigationReport {
+  schema: string
+  generated_at: string
+  generator: {
+    product: string
+    version: string
+    commit: string
+    built_at: string
+    dirty: boolean
+    feature_schema: string
+    output_schema: string
+  }
+  scope: ReportScope
+  coverage: ReportCoverage
+  notes: ReportNote[]
+  summary: {
+    classifications: number
+    disagreements: number
+    non_normal: number
+    distinct_flows: number
+    distinct_hosts: number
+    first_verdict?: string
+    last_verdict?: string
+  }
+  [k: string]: unknown
+}
