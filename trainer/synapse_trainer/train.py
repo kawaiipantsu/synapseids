@@ -267,6 +267,8 @@ def train_iter(
 
     n = Xtr.shape[0]
     bs = max(1, min(recipe.batch_size, n))
+    batches_total = (n + bs - 1) // bs
+    device = "cuda" if (_HAVE_TORCH and torch.cuda.is_available()) else "cpu"
     es = recipe.early_stopping
     best_metric = float("inf") if es.mode == "min" else float("-inf")
     best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
@@ -286,6 +288,7 @@ def train_iter(
         model.train()
         perm = torch.randperm(n)
         running = 0.0
+        batches_done = 0
         for start in range(0, n, bs):
             idx = perm[start : start + bs]
             xb, yb = Xtr[idx], ytr[idx]
@@ -297,6 +300,7 @@ def train_iter(
             loss.backward()
             opt.step()
             running += float(loss.item()) * xb.shape[0]
+            batches_done += 1
 
         train_loss = running / max(n, 1)
         val_loss, val_acc, val_pred = _eval(Xva, yva)
@@ -321,16 +325,27 @@ def train_iter(
         else:
             bad_epochs += 1
 
+        # One progress dict per epoch (PROJECT.md §19.8; ADR 0019). Field names
+        # are stable: the daemon stores each dict verbatim and the SPA reads
+        # these keys. `val_*` are this epoch's validation metrics; the richer
+        # per-class table and confusion matrix ride the final "done" dict.
         yield {
             "event": "epoch",
+            "status": "running",
             "epoch": epoch,
             "epochs": recipe.epochs,
+            "batches": batches_done,
+            "batches_total": batches_total,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "val_accuracy": val_acc,
+            "accuracy": val_acc,
+            "val_accuracy": val_acc,  # kept: older readers
+            "val_macro_precision": val_prf["macro_precision"],
+            "val_macro_recall": val_prf["macro_recall"],
             "val_macro_f1": val_prf["macro_f1"],
             "lr": float(opt.param_groups[0]["lr"]),
             "elapsed_s": time.monotonic() - started,
+            "device": device,
             "early_stop_bad_epochs": bad_epochs,
         }
 
@@ -358,6 +373,12 @@ def train_iter(
     )
     metrics["epochs_run"] = epoch
     metrics["parameter_count"] = arch.parameter_count()
+    metrics["elapsed_s"] = time.monotonic() - started
+    metrics["device"] = device
+    # The daemon stores this "metrics" object verbatim as the run's `final`
+    # block: it already carries accuracy, macro precision/recall/F1, the
+    # per-class table, the confusion matrix and the held-out `test` metrics
+    # (see classification_metrics / confusion_and_prf).
     yield {"event": "done", "metrics": metrics}
 
 

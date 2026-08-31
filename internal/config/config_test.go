@@ -239,6 +239,50 @@ func TestDatasetsDirectory(t *testing.T) {
 	}
 }
 
+func TestTrainingDirectory(t *testing.T) {
+	if got := Default().Training.Directory; got != "./data/training" {
+		t.Fatalf("default training.directory = %q, want ./data/training", got)
+	}
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	mustWrite(t, p, []byte(`{"training":{"directory":"/srv/synapse/training"}}`))
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Training.Directory != "/srv/synapse/training" {
+		t.Fatalf("training.directory not read from file: %q", c.Training.Directory)
+	}
+
+	t.Setenv("SYNAPSE_TRAINING_DIR", "/env/training")
+	if c, err = Load(p); err != nil {
+		t.Fatalf("Load w/ env: %v", err)
+	}
+	if c.Training.Directory != "/env/training" {
+		t.Fatalf("SYNAPSE_TRAINING_DIR ignored: %q", c.Training.Directory)
+	}
+
+	if c, err = Load(""); err != nil {
+		t.Fatalf(`Load(""): %v`, err)
+	}
+	if c.Training.Directory != "/env/training" {
+		t.Fatalf("SYNAPSE_TRAINING_DIR ignored with no file: %q", c.Training.Directory)
+	}
+}
+
+func TestTrainingDirectoryMustNotBeEmpty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "c.json")
+	mustWrite(t, p, []byte(`{"training":{"directory":"   "}}`))
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("an empty training.directory must be rejected")
+	}
+	if !strings.Contains(err.Error(), "training.directory") {
+		t.Fatalf("error does not name the field: %v", err)
+	}
+}
+
 func TestDatasetsDirectoryMustNotBeEmpty(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.json")
 	mustWrite(t, p, []byte(`{"datasets":{"directory":"   "}}`))

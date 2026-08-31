@@ -644,6 +644,81 @@ followed by `label`; every data row is 48 floats and a `traffic-classes-v1` clas
 name. This is exactly what `trainer/synapse_trainer/dataset.py` `load_csv` reads,
 with no adaptation. `400` / `404` / `503` as above.
 
+### GET /api/v1/datasets/{ref}/stats
+
+The **Dataset Explorer** bundle (PROJECT.md §19.11; issues #37 and #67). Every
+value is derived server-side from the immutable `dataset.csv` and cached by the
+version's `content_hash`, so repeated calls are cheap and byte-for-byte
+identical. Read-only, unauthenticated. `400` bad ref · `404` unknown version ·
+`500` the CSV on disk is unreadable/malformed · `503` no dataset manager wired.
+
+```jsonc
+{
+  "ref": "thugs/lab-attacks-2026-08@v1",
+  "content_hash": "sha256:7bb0e464…",
+  "row_count": 1124,
+  "feature_count": 48,
+
+  "feature_stats": [               // one entry per flow-features-v1 feature, schema order
+    {
+      "index": 3, "name": "bytes_forward", "unit": "bytes", "norm": "log1p",
+      "min": 0, "max": 4.1e6, "mean": 5123.4, "stddev": 90211.7,
+      "p25": 40, "p50": 220, "p75": 1460,
+      "degenerate": false,         // true ⇒ every row equal; bin_* are null
+      "log_scale": true,           // histogram edges are log1p-spaced
+      "bin_edges": [ /* 25 */ ], "bin_counts": [ /* 24 */ ]
+    }
+  ],
+
+  "label_distribution": {
+    "classes": [ /* 7 traffic-classes-v1 names */ ],
+    "counts": [817,304,1,0,0,2,0], "fractions": [0.727, …],
+    "total": 1124,
+    "unknown": {},                 // labels in the CSV that are not schema classes
+    "manifest_mismatch": false     // CSV counts vs the manifest's label_counts
+  },
+
+  "correlation": {                 // 48×48 Pearson, row-major flattened
+    "names": [ /* 48 feature names */ ],
+    "size": 48,
+    "matrix": [ /* size*size floats; matrix[i*size+j] = corr(i,j) */ ]
+  },
+
+  "ports": {                       // from the source_port / destination_port features
+    "top_destination": [ { "port": 3306, "count": 400 }, … ],  // ≤ 20, count desc
+    "top_source": [ … ],
+    "distinct_destination": 214, "distinct_source": 968
+  },
+  "protocols": { "tcp": 923, "udp": 197, "icmp": 4, "other": 0 },
+
+  "outliers": {
+    "rule": "row's max |z-score| over the 48 features exceeds the threshold; …",
+    "threshold": 6, "cap": 100,
+    "count": 81,                   // total that exceed the threshold
+    "rows": [                      // ≤ cap, worst first
+      { "row": 4, "label": "normal", "max_z": 31.1,
+        "features": [ { "index": 3, "name": "bytes_forward", "value": 4.1e6, "z": 31.1 }, … ] }
+    ]
+  },
+
+  "pca": {                         // top 3 components of the standardised matrix
+    "components": 3,
+    "loadings": [ [ /* 48 */ ], [ /* 48 */ ], [ /* 48 */ ] ],  // eigenvectors, sign-fixed
+    "explained_variance": [0.174, 0.146, 0.110],               // eigenvalue_k / trace
+    "eigenvalues_total": 46,       // trace = count of non-degenerate features
+    "jacobi_sweeps": 11,
+    "projection": [ { "pc1": …, "pc2": …, "pc3": …, "label": "scan", "row": 12 }, … ],
+    "projection_sampled": false,   // true ⇒ a fixed-stride sample was taken
+    "projection_cap": 5000         // …because row_count exceeded this
+  }
+}
+```
+
+`row` in `outliers` and `pca.projection` is the 0-based index into `dataset.csv`
+(the CSV carries no flow-id column); rows are ordered by flow id. The PCA is a
+stdlib-only cyclic Jacobi eigensolve of the correlation matrix — see
+[ADR 0020](adr/0020-dataset-explorer-and-in-tree-pca.md); UMAP is deferred.
+
 ### DELETE /api/v1/datasets/{ref}
 
 Remove a dataset version. Immutability protects a version's contents, not its
@@ -662,6 +737,72 @@ derive and delete are written to `models.directory/audit.log` with
 `subject_type: "dataset"`. There is deliberately no `DatasetCreated` event on the
 live bus: `event-envelope-v1`'s type enum is frozen and has no `Dataset*` member
 (see [ADR 0015](adr/0015-versioned-datasets-on-disk.md)).
+
+### GET /api/v1/training
+
+Every training run the daemon is mirroring, newest first. `?limit` caps the list
+(default 100, max 500).
+
+```json
+{
+  "runs": [ { "id": "20260831T123737Z-75549ac4", "name": "nightly", "status": "completed", "epoch": 3, "epochs_total": 3, "history": [ … ], "final": { … } } ],
+  "history_cap": 1000,
+  "stale_after_seconds": 900
+}
+```
+
+`status` is `running` | `completed` | `failed` | `stale`. A `running` run whose
+last progress update is older than `stale_after_seconds` reads back as `stale` —
+computed on read, never persisted; a later update clears it. With no training
+store wired this returns `{"runs": []}` rather than `503`.
+
+### GET /api/v1/training/{id}
+
+One run with its full `history` (per-epoch progress dicts, capped at
+`history_cap`, oldest dropped) and `final` (the trainer's terminal `done`
+metrics: accuracy, macro precision/recall/F1, per-class table, confusion matrix,
+held-out `test` block). **This is the endpoint the SPA polls**, every ~1.5 s
+while the run is `running`. `404` unknown id, `503` no training store wired.
+
+### POST /api/v1/training
+
+`synapse-trainer` registers a run. The Go daemon never launches training
+(PROJECT.md §5.4); the trainer runs elsewhere and reports here over HTTP
+([ADR 0019](adr/0019-external-training-runs-reported-over-http.md)).
+
+```json
+{ "name": "nightly", "recipe": { … }, "epochs_total": 50, "trainer_version": "0.1.0" }
+```
+
+`201 {"id": "…", "progress_url": "http://…/api/v1/training/{id}/progress"}`.
+`400` bad body, `503` no training store wired.
+
+### POST /api/v1/training/{id}/progress
+
+**One JSON object per request** (a single trailing newline is tolerated, so the
+trainer's JSON-line writer works unchanged). An epoch dict is appended to the
+run's `history`; a dict whose `"event"` is `"done"` finishes the run and stores
+its `"metrics"` object as `final`.
+
+`202`. `400` body is not a JSON object, `404` unknown id, `409` the run has
+already finished, `503` no training store wired.
+
+### POST /api/v1/training/{id}/fail
+
+`{ "reason": "cuda oom" }` → `202`, marks the run `failed`. `404` / `409` / `503`
+as above.
+
+### Training routes are state-changing and unauthenticated
+
+The three `POST /api/v1/training*` routes inherit the repo's loopback-by-default
+posture (PROJECT.md §21) and carry `TODO(#58): gate behind auth/RBAC`, the same
+as `POST /api/v1/datasets` and model activation — a trainer on another host would
+need a bearer token or mTLS. `TrainingStarted` / `TrainingCompleted` /
+`TrainingFailed` are written to `models.directory/audit.log` with
+`subject_type: "training"`. There is deliberately no `Training*` event on the
+live bus: `event-envelope-v1`'s type enum is frozen and has no such member (see
+[ADR 0019](adr/0019-external-training-runs-reported-over-http.md)); the dashboard
+updates by polling `GET /api/v1/training/{id}` instead.
 
 ### GET /api/v1/schemas/features
 

@@ -1142,3 +1142,340 @@ th .caret {
     display: none;
   }
 }
+
+/* =====================================================================
+   Dataset Explorer (PROJECT.md §19.11; issues #37/#67) — routes/DatasetExplorer.tsx
+   Owned by the feature/dataset-explorer branch. Sibling branches: append
+   your own clearly-marked block rather than editing this one.
+   ===================================================================== */
+
+.dx-picklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dx-picklist li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--edge);
+}
+
+.dx-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.dx-bar-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 56px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.dx-bar-label {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-bar-track {
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden;
+}
+.dx-bar-fill {
+  display: block;
+  height: 100%;
+}
+.dx-bar-val {
+  text-align: right;
+  color: var(--ink);
+}
+
+.dx-sidebyside {
+  margin-top: 12px;
+}
+
+/* correlation heatmap */
+.dx-heatwrap {
+  margin-top: 8px;
+}
+.dx-heat {
+  display: block;
+  image-rendering: pixelated;
+  border: 1px solid var(--edge);
+}
+.dx-heat-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  z-index: 5;
+}
+
+/* feature distribution grid */
+.dx-fgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.dx-fcard {
+  text-align: left;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+}
+.dx-fcard:hover {
+  border-color: var(--accent);
+}
+.dx-fname {
+  font-size: 11px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dx-fmeta {
+  font-size: 10px;
+  color: var(--dim);
+}
+.dx-mini {
+  display: block;
+  width: 100%;
+  height: 34px;
+}
+.dx-degenerate {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--dim);
+}
+.dx-tag,
+.dx-fname .dx-tag {
+  margin-left: 4px;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--edge);
+  color: var(--dim);
+}
+
+.dx-detail {
+  margin-top: 12px;
+  border-color: var(--accent);
+}
+.dx-detail-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dx-detail-svg {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+}
+.dx-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+/* PCA scatter */
+.dx-pca-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.dx-pca-ctl label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.dx-pca-wrap {
+  overflow-x: auto;
+}
+.dx-pca {
+  display: block;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+}
+.dx-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.dx-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.dx-warn {
+  color: var(--suspicious);
+}
+
+
+/* ==========================================================================
+   ML ▸ Training dashboard (§19.8, issue #35, ADR 0019)
+   Self-contained block — a sibling branch also edits this file; keep the
+   training styles here at the end.
+   ========================================================================== */
+.tr-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.tr-runs {
+  position: sticky;
+  top: 12px;
+}
+.tr-runlist {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tr-runlist button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 9px;
+  background: var(--panel2);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+}
+.tr-runlist button:hover {
+  border-color: var(--accent);
+}
+.tr-runlist button.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tr-runname {
+  font-weight: 600;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tr-runmeta {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--dim);
+}
+.tr-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.tr-pill.tr-running {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tr-pill.tr-completed {
+  color: #7ee0b0;
+  border-color: #7ee0b0;
+}
+.tr-pill.tr-failed {
+  color: var(--brute);
+  border-color: var(--brute);
+}
+.tr-pill.tr-stale {
+  color: var(--scan);
+  border-color: var(--scan);
+}
+.tr-head {
+  margin-bottom: 4px;
+}
+.tr-metric .big {
+  font-size: 22px;
+  font-weight: 700;
+}
+.tr-src {
+  margin: 2px 0 12px;
+}
+.tr-charts .card {
+  min-width: 0;
+}
+.tr-chart {
+  width: 100%;
+}
+.tr-cm-wrap {
+  overflow-x: auto;
+}
+table.tr-cm {
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 6px;
+}
+table.tr-cm th,
+table.tr-cm td {
+  border: 1px solid var(--edge);
+  padding: 4px 7px;
+  text-align: center;
+  min-width: 34px;
+}
+table.tr-cm thead th,
+table.tr-cm tbody th {
+  color: var(--dim);
+  font-weight: 600;
+  white-space: nowrap;
+}
+table.tr-cm .tr-cm-corner {
+  font-weight: 400;
+  font-style: italic;
+}
+table.tr-cm td.tr-cm-diag {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  font-weight: 700;
+}
+@media (max-width: 900px) {
+  .tr-layout {
+    grid-template-columns: 1fr;
+  }
+  .tr-runs {
+    position: static;
+  }
+}

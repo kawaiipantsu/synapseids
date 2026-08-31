@@ -12,11 +12,14 @@ import type {
   Dataset,
   DatasetCreateInput,
   DatasetList,
+  DatasetStats,
   FeatureSchema,
   FlowRecord,
   HostProfile,
   ModelInfo,
   TimelineSeries,
+  TrainingList,
+  TrainingRun,
 } from './types'
 
 async function getJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -109,6 +112,12 @@ export function datasetDownloadURL(id: string, version: string): string {
 
 export function getDatasets(): Promise<DatasetList> {
   return getJSON<DatasetList>('/api/v1/datasets')
+}
+
+/** GET /api/v1/datasets/{ref}/stats — the Dataset Explorer bundle (§19.11,
+ *  issues #37/#67). Big but bounded; the daemon caches it per content hash. */
+export function getDatasetStats(id: string, version: string): Promise<DatasetStats> {
+  return getJSON<DatasetStats>(`/api/v1/datasets/${datasetRef(id, version)}/stats`)
 }
 
 export interface DatasetMutationResult {
@@ -271,4 +280,16 @@ export function getTimeline(p: TimelineParams = {}): Promise<TimelineSeries> {
   if (p.host) q.set('host', p.host)
   const s = q.toString()
   return getJSON<TimelineSeries>('/api/v1/timeline' + (s ? '?' + s : ''))
+}
+
+// ---- training dashboard (§19.8, issue #35, ADR 0019) --------------------
+// Read-only from the SPA: synapse-trainer registers and reports runs over HTTP;
+// the SPA polls GET /api/v1/training/{id} while a run is active.
+
+export function getTrainingRuns(limit = 50): Promise<TrainingList> {
+  return getJSON<TrainingList>(`/api/v1/training?limit=${limit}`)
+}
+
+export function getTrainingRun(id: string): Promise<TrainingRun> {
+  return getJSON<TrainingRun>('/api/v1/training/' + encodeURIComponent(id))
 }

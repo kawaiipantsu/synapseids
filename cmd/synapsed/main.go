@@ -33,6 +33,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
+	"github.com/kawaiipantsu/synapseids/internal/training"
 	"github.com/kawaiipantsu/synapseids/internal/version"
 )
 
@@ -145,6 +146,12 @@ func run(args []string) int {
 	// §22; ADR 0015). It reads from the same store the pipeline writes to.
 	dsm := dataset.Open(cfg.Datasets.Directory, store, log.Printf)
 
+	// The training run store mirrors external synapse-trainer runs reported over
+	// HTTP (PROJECT.md §19.8; ADR 0019). The daemon never launches a trainer; it
+	// keeps the latest progress plus a bounded history so the SPA can poll it.
+	// One-shot load at startup, off every packet path.
+	trs := training.Open(cfg.Training.Directory, aud, log.Printf)
+
 	flowOpt := flow.Options{
 		IdleTimeout:      cfg.Capture.FlowIdleTimeout.D(),
 		MaxLifetime:      cfg.Capture.FlowMaxLifetime.D(),
@@ -231,7 +238,7 @@ func run(args []string) int {
 	//
 	// rc also implements api.FlowStatsProvider: it owns the running replay
 	// pipeline and therefore its live flow-table counters (PROJECT.md §22, §24).
-	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, collector)
+	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, rc, capMgr, ins, trs, collector)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
