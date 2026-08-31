@@ -1,0 +1,17 @@
+# synapse-trainer pinned dependencies.
+#
+# CI installs these (the torch/onnx job pulls the CPU wheels from
+# https://download.pytorch.org/whl/cpu). The interactive dev box used to write
+# this package does NOT have torch/onnx/onnxruntime and cannot fetch the large
+# wheels offline, so every heavy import in synapse_trainer is guarded: the
+# package imports, `inspect-arch` runs, and the non-torch tests pass with only
+# numpy present.
+
+numpy==1.26.*
+torch==2.2.*
+onnx==1.16.*
+onnxruntime==1.17.*
+scikit-learn==1.4.*
+
+# dev / test
+pytest>=8.0

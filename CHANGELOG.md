@@ -151,6 +151,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ModelDisagreementDetected` events already carry the full per-model
     breakdown (`result.models[]`); a pipeline test now guards it.
 
+- **`trainer/` — the Phase 2 Python training service** (`synapse-trainer`,
+  issues #21 + #23). A standalone PEP 621 package, separate from the Go tree, that
+  turns a labelled `flow-features-v1` dataset into a deployable model bundle:
+  - `synapse_trainer.schema` re-reads the frozen `schemas/features/flow-features-v1.json`
+    and `schemas/outputs/traffic-classes-v1.json` (or `$SYNAPSE_SCHEMA_DIR`) —
+    `INPUT_SIZE` 48, `OUTPUT_SIZE` 7, `FEATURE_NAMES`, `CLASS_NAMES`,
+    `check_compatible` (rejects a dataset whose schema name or column count
+    disagrees).
+  - `architecture` — `HiddenLayer` / `Architecture` with a **locked** 48-in /
+    7-out contract and an editable hidden stack; `parameter_count`,
+    `estimated_size_bytes`, `rough_flops`, JSON round-trip (the compute half of
+    issue #22).
+  - `normalize` — pure-numpy `standard` / `minmax` / `identity` scaler emitting
+    the exact `normalizer.json` (48 ordered per-feature entries; `std` floored at
+    `1e-9`, never `min >= max`).
+  - `dataset` — CSV loader (48 schema-named feature columns + `label`) and a
+    reproducible, stratified-when-scikit-learn-is-present split that never leaks
+    the test set into training.
+  - `recipe` — parse + validate `training-recipe.json` (dataset weights and
+    train/val/test fractions must each sum to ~1.0; all fields but `datasets`
+    default).
+  - `train` — builds the PyTorch MLP, trains with the recipe's
+    optimizer/scheduler/early-stopping/class-weighting/seed, yields per-epoch
+    progress dicts (with an optional `progress_url` POST), and computes accuracy,
+    macro P/R/F1, per-class metrics and confusion matrix. `torch` is imported
+    behind a guard.
+  - `export` (**issue #23**) — `export_bundle` writes `model.onnx`
+    (`torch.onnx.export`, opset 17, fixed batch 1, input `features` `[1,48]`,
+    output `scores` `[1,7]`, softmax included), `metadata.json` (the contract the
+    Go bundle-gate validates; `model_hash` is a sha256 of the written ONNX bytes),
+    `normalizer.json`, `metrics.json` and `training-recipe.json`. The JSON
+    builders are torch-free.
+  - `synapse-trainer` CLI: `train --recipe --data --out [--name]` and
+    `inspect-arch --recipe` (parameter count / size / FLOPs, no torch).
+  - `trainer/tests/` — pytest suite that passes with only `numpy` installed
+    (torch/onnx asserts self-skip); `trainer/examples/` with a sample recipe and
+    dataset header.
+- CI: `.github/workflows/trainer-ci.yml` (issue #61) — a `trainer/**`-scoped
+  workflow, separate from the Go `ci.yml`: a fast job on numpy + pytest, and a
+  slower job that installs the CPU PyTorch/ONNX wheels and runs the export tests.
+- `docs/adr/0007-python-trainer-and-bundle-export.md` — records Python + PyTorch
+  per §27, the guarded-import approach, opset 17 / fixed batch 1, and the exact
+  five-file bundle contract as the trainer↔daemon interface.
+
 ### Changed
 
 - `capture.ErrNotPCAP` now reads "not a pcap file (need a classic pcap or pcapng

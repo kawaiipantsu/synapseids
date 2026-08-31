@@ -43,8 +43,10 @@ end). See [PROJECT.md](../PROJECT.md) §2, §3, §5, §26 for the intended shape
                               browser (web/ — React SPA)  ·  synapse CLI
 ```
 
-Adapted from PROJECT.md §3. The trainer, SQLite store, sensors and React SPA in
-that diagram are not in the tree yet (see [What is not here yet](#what-is-not-here-yet)).
+Adapted from PROJECT.md §3. The SQLite store, sensors and React SPA in that
+diagram are not in the tree yet; the offline Python trainer now exists under
+`trainer/` but is not yet wired to a running daemon (see
+[What is not here yet](#what-is-not-here-yet)).
 
 ## The hard rule
 
@@ -274,7 +276,7 @@ tracked as an EPIC (issues exist; see PROJECT.md §26).
 | Missing | Present instead | Tracked |
 |---|---|---|
 | Live capture — local NIC, tcpdump stream, SSH `tcpdump`, PCAP-over-IP | `capture.PCAPFile` + `capture.Replay` only; classic pcap and minimal pcapng (a single section, Ethernet/RAW; multi-section or exotic-link pcapng still needs an `editcap` pass) | see EPIC: Phase 3 |
-| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
+| Trained-model bundle loading, model registry, explicit activation | `internal/nn` runs ONNX feed-forward MLPs and `inference.ONNXModel` adapts them to `Classifier`; `internal/model` loads and validates the five-file bundle against the frozen contracts (issue #25) but adds nothing to the runtime and activates nothing; `inference.Heuristic` stays the wired `RolePrimary`. The offline `synapse-trainer` that produces those bundles now lives in `trainer/` (Python/PyTorch; [ADR 0007](adr/0007-python-trainer-and-bundle-export.md)). A model registry with lineage and an explicit activation step are still to come. | see EPIC: Phase 2 |
 | SQLite (then ClickHouse) persistence | `storage.Mem` bounded ring; `config` recognizes `driver: sqlite` but `validate()` rejects it as "not implemented yet" | see EPIC: Phase 2 (SQLite), Phase 8 (ClickHouse) |
 | Distributed sensors | `cmd/synapse-sensor` prints its version and exits non-zero | see EPIC: Phase 6 |
 | The rest of the §19 UI — Investigate, Hosts, Detections, Sources, Sensors, Model registry, Training, Datasets, Architecture builder, Model compare, Drift, Performance, Storage, Settings | React SPA (`web/ui/`, built into the embedded `web/dist/`) with the Dashboard, Flow Log, Flow Inspector and Replay control wired; every other route is a "Planned — Phase N" placeholder | see EPIC: Phase 2 / 3 / 4 / 5 / 6 / 7 (per view) |

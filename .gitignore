@@ -36,3 +36,10 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# Python trainer (trainer/)
+trainer/.venv/
+trainer/**/__pycache__/
+trainer/*.egg-info/
+trainer/build/
+trainer/dist/

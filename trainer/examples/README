@@ -1,0 +1,37 @@
+synapse-trainer examples
+========================
+
+recipe.json
+-----------
+A complete training-recipe.json. Fields other than `datasets` all have
+defaults (see synapse_trainer/recipe.py DEFAULTS); `datasets[].weight` must
+sum to ~1.0 and `split` must sum to ~1.0.
+
+  python -m synapse_trainer inspect-arch --recipe recipe.json
+  python -m synapse_trainer train --recipe recipe.json --data ./data --out ./bundle
+
+`inspect-arch` needs only numpy. `train` needs PyTorch.
+
+
+Dataset CSV
+-----------
+`--data` is either a CSV file or a directory containing `dataset.csv` (or the
+first *.csv found). The header must contain these 48 flow-features-v1 columns
+(named by their frozen schema name; order in the file does not matter) plus a
+`label` column. Extra columns are ignored; a missing feature column is an error.
+
+Header (48 features, in frozen index order, + label):
+
+flow_duration,packets_forward,packets_backward,bytes_forward,bytes_backward,packet_size_mean,packet_size_min,packet_size_max,packet_size_stddev,forward_packet_size_mean,backward_packet_size_mean,packets_per_second,bytes_per_second,forward_packets_per_second,backward_packets_per_second,interarrival_mean,interarrival_min,interarrival_max,interarrival_stddev,forward_interarrival_mean,backward_interarrival_mean,source_port,destination_port,protocol_tcp,protocol_udp,protocol_icmp,tcp_syn_count,tcp_ack_count,tcp_fin_count,tcp_rst_count,tcp_psh_count,tcp_urg_count,syn_ack_ratio,packet_direction_ratio,byte_direction_ratio,initial_tcp_window,average_tcp_window,down_up_bytes_ratio,small_packet_ratio,large_packet_ratio,average_payload_length,bidirectional_flag,internal_to_internal,internal_to_external,external_to_internal,external_to_external,dest_port_is_wellknown,snapshot_index,label
+
+Notes:
+  - `label` is a traffic-classes-v1 class NAME (normal, scan, dos_ddos,
+    brute_force, botnet_c2, web_attack, suspicious) or its integer id 0..6.
+  - Feature values are the RAW flow-features-v1 numbers. Do NOT pre-normalize:
+    the trainer fits a normalizer on the training split and writes it to
+    normalizer.json so the Go daemon can reproduce the transform.
+  - Each row is one flow record: a closed flow, or a periodic snapshot of a
+    long-lived flow (feature 47, `snapshot_index`, > 0).
+
+`dataset.sample.csv` in this directory is a tiny synthetic example with the
+correct header. It is illustrative only — far too small to train anything.
