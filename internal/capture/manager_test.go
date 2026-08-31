@@ -70,16 +70,20 @@ func mustAdd(t *testing.T, err error) {
 	}
 }
 
-func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
+// waitForTimeout is generous on purpose: CI runs `make test` and `make race`
+// back to back on one runner, so a tight deadline flakes (see issue #96).
+const waitForTimeout = 5 * time.Second
+
+func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(d)
+	deadline := time.Now().Add(waitForTimeout)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("condition %q not met within %s", what, d)
+	t.Fatalf("condition %q not met within %s", what, waitForTimeout)
 }
 
 // TestManagerFanIn: N sources merge into one stream and every packet arrives once.
@@ -143,7 +147,7 @@ func TestManagerIsolatesErroringSource(t *testing.T) {
 		}
 	}
 
-	waitFor(t, 5*time.Second, "bad source in error state", func() bool {
+	waitFor(t, "bad source in error state", func() bool {
 		st, _ := m.Get("bad")
 		return st.State == StateError && st.Error != ""
 	})
@@ -166,7 +170,7 @@ func TestManagerComputesRates(t *testing.T) {
 		}
 	}()
 
-	waitFor(t, 5*time.Second, "non-zero pps/bps", func() bool {
+	waitFor(t, "non-zero pps/bps", func() bool {
 		st, _ := m.Get("s")
 		return st.PPS > 0 && st.BPS > 0
 	})
@@ -191,7 +195,7 @@ func TestManagerListReflectsState(t *testing.T) {
 		}
 	}
 
-	waitFor(t, 5*time.Second, "source stopped after exhaustion", func() bool {
+	waitFor(t, "source stopped after exhaustion", func() bool {
 		st, _ := m.Get("s")
 		return st.State == StateStopped && st.Packets == 10
 	})
@@ -226,7 +230,7 @@ func TestManagerAggregateStats(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		<-out
 	}
-	waitFor(t, 5*time.Second, "aggregate stats", func() bool {
+	waitFor(t, "aggregate stats", func() bool {
 		return m.Stats().Packets == 100
 	})
 }
