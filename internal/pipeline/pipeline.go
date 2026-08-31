@@ -45,6 +45,17 @@ type Options struct {
 	// Observer, when non-nil, is handed every flow record and its verdict. See
 	// Observer for the contract it must honour.
 	Observer Observer
+	// Alerts, when non-nil, is handed every flow record and its verdict so an
+	// alert policy can turn verdicts into detections and publish
+	// events.AlertCreated (issue #117, PROJECT.md §17). internal/alert satisfies
+	// it, with the same non-blocking contract Observer documents — the detection
+	// dedup and the bus publish both happen on that package's own goroutine, so
+	// nothing about alerting is on the packet path (§22).
+	//
+	// It is a second field rather than a []Observer because the two hooks are
+	// different concerns with different owners, and a slice would make the
+	// pipeline's one-way data flow read like a plugin registry.
+	Alerts Observer
 	// IDGen, when set, allocates globally-unique flow IDs so records from
 	// different runs never collide (the daemon shares one allocator).
 	IDGen func() uint64
@@ -140,6 +151,14 @@ func Run(
 		}
 		if opt.Observer != nil {
 			opt.Observer.Observe(&fr, &cl)
+		}
+		// events.AlertCreated is NOT published from here. The alert policy has to
+		// dedup first — a 1000-port sweep is one detection, not a thousand — and
+		// dedup needs state the packet path must not own or lock. So the verdict is
+		// handed off with one non-blocking send and the alert store publishes from
+		// its own goroutine (PROJECT.md §22; issue #117, ADR 0027).
+		if opt.Alerts != nil {
+			opt.Alerts.Observe(&fr, &cl)
 		}
 	}
 

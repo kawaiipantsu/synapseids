@@ -31,7 +31,7 @@ func modelServer(t *testing.T) (*Server, string) {
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
 	reg := registry.Open(dir, quiet)
 	aud := audit.New(dir, quiet)
-	srv := New(cfg, events.New(), storage.NewMem(100, 100), rt, reg, aud, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := New(cfg, events.New(), storage.NewMem(100, 100), rt, reg, aud, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	return srv, dir
 }
 
@@ -206,7 +206,7 @@ func TestModelLineageEndpoint(t *testing.T) {
 }
 
 func TestModelRoutesWithoutRegistry(t *testing.T) {
-	// New(..., reg=nil, ..., nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil): GET /api/v1/models still works (runtime only),
+	// New(..., reg=nil, ...): GET /api/v1/models still works (runtime only),
 	// state-changing routes report 503.
 	h := newTestServer()
 	if rr := do(t, h, "GET", "/api/v1/models"); rr.Code != http.StatusOK {

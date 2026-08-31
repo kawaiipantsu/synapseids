@@ -57,6 +57,7 @@ type Config struct {
 	Datasets  Datasets  `json:"datasets"`
 	Training  Training  `json:"training"`
 	Review    Review    `json:"review"`
+	Alerts    Alerts    `json:"alerts"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
 }
@@ -184,6 +185,40 @@ type Review struct {
 	Directory string `json:"directory"`
 }
 
+// Alerts configures the detection policy and the bounded detection store behind
+// GET /api/v1/detections (issue #117; ADR 0027).
+//
+// Severity is NOT configurable here. It is derived from the traffic class in
+// internal/alert, because a severity table is a small closed set that must cover
+// the frozen traffic-classes-v1 list exactly — a per-deployment override would
+// let an operator create a class with no severity, which no filter could select.
+type Alerts struct {
+	// Enabled false stops every detection. The store still runs and still
+	// reports counters, so /api/v1/status can say alerting is off rather than
+	// looking like nothing has happened. Default: true.
+	Enabled bool `json:"enabled"`
+	// MinConfidence is the global floor a verdict must clear, in [0,1].
+	// Default: 0.70.
+	MinConfidence float64 `json:"min_confidence"`
+	// PerClassMinConfidence overrides MinConfidence for one traffic-classes-v1
+	// class. Keys are validated against the frozen class list; "normal" is
+	// rejected because it never alerts. Default: {"suspicious": 0.85}.
+	//
+	// A non-nil value from the file REPLACES the default map rather than merging
+	// into it — that is how encoding/json unmarshals a map, and it is the
+	// behaviour an operator writing an explicit table expects.
+	PerClassMinConfidence map[string]float64 `json:"per_class_min_confidence"`
+	// AlertOnDisagreement raises a detection for a below-threshold verdict when
+	// the models disagreed (PROJECT.md §12). Default: true.
+	AlertOnDisagreement bool `json:"alert_on_disagreement"`
+	// MaxRecent bounds the retained detections; the oldest is evicted first and
+	// counted. Default: 1000.
+	MaxRecent int `json:"max_recent"`
+	// DedupWindowSec is how long one (src, dst, class) detection keeps absorbing
+	// further occurrences before a fresh detection is opened. Default: 60.
+	DedupWindowSec int `json:"dedup_window_sec"`
+}
+
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
 type Live struct {
 	WebSocketBatch  Duration `json:"websocket_batch"`
@@ -212,7 +247,15 @@ func Default() Config {
 		Datasets: Datasets{Directory: "./data/datasets"},
 		Training: Training{Directory: "./data/training"},
 		Review:   Review{Directory: "./data/review"},
-		Live:     Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
+		Alerts: Alerts{
+			Enabled:               true,
+			MinConfidence:         0.70,
+			PerClassMinConfidence: map[string]float64{"suspicious": 0.85},
+			AlertOnDisagreement:   true,
+			MaxRecent:             1000,
+			DedupWindowSec:        60,
+		},
+		Live: Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
 			Classifications: Duration(90 * 24 * time.Hour),
@@ -339,6 +382,9 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.Review.Directory) == "" {
 		return fmt.Errorf("config: review.directory is empty")
 	}
+	if err := ValidateAlerts(c.Alerts); err != nil {
+		return fmt.Errorf("config: alerts: %w", err)
+	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {
 		if s.Name == "" {
@@ -356,6 +402,56 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: capture.collector: %w", err)
 	}
 	return nil
+}
+
+// ValidateAlerts checks the alerts block. It rejects nonsense at load rather
+// than clamping it: a threshold of 7 or a per-class override for a class that
+// does not exist is a typo, and silently correcting it would leave the operator
+// believing something is being alerted on when it is not.
+func ValidateAlerts(a Alerts) error {
+	if a.MinConfidence < 0 || a.MinConfidence > 1 {
+		return fmt.Errorf("min_confidence %g is out of range [0,1]", a.MinConfidence)
+	}
+	if a.MaxRecent < 1 {
+		return fmt.Errorf("max_recent must be >= 1 (got %d)", a.MaxRecent)
+	}
+	if a.DedupWindowSec < 1 {
+		return fmt.Errorf("dedup_window_sec must be >= 1 (got %d)", a.DedupWindowSec)
+	}
+	for name, v := range a.PerClassMinConfidence {
+		if !alertClassKnown(name) {
+			return fmt.Errorf("per_class_min_confidence: %q is not a traffic-classes-v1 class (want one of %v)", name, alertClassNames)
+		}
+		if name == alertClassNormal {
+			return fmt.Errorf("per_class_min_confidence: %q never alerts, so a threshold for it has no effect — remove it", name)
+		}
+		if v < 0 || v > 1 {
+			return fmt.Errorf("per_class_min_confidence[%q] = %g is out of range [0,1]", name, v)
+		}
+	}
+	return nil
+}
+
+// alertClassNames mirrors the class names in schemas/outputs/traffic-classes-v1.json.
+// Like maxCaptureSnaplen and captureFilterNames above, it is duplicated on
+// purpose: config is a leaf package that must not import schema
+// (docs/architecture.md). traffic-classes-v1 is frozen (PROJECT.md §9), so this
+// list cannot drift in practice — and TestConfigAlertClassNamesMatchSchema in
+// internal/alert, which legitimately imports both packages, fails if it does.
+var alertClassNames = []string{
+	"normal", "scan", "dos_ddos", "brute_force", "botnet_c2", "web_attack", "suspicious",
+}
+
+// alertClassNormal is the class that never alerts.
+const alertClassNormal = "normal"
+
+func alertClassKnown(name string) bool {
+	for _, c := range alertClassNames {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateCollector enforces the collector block's security posture (PROJECT.md

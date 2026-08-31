@@ -197,7 +197,7 @@ func TestAuditRouteLimitClamping(t *testing.T) {
 func TestAuditRouteNoLoggerIsUnavailable(t *testing.T) {
 	cfg := config.Default()
 	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
-	srv := New(cfg, events.New(), storage.NewMem(10, 10), rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := New(cfg, events.New(), storage.NewMem(10, 10), rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	rr := do(t, srv.Handler(), "GET", "/api/v1/audit")
 	if rr.Code != http.StatusServiceUnavailable {
@@ -354,7 +354,7 @@ func TestAuditCoversModelsDatasetsAndTraining(t *testing.T) {
 	srv := New(cfg, events.New(), st, rt,
 		registry.Open(modelDir, quiet), aud,
 		dataset.Open(dsDir, st, nil, quiet), nil, nil, nil, nil,
-		training.Open(trDir, aud, quiet), nil, nil)
+		training.Open(trDir, aud, quiet), nil, nil, nil)
 	h := srv.Handler()
 
 	// 1. model activation + deactivation.
