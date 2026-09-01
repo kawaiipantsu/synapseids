@@ -666,6 +666,10 @@ export interface RuntimeModel {
   family: string
   role: string
   registered: boolean
+  /** traffic-classes-v1 classes this model never emits, so the UI shows a
+   *  labelled gap instead of implying full coverage. The Phase 1 heuristic
+   *  reports ["web_attack"] (issue #134). Absent = full coverage claimed. */
+  unsupported_classes?: string[]
 }
 
 /** GET /api/v1/models */

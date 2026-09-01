@@ -205,6 +205,30 @@ func TestModelLineageEndpoint(t *testing.T) {
 	}
 }
 
+// TestModelsRuntimeReportsWebAttackGap: the Phase 1 heuristic declares that it
+// never emits web_attack, and /api/v1/models surfaces it so the UI can show a
+// labelled gap rather than implying full traffic-classes-v1 coverage (issue #134).
+func TestModelsRuntimeReportsWebAttackGap(t *testing.T) {
+	h := newTestServer()
+	rr := do(t, h, "GET", "/api/v1/models")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/models = %d", rr.Code)
+	}
+	var list struct {
+		Runtime []struct {
+			ID                 string   `json:"id"`
+			UnsupportedClasses []string `json:"unsupported_classes"`
+		} `json:"runtime"`
+	}
+	mustJSON(t, rr, &list)
+	if len(list.Runtime) != 1 {
+		t.Fatalf("runtime models = %d, want 1", len(list.Runtime))
+	}
+	if got := list.Runtime[0].UnsupportedClasses; len(got) != 1 || got[0] != "web_attack" {
+		t.Fatalf("heuristic unsupported_classes = %v, want [web_attack]", got)
+	}
+}
+
 func TestModelRoutesWithoutRegistry(t *testing.T) {
 	// New(..., reg=nil, ...): GET /api/v1/models still works (runtime only),
 	// state-changing routes report 503.

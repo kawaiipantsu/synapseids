@@ -942,7 +942,8 @@ runtime. No params. `200`:
     }
   ],
   "runtime": [
-    { "id": "flow-classifier-v1-cph-0002", "family": "flow-classifier-v1", "role": "primary", "registered": true }
+    { "id": "heuristic-v1", "family": "flow-classifier-v1", "role": "primary",
+      "registered": false, "unsupported_classes": ["web_attack"] }
   ]
 }
 ```
@@ -952,6 +953,14 @@ of `registered`, `active`, `deactivated`. `runtime` is what is actually scoring
 flows right now — the heuristic (`id: heuristic-v1`, `registered: false`) until a
 model is activated, then the single activated model. `runtime` inside each
 `models` entry says whether that entry is the one loaded and in what role.
+
+`unsupported_classes` (present only when non-empty) lists `traffic-classes-v1`
+classes the runtime model never emits, so a client shows a labelled gap rather
+than implying full coverage. The Phase 1 heuristic reports `["web_attack"]`: its
+byte-asymmetry rule fired only on ordinary uploads and was removed (#135), and
+whether the class is reachable from `flow-features-v1` at all — without payload
+inspection — is open (#134). The class stays index 5 of the frozen output vector
+regardless; a trained model may still learn it.
 Activation never survives a daemon restart: a `status: active` entry is
 reconciled to `deactivated` on startup and must be re-activated explicitly
 (PROJECT.md §28.10).

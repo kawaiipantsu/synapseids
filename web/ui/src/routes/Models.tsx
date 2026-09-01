@@ -14,6 +14,7 @@ import type {
   ModelTreeNode,
   RuntimeModel,
 } from '../api/types'
+import { IssueLink } from '../components/IssueLink'
 import { hiddenFromUnknown, layerBreakdown } from '../lib/arch'
 import { CLASS_NAMES } from '../lib/classes'
 import { fmtAgo, fmtBytes, fmtDateTime, fmtInt, fmtNum, fmtPct } from '../lib/format'
@@ -834,6 +835,7 @@ export function Models() {
   }
 
   const heuristic = runtime.find((r) => !r.registered)
+  const classGap = runtime.flatMap((r) => r.unsupported_classes ?? [])
 
   return (
     <div className="mr">
@@ -886,6 +888,21 @@ export function Models() {
           ) : null}{' '}
           A trained model appears here only after an operator activates it.
         </div>
+        {classGap.length > 0 ? (
+          <div className="foot">
+            Labelled gap: the current classifier never emits{' '}
+            {classGap.map((c, i) => (
+              <span key={c}>
+                {i > 0 ? ', ' : ''}
+                <code>{c}</code>
+              </span>
+            ))}
+            . Its byte-asymmetry rule fired only on ordinary uploads and was removed (
+            <IssueLink n={135} />); whether <code>traffic-classes-v1</code> can carry the class
+            at all without payload inspection is open (<IssueLink n={134} />). The class stays in
+            the frozen output vector, and a trained model may still learn it.
+          </div>
+        ) : null}
       </div>
 
       <div className="card wide">
