@@ -47,6 +47,12 @@ type Policy struct {
 	// own right, and hiding it behind a confidence floor is exactly the
 	// information loss the ensemble exists to prevent).
 	AlertOnDisagreement bool
+	// Suppress is the expected-behaviour layer (issue #133): a verdict that
+	// clears its threshold but matches one of these rules is NOT raised as a
+	// detection. It is still scored and still stored as a classification —
+	// suppression is a reporting decision, not a modelling one. Compile the
+	// config rules with CompileSuppress. Empty by default.
+	Suppress []SuppressRule
 }
 
 // DefaultPolicy returns the built-in policy.

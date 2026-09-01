@@ -116,15 +116,20 @@ func run(args []string) int {
 	// It is always constructed, even with alerts.enabled=false: the store then
 	// suppresses everything but still reports counters, so /api/v1/status can say
 	// alerting is off instead of looking like a network with nothing happening.
-	alerts := alert.New(alertPolicy(cfg.Alerts), alert.Options{
+	alertPol, err := alertPolicy(cfg.Alerts)
+	if err != nil {
+		log.Printf("config: %v", err)
+		return 1
+	}
+	alerts := alert.New(alertPol, alert.Options{
 		MaxRecent:   cfg.Alerts.MaxRecent,
 		DedupWindow: time.Duration(cfg.Alerts.DedupWindowSec) * time.Second,
 		Bus:         bus,
 	})
 	defer func() { _ = alerts.Close() }()
 	if cfg.Alerts.Enabled {
-		log.Printf("alerts: enabled (min_confidence=%.2f dedup_window=%ds max_recent=%d alert_on_disagreement=%t)",
-			cfg.Alerts.MinConfidence, cfg.Alerts.DedupWindowSec, cfg.Alerts.MaxRecent, cfg.Alerts.AlertOnDisagreement)
+		log.Printf("alerts: enabled (min_confidence=%.2f dedup_window=%ds max_recent=%d alert_on_disagreement=%t suppress_rules=%d)",
+			cfg.Alerts.MinConfidence, cfg.Alerts.DedupWindowSec, cfg.Alerts.MaxRecent, cfg.Alerts.AlertOnDisagreement, len(cfg.Alerts.Suppress))
 	} else {
 		log.Printf("alerts: disabled by config — /api/v1/detections will stay empty and no AlertCreated event is published")
 	}
@@ -363,17 +368,30 @@ func run(args []string) int {
 	return 0
 }
 
-// alertPolicy bridges the config block to the alert package's policy. It is a
-// plain translation and validates nothing: config.ValidateAlerts already
-// rejected an out-of-range threshold or an unknown class at load, so a policy
-// that reaches here is known-good (PROJECT.md §23).
-func alertPolicy(a config.Alerts) alert.Policy {
+// alertPolicy bridges the config block to the alert package's policy. The scalar
+// fields are a plain copy — config.ValidateAlerts already rejected an
+// out-of-range threshold or an unknown class at load (PROJECT.md §23). The
+// suppression rules are compiled here (CIDR parsing, matcher build); an error is
+// impossible on a validated config but is returned rather than dropped, because
+// a silently discarded suppression rule is exactly what issue #133 forbids.
+func alertPolicy(a config.Alerts) (alert.Policy, error) {
+	specs := make([]alert.SuppressSpec, len(a.Suppress))
+	for i, r := range a.Suppress {
+		specs[i] = alert.SuppressSpec{
+			Src: r.Src, Dst: r.Dst, DstPort: r.DstPort, Class: r.Class, Note: r.Note,
+		}
+	}
+	rules, err := alert.CompileSuppress(specs)
+	if err != nil {
+		return alert.Policy{}, fmt.Errorf("alerts.suppress: %w", err)
+	}
 	return alert.Policy{
 		Enabled:               a.Enabled,
 		MinConfidence:         a.MinConfidence,
 		PerClassMinConfidence: a.PerClassMinConfidence,
 		AlertOnDisagreement:   a.AlertOnDisagreement,
-	}
+		Suppress:              rules,
+	}, nil
 }
 
 // hasNICInterface reports whether srcs already contains a "nic" source bound to
