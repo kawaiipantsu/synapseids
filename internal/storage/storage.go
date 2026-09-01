@@ -88,7 +88,12 @@ type Stats struct {
 	// disagreement is an instrumented signal). It counts every disagreeing
 	// verdict ever put, not just those still retained in the ring.
 	Disagreements uint64 `json:"disagreements"`
-	Driver        string `json:"driver"`
+	// FlowsExpired / ClassExpired count records the retention sweep dropped for
+	// being older than their configured window (issue #56), as distinct from
+	// FlowsEvicted / ClassEvicted (the ring overflowing).
+	FlowsExpired uint64 `json:"flows_expired"`
+	ClassExpired uint64 `json:"classifications_expired"`
+	Driver       string `json:"driver"`
 }
 
 // Store is the persistence contract.
@@ -107,6 +112,14 @@ type Store interface {
 	RecentFlows(limit int) []FlowRecord
 	Stats() Stats
 	Close() error
+}
+
+// Purger is the optional interface a Store implements when it can drop records
+// older than a cutoff for the retention sweep (issue #56, PROJECT.md §20). A
+// zero-value cutoff skips that category. Mem implements it; a future durable
+// backend does its own TTL/partition pruning and need not.
+type Purger interface {
+	PurgeBefore(flowsBefore, classificationsBefore time.Time) (flows, classifications int)
 }
 
 // FlowRecordFrom builds a stored FlowRecord from a flow record and its features.

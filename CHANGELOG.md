@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `logging` config block (`format: text|json`, `level`, plus `SYNAPSE_LOG_*`);
   the standard `log` package is bridged so every existing line lands in the
   structured stream. See [ADR 0033](docs/adr/0033-observability-metrics-and-structured-logging.md). (#55)
+- **Configurable retention engine** (issue #56, PROJECT.md §20). A background
+  sweep (`retention.sweep_interval`, default 5m) drops stored records older than
+  their per-category window: `retention.flows` (by a flow version's `last_seen`,
+  so a long flow keeps recent snapshots), `retention.classifications` (by `ts`),
+  and `retention.detections` (retained detections in `alert.Store`, by
+  `last_ts`). A window of `0` disables the sweep for that category — the pre-#56
+  behaviour, bounded only by the ring. Feature vectors and per-model outputs
+  share their parent record's window; review decisions and the audit log are
+  never on a timer. `storage.PurgeBefore` compacts the in-memory rings under the
+  write lock only; the alert store purges on its own aggregator goroutine. New
+  counters `storage.flows_expired` / `classifications_expired` and
+  `alerts.expired` on `/api/v1/status`, distinct from `*_evicted`. (#56)
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that
