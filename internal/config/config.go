@@ -272,10 +272,23 @@ type Live struct {
 	ClientQueueSize int      `json:"client_queue_size"`
 }
 
-// Retention holds per-category history windows (PROJECT.md §20).
+// Retention holds per-category history windows (PROJECT.md §20, issue #56). A
+// background sweeper drops stored records older than the window for their
+// category; a window of `0` disables the sweep for that category, leaving it
+// bounded only by the ring capacity (`storage.max_flows`, `alerts.max_recent`).
+//
+// Only the store-backed histories with an independent lifetime are here. Feature
+// vectors and per-model outputs live *inside* a flow record and a classification
+// and share their retention; capture-source counters are live state, not
+// history; review decisions are operator artefacts kept until explicitly
+// deleted, never on a timer.
 type Retention struct {
 	Flows           Duration `json:"flows"`
 	Classifications Duration `json:"classifications"`
+	Detections      Duration `json:"detections"`
+	// SweepInterval is how often the retention sweep runs. Default 5m; minimum
+	// 1s. It is not itself a retention window.
+	SweepInterval Duration `json:"sweep_interval"`
 }
 
 // Default returns the built-in configuration. The management listener binds to
@@ -307,6 +320,8 @@ func Default() Config {
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
 			Classifications: Duration(90 * 24 * time.Hour),
+			Detections:      Duration(30 * 24 * time.Hour),
+			SweepInterval:   Duration(5 * time.Minute),
 		},
 	}
 }
@@ -457,6 +472,30 @@ func (c Config) validate() error {
 	}
 	if err := ValidateCollector(c.Capture.Collector); err != nil {
 		return fmt.Errorf("config: capture.collector: %w", err)
+	}
+	if err := ValidateRetention(c.Retention); err != nil {
+		return fmt.Errorf("config: retention: %w", err)
+	}
+	return nil
+}
+
+// ValidateRetention checks the retention block (issue #56). A negative window is
+// a typo; a window of 0 is allowed and means "keep until the ring evicts it".
+func ValidateRetention(r Retention) error {
+	for name, d := range map[string]Duration{
+		"flows":           r.Flows,
+		"classifications": r.Classifications,
+		"detections":      r.Detections,
+	} {
+		if d < 0 {
+			return fmt.Errorf("%s window %s is negative", name, d.D())
+		}
+	}
+	if r.SweepInterval < 0 {
+		return fmt.Errorf("sweep_interval %s is negative", r.SweepInterval.D())
+	}
+	if r.SweepInterval > 0 && r.SweepInterval.D() < time.Second {
+		return fmt.Errorf("sweep_interval %s is below the 1s minimum", r.SweepInterval.D())
 	}
 	return nil
 }

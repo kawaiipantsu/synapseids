@@ -39,6 +39,8 @@
   },
   "retention": {
     "flows": "720h",
-    "classifications": "2160h"
+    "classifications": "2160h",
+    "detections": "720h",
+    "sweep_interval": "5m"
   }
 }

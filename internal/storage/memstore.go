@@ -1,6 +1,9 @@
 package storage
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // FlowHistoryCap bounds how many versions of a *single* flow the store keeps —
 // the periodic ReasonSnapshot records a long-lived flow emits plus its terminal
@@ -27,10 +30,13 @@ type Mem struct {
 	flowEvict uint64
 	verDrop   uint64
 
+	flowExpire uint64
+
 	cls         []Classification
 	clsHead     int
 	clsFull     bool
 	clsEvict    uint64
+	clsExpire   uint64
 	clsDisagree uint64
 }
 
@@ -189,8 +195,111 @@ func (m *Mem) Stats() Stats {
 		ClassEvicted:        m.clsEvict,
 		FlowVersionsDropped: m.verDrop,
 		Disagreements:       m.clsDisagree,
+		FlowsExpired:        m.flowExpire,
+		ClassExpired:        m.clsExpire,
 		Driver:              "memory",
 	}
+}
+
+// PurgeBefore drops stored records older than the given per-category cutoffs and
+// returns how many of each it removed (issue #56). A zero-value cutoff skips
+// that category. A flow *version* is judged by its record's LastSeen, so a
+// long-lived flow keeps its recent snapshots while its stale early ones age out;
+// a classification by its TS.
+//
+// The rings cannot hold gaps, so each affected ring is compacted: the surviving
+// records are re-laid newest-first and the head/full state reset. The per-flow
+// history map is filtered in step. flowSeq is never rewound, so the
+// dropVersion seq-match invariant still holds for records the ring later evicts.
+func (m *Mem) PurgeBefore(flowsBefore, classificationsBefore time.Time) (flows, classifications int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !flowsBefore.IsZero() {
+		flows = m.purgeFlows(flowsBefore)
+		m.flowExpire += uint64(flows)
+	}
+	if !classificationsBefore.IsZero() {
+		classifications = m.purgeClassifications(classificationsBefore)
+		m.clsExpire += uint64(classifications)
+	}
+	return flows, classifications
+}
+
+// purgeFlows rebuilds the flow ring and history map without the versions whose
+// record LastSeen is before cutoff. Caller holds m.mu.
+func (m *Mem) purgeFlows(cutoff time.Time) int {
+	kept := collect(m.flows, m.flowHead, m.flowFull, 0) // newest-first
+	dropped := 0
+	live := kept[:0]
+	for _, v := range kept {
+		if v.rec.LastSeen.Before(cutoff) {
+			dropped++
+			continue
+		}
+		live = append(live, v)
+	}
+	if dropped == 0 {
+		return 0
+	}
+
+	// Re-lay the ring oldest-first so a subsequent PutFlow evicts in the right
+	// order, and reset the ring bookkeeping.
+	for i := range m.flows {
+		m.flows[i] = flowVersion{}
+	}
+	for i := len(live) - 1; i >= 0; i-- {
+		m.flows[len(live)-1-i] = live[i]
+	}
+	m.flowHead = len(live) % len(m.flows)
+	m.flowFull = len(live) == len(m.flows)
+
+	// Filter each flow's history to the versions still live in the ring.
+	liveSeq := make(map[uint64]struct{}, len(live))
+	for _, v := range live {
+		liveSeq[v.seq] = struct{}{}
+	}
+	for id, h := range m.hist {
+		out := h[:0]
+		for _, v := range h {
+			if _, ok := liveSeq[v.seq]; ok {
+				out = append(out, v)
+			}
+		}
+		if len(out) == 0 {
+			delete(m.hist, id)
+		} else {
+			m.hist[id] = out
+		}
+	}
+	return dropped
+}
+
+// purgeClassifications rebuilds the classification ring without verdicts older
+// than cutoff. Caller holds m.mu.
+func (m *Mem) purgeClassifications(cutoff time.Time) int {
+	kept := collect(m.cls, m.clsHead, m.clsFull, 0) // newest-first
+	live := kept[:0]
+	dropped := 0
+	for _, c := range kept {
+		if c.TS.Before(cutoff) {
+			dropped++
+			continue
+		}
+		live = append(live, c)
+	}
+	if dropped == 0 {
+		return 0
+	}
+	for i := range m.cls {
+		m.cls[i] = Classification{}
+	}
+	for i := len(live) - 1; i >= 0; i-- {
+		m.cls[len(live)-1-i] = live[i]
+	}
+	m.clsHead = len(live) % len(m.cls)
+	m.clsFull = len(live) == len(m.cls)
+	return dropped
 }
 
 // Close is a no-op for the memory store.

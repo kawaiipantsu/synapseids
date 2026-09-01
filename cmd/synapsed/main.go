@@ -341,6 +341,11 @@ func run(args []string) int {
 	// fails to re-validate leaves the running configuration untouched (issue #59).
 	go newReloader(*cfgPath, logger, alerts, cfg).watch(ctx)
 
+	// The retention sweep: drop stored flows / classifications / detections
+	// older than their configured window (issue #56, PROJECT.md §20). Off every
+	// hot path, on its own ticker.
+	go (&retentionSweeper{store: store, alerts: alerts, cfg: cfg.Retention}).run(ctx)
+
 	// One pipeline goroutine consumes the merged live-capture stream. It runs
 	// even with no startup source so a source added later via
 	// POST /api/v1/captures has a consumer on the merged channel. It shares the

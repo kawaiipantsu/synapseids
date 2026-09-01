@@ -292,17 +292,26 @@ WebSocket fan-out tuning (PROJECT.md §18, §22).
 
 ## `retention`
 
-History windows (PROJECT.md §20). Retention policy must be configurable; these
-are the knobs. With the `memory` driver the rings are self-bounding by
-`storage.max_flows`, so these values are **advisory** until a durable backend
-(sqlite/ClickHouse) lands — keep them meaningful now so the durable backend
-inherits a sane policy, and see `contrib/cron/synapseids-retention` for an
-external backstop.
+Per-category history windows (PROJECT.md §20, issue #56). A background sweep runs
+every `sweep_interval` and drops stored records older than the window for their
+category. With the `memory` driver the rings still bound total size
+(`storage.max_flows`, `alerts.max_recent`); the sweep is what enforces *age*, and
+a durable backend (#53) will inherit the same policy. `contrib/cron/synapseids-retention`
+remains as an external backstop.
 
 | Key | Type | Default | This file | Meaning |
 |---|---|---|---|---|
-| `retention.flows` | duration | `720h` (30d) | `720h` | How long flow records / feature vectors are kept. |
-| `retention.classifications` | duration | `2160h` (90d) | `2160h` | How long classification/verdict history is kept. |
+| `retention.flows` | duration | `720h` (30d) | `720h` | Max age of a stored flow **version** (judged by its `last_seen`), so a long flow keeps recent snapshots while stale early ones age out. Feature vectors live inside the record and share this. `0` = keep until the ring evicts it. |
+| `retention.classifications` | duration | `2160h` (90d) | `2160h` | Max age of a stored verdict (by its `ts`). Per-model outputs live inside it and share this. `0` disables. |
+| `retention.detections` | duration | `720h` (30d) | `720h` | Max age of a retained detection (by `last_ts`), from `alert.Store`. `0` disables. |
+| `retention.sweep_interval` | duration | `5m` | `5m` | How often the sweep runs. Not a retention window. Minimum `1s`; `0` uses the `5m` default. |
+
+Review decisions and the audit log are **not** on a timer — they are operator
+artefacts kept until explicitly deleted. Capture-source counters are live state,
+not history. The sweep runs on its own goroutine, off every hot path; each pass
+that drops anything logs `retention: purged N flow(s), …`. Counts surface on
+`/api/v1/status` as `storage.flows_expired` / `classifications_expired` and
+`alerts.expired`.
 
 ## Validation summary
 
@@ -332,4 +341,6 @@ external backstop.
   `note`
 - `logging.format` other than `text` / `json`, or `logging.level` other than
   `debug` / `info` / `warn` / `error`
+- a negative `retention.*` window, or `retention.sweep_interval` negative or
+  below `1s`
 - any unknown key is present in the file

@@ -46,6 +46,8 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "classifications_evicted": 0,
     "flow_versions_dropped": 0,
     "disagreements": 3,
+    "flows_expired": 0,
+    "classifications_expired": 0,
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
@@ -143,6 +145,13 @@ losing its *earliest* snapshots while keeping the most recent. It is distinct fr
 `flows_evicted`, which is the global ring overwriting its oldest slot. See
 [`/api/v1/flows/{id}/snapshots`](#get-apiv1flowsidsnapshots).
 
+`storage.flows_expired` / `classifications_expired` (and `alerts.expired`) count
+records the **retention sweep** dropped for being older than their configured
+window (`retention.flows` / `retention.classifications` / `retention.detections`,
+issue #56, PROJECT.md §20) — as distinct from `*_evicted`, which is the ring
+overflowing. A window of `0` disables the sweep for that category. The sweep runs
+every `retention.sweep_interval` (default `5m`), off every hot path.
+
 `storage.disagreements` is the cumulative number of stored classifications whose
 ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
 not just those still in the ring (PROJECT.md §12, §24).
@@ -159,6 +168,7 @@ not just those still in the ring (PROJECT.md §12, §24).
 | `suppressed_by_rule` | Verdicts that **did** clear their threshold but matched an [`alerts.suppress`](#expected-behaviour-suppression) expected-behaviour rule, so no detection was opened. The classification is still recorded and visible in the flow log. |
 | `suppress_rules` | Per-rule breakdown, in config order: `[{ "note": "...", "matched": N }]`. Omitted when no rules are configured. A rule with `matched: 0` has never fired and is probably stale. |
 | `evicted` | Detections dropped by the `max_recent` bound, oldest first. Non-zero means `/api/v1/detections` is a recent window, not a full history. |
+| `expired` | Detections dropped by the retention sweep for being older than `retention.detections` (issue #56). |
 | `retained` | Detections currently held. |
 | `max_recent` | The bound (`alerts.max_recent`, default `1000`). |
 | `observed` | Verdicts the alert store evaluated. |
