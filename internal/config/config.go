@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -217,6 +218,40 @@ type Alerts struct {
 	// DedupWindowSec is how long one (src, dst, class) detection keeps absorbing
 	// further occurrences before a fresh detection is opened. Default: 60.
 	DedupWindowSec int `json:"dedup_window_sec"`
+	// Suppress is the expected-behaviour layer between classification and
+	// detection (issue #133). A verdict that clears its threshold but matches a
+	// rule here is still recorded as a classification and stays visible in the
+	// flow log — it is simply not raised as a detection, because the traffic is
+	// correctly identified and legitimately expected (a DarkWeb monitor's
+	// outbound lookups, a vulnerability scanner, backup replication, CDN
+	// health-checks). Suppression is a reporting decision, never a modelling
+	// one: the classifier keeps scoring honestly. Default: no rules.
+	Suppress []SuppressRule `json:"suppress"`
+}
+
+// SuppressRule is one expected-behaviour rule (issue #133). It matches on stable
+// attributes only — a per-flow rule that had to name the ephemeral port would be
+// useless — and every field left empty is a wildcard. At least one of Src, Dst,
+// DstPort or Class must be set, or the rule would suppress every detection;
+// Note is required so a rule that turns out to match nothing can be found and
+// removed rather than silently doing nothing. All of these are enforced at load.
+type SuppressRule struct {
+	// Src / Dst are an IP address or CIDR the flow's initiator / responder must
+	// fall within. "" matches any. A bare address is treated as a single-host
+	// prefix. Which of the two you pin is how you express direction: Src set to
+	// your own edge address suppresses outbound, Dst set to it suppresses
+	// inbound.
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+	// DstPort is the responder (destination) port. 0 matches any.
+	DstPort int `json:"dst_port"`
+	// Class is a traffic-classes-v1 class name. "" matches any alertable class.
+	// "normal" is rejected: it never becomes a detection, so suppressing it is a
+	// no-op and almost certainly a mistake.
+	Class string `json:"class"`
+	// Note is a required free-text explanation of why this traffic is expected.
+	// It is echoed in the /api/v1/status suppression counters.
+	Note string `json:"note"`
 }
 
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
@@ -428,6 +463,60 @@ func ValidateAlerts(a Alerts) error {
 		if v < 0 || v > 1 {
 			return fmt.Errorf("per_class_min_confidence[%q] = %g is out of range [0,1]", name, v)
 		}
+	}
+	for i, r := range a.Suppress {
+		if err := validateSuppressRule(r); err != nil {
+			return fmt.Errorf("suppress[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateSuppressRule rejects a suppression rule that is malformed or that
+// would quietly do nothing — a typo in a rule an operator believes is hiding
+// noise is worse than a load error (issue #133).
+func validateSuppressRule(r SuppressRule) error {
+	if strings.TrimSpace(r.Note) == "" {
+		return fmt.Errorf("needs a note explaining why this traffic is expected")
+	}
+	if r.Src == "" && r.Dst == "" && r.DstPort == 0 && r.Class == "" {
+		return fmt.Errorf("has no matchers (src, dst, dst_port, class all empty), so it would suppress every detection")
+	}
+	if r.Src != "" {
+		if err := checkHostOrPrefix(r.Src); err != nil {
+			return fmt.Errorf("src %q: %w", r.Src, err)
+		}
+	}
+	if r.Dst != "" {
+		if err := checkHostOrPrefix(r.Dst); err != nil {
+			return fmt.Errorf("dst %q: %w", r.Dst, err)
+		}
+	}
+	if r.DstPort < 0 || r.DstPort > 65535 {
+		return fmt.Errorf("dst_port %d is out of range [0,65535]", r.DstPort)
+	}
+	if r.Class != "" {
+		if !alertClassKnown(r.Class) {
+			return fmt.Errorf("class %q is not a traffic-classes-v1 class (want one of %v)", r.Class, alertClassNames)
+		}
+		if r.Class == alertClassNormal {
+			return fmt.Errorf("class %q never becomes a detection, so suppressing it has no effect — remove it", r.Class)
+		}
+	}
+	return nil
+}
+
+// checkHostOrPrefix accepts either a CIDR ("10.0.0.0/8") or a bare address
+// ("10.0.0.1"). internal/alert.parseHostOrPrefix compiles the same syntax into a
+// matcher; config stays a leaf package (docs/architecture.md) and carries only
+// the validation half. TestSuppressRuleParsingMatchesConfig in internal/alert
+// fails if the two ever disagree on what parses.
+func checkHostOrPrefix(s string) error {
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return nil
+	}
+	if _, err := netip.ParseAddr(s); err != nil {
+		return fmt.Errorf("not an IP address or CIDR")
 	}
 	return nil
 }

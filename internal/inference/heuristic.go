@@ -25,6 +25,28 @@ type Heuristic struct {
 	role Role
 }
 
+// HeuristicUnsupportedClasses names the traffic-classes-v1 classes the Phase 1
+// heuristic never emits. Today that is web_attack only.
+//
+// Its one rule (byte asymmetry toward an HTTP/HTTPS port) fired 61 times at
+// severity HIGH on a live WAN edge and every hit was an ordinary upload, so it
+// was removed rather than retuned (issue #135). Whether flow-features-v1 can
+// separate a malicious POST from a benign one at all, without payload
+// inspection, is an open question (issue #134): the 48 features are volumes,
+// rates, timing and TCP flag counts, and the distinguishing evidence is in the
+// bytes the data plane deliberately does not look at (§18). web_attack stays
+// index 5 of the frozen output vector regardless (§9); a trained model may still
+// learn it, and a future flow-features-v2 with cross-flow host state (issue #90)
+// could carry the request-fan-out shape a fuzzer leaves.
+var HeuristicUnsupportedClasses = []string{"web_attack"}
+
+// UnsupportedClasses reports the traffic-classes-v1 classes this model does not
+// produce, so the API and UI can show a labelled gap instead of implying full
+// coverage (issue #134). The slice is a fresh copy; callers may keep it.
+func (h *Heuristic) UnsupportedClasses() []string {
+	return append([]string(nil), HeuristicUnsupportedClasses...)
+}
+
 // NewHeuristic returns a Heuristic model with the given id and role.
 func NewHeuristic(id string, role Role) *Heuristic {
 	if id == "" {
@@ -194,7 +216,9 @@ func (h *Heuristic) evaluate(v features.Vector, explain bool) (map[int]float64, 
 	// contract (§9). But a transparent rule engine should not manufacture a HIGH
 	// severity verdict it cannot support: a labelled gap beats a confident wrong
 	// answer (§16), and 61 false highs is how an operator learns to ignore the
-	// tool. Tracked as an issue with the measurement.
+	// tool. The measurement is issue #135; whether the class is reachable from
+	// flow-features-v1 at all is issue #134. HeuristicUnsupportedClasses /
+	// UnsupportedClasses() above make the gap visible on /api/v1/models.
 
 	// BOTNET C2: long-lived low-rate beacon-like flow to a non-standard port,
 	// regular inter-arrival, small symmetric packets.

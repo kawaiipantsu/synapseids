@@ -117,7 +117,7 @@ one per interface, and below it the settings they share.
 | Location | free-form label shown in the daemon's capture-sources view |
 | Listen address | listen mode only: `host:port` this instance binds. **Each instance needs its own port** — four processes cannot share one |
 | Filter | a built-in cBPF preset: all, `ip`, `ip6`, `ip-any`, `not-arp`. There is no filter-expression compiler (§28.16) |
-| Direction | `in` for inbound only (the WAN-sensor default), `out`, or both |
+| Direction | **both** (the default), `in` or `out`. Leave it on both: `flow-features-v1` is bidirectional, so a one-way capture zeroes every reverse-direction counter and forward/backward ratio and skews the daemon's verdicts. `in`/`out` is refused together with the **Flow records** / **Feature vectors only** send modes, where the features are built here from traffic that cannot be bidirectional (issue #129) |
 | Promiscuous | see traffic not addressed to the firewall — usually wanted on a routed edge or a SPAN port |
 | Snaplen | bytes captured per frame |
 | BPF buffer (advanced) | store-buffer bytes for the capture device (`--bpf-buffer`). Blank = 512 KiB. FreeBSD clamps the request to `net.bpf.maxbufsize` (also 512 KiB out of the box), so raising it here only helps once `sysctl net.bpf.maxbufsize` is raised too — the sensor log prints requested vs granted at start. A bigger buffer absorbs bursts before the kernel drops frames (#128) |
@@ -166,7 +166,7 @@ dialling out need no inbound rules and no extra ports.
 
 | Enabled | Name | Interface | Sensor ID | Location | Direction | Promisc | Send | Authorised |
 |---|---|---|---|---|---|---|---|---|
-| ✔ | `wan` | WAN | `fw1-wan` | `hq/edge` | Inbound only | ✔ | Raw packets | ✔ |
+| ✔ | `wan` | WAN | `fw1-wan` | `hq/edge` | Both | ✔ | Raw packets | ✔ |
 | ✔ | `dmz` | DMZ | `fw1-dmz` | `hq/dmz` | Both | ✔ | Flow records | ✔ |
 | ✔ | `iot` | IOT | `fw1-iot` | `hq/iot` | Both | ✔ | Flow records | ✔ |
 | ✔ | `mgmt` | MGMT | `fw1-mgmt` | `hq/mgmt` | Both | ✔ | Feature vectors only | ✔ |
@@ -327,7 +327,7 @@ tail -f /var/log/synapseids/wan/sensor.log
 | `bpf: no usable BPF device` | every device is busy, or devfs exposes none. Another capture (tcpdump, the OPNsense packet-capture page) may be holding them. |
 | `interface "x" uses BSD loopback framing (DLT 0)` | you selected a tunnel/PPPoE pseudo-interface. Capture on the physical parent instead. |
 | `reports link type DLT n` | SynapseIDS decodes only Ethernet (DLT 1) and raw IP (DLT 12/101). |
-| The service starts but the daemon shows no packets | check the direction: `in` only captures inbound. Check the filter preset. Check the firewall rule allowing the daemon to reach the sensor port. |
+| The service starts but the daemon shows no packets | check the direction (`in` captures inbound only — and one-way capture is refused with the flow/feature send modes). Check the filter preset. Check the firewall rule allowing the daemon to reach the sensor port. |
 | `pcapoverip: server rejected connection (unauthorized)` | the daemon's token and the sensor's token differ. |
 | Rising `drops` in `/api/v1/captures` | the kernel discarded frames before the sensor read them (`BIOCGSTATS` `bs_drop`). Confirm on the box with `netstat -B`: if `Sblen`/`Hblen` are at their maximum the kernel is batching fine and the *sensor* is not draining. Raise the **BPF buffer** (and `sysctl net.bpf.maxbufsize` to match — the sensor log shows requested vs granted at start), lower the snaplen, narrow the filter — or stop re-streaming every byte and switch to `--mode flow` / `--mode feature`. A `raw` sensor on a saturated uplink ships as much traffic as it sees. |
 | The Services page does not appear after install | `service configd restart`, then reload the web UI. The package's post-install does this, but a partial install may not have. |
@@ -394,7 +394,7 @@ service synapseids_sensor selftest
 
 # 6. does the capture source actually open? and two at once?
 /usr/local/bin/synapse-sensor pcap-over-ip \
-    --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
+    --listen 127.0.0.1:4789 --iface em0 --authorized --direction inout --filter ip-any
 
 # 7. does a daemon see one sensor per instance?  GET /api/v1/sensors
 ```

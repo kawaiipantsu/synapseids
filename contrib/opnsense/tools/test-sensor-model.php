@@ -268,7 +268,7 @@ namespace {
             'interface'      => $name,
             'listen_address' => '0.0.0.0:4789',
             'filter'         => 'ip-any',
-            'direction'      => 'in',
+            'direction'      => 'inout',
             'promiscuous'    => '1',
             'snaplen'        => '262144',
             'bpf_buffer'     => '',
@@ -391,6 +391,29 @@ namespace {
     ], [], true);
 
     // ------------------------------------------------- pre-existing rules
+
+    // ---------------------------------------- one-way capture (issue #129)
+    //
+    // flow-features-v1 is bidirectional. A `direction` of in/out with the
+    // features built on the sensor (flow/feature send modes) means the daemon
+    // scores a half-zero vector -- on hardware that produced critical dos_ddos
+    // at 100% confidence on ordinary inbound replies. Raw mode stays the
+    // operator's call.
+    check('inbound-only capture feeding on-sensor feature vectors', [], ['direction', 'bidirectional'], false, [
+        inst('wan', ['direction' => 'in', 'send_mode' => 'feature']),
+    ]);
+    check('inbound-only capture feeding on-sensor flow records', [], ['direction', 'bidirectional'], false, [
+        inst('wan', ['direction' => 'in', 'send_mode' => 'flow']),
+    ]);
+    check('outbound-only capture feeding on-sensor feature vectors', [], ['direction', 'bidirectional'], false, [
+        inst('wan', ['direction' => 'out', 'send_mode' => 'feature']),
+    ]);
+    check('one-way capture is allowed when streaming raw packets', [], [], true, [
+        inst('wan', ['direction' => 'in', 'send_mode' => 'raw']),
+    ]);
+    check('both-directions capture with on-sensor feature vectors is fine', [], [], true, [
+        inst('wan', ['direction' => 'inout', 'send_mode' => 'feature']),
+    ]);
 
     check('enabled without a token', ['token' => ''], ['general.token']);
     check('connect mode without an address', ['mode' => 'connect'], ['general.address']);

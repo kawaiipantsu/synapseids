@@ -212,6 +212,44 @@ code — `normal` never alerts; `suspicious`→`low`, `scan`→`medium`,
 per-deployment override could produce a class with an empty severity that no
 filter can select and no operator can triage. Adding the key is a load error.
 
+### `alerts.suppress` — expected-behaviour rules
+
+A list of rules that turn a correctly-classified verdict into a **non-detection**
+because the traffic, while genuinely attack-shaped, is authorised: a DarkWeb
+monitor's outbound lookups, a vulnerability scanner, uptime probing, backup
+replication, CDN health-checks. Without it the tool is unusable on any host that
+does security research — it trains its operator to ignore it.
+
+```jsonc
+"alerts": {
+  "suppress": [
+    // The gateway itself runs authorised recon all day.
+    { "src": "203.0.113.7", "class": "scan",
+      "note": "edge box is our DarkWeb monitor (ticket OPS-1421)" },
+    // A backup target that looks like a one-way flood every night.
+    { "dst": "10.20.0.0/24", "dst_port": 873, "class": "dos_ddos",
+      "note": "rsync replication to the DR site" }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `src` / `dst` | string | IP or CIDR the flow's initiator / responder must fall within. `""` = any; a bare address is one host. Pin `src` for outbound, `dst` for inbound. |
+| `dst_port` | int `[0,65535]` | Responder port. `0` = any. |
+| `class` | string | A `traffic-classes-v1` class name. `""` = any alertable class. `normal` is rejected. |
+| `note` | string | **Required.** Why this traffic is expected. Echoed in `/api/v1/status` as `alerts.suppress_rules[].note`. |
+
+A matched verdict is **still scored and still stored as a classification** — it
+stays in `/api/v1/flows`, `/api/v1/classifications` and the flow log. Only the
+detection is skipped: no `/api/v1/detections` row, no `AlertCreated`. Matches are
+counted (`alerts.suppressed_by_rule`, and per rule in `alerts.suppress_rules`)
+so the decision is auditable and a rule that matches nothing shows `matched: 0`.
+
+Rules are evaluated in file order, first match wins, and the classifier is never
+told about them — suppression is a reporting decision, not a modelling one.
+Default: no rules.
+
 ## `live`
 
 WebSocket fan-out tuning (PROJECT.md §18, §22).
@@ -257,4 +295,8 @@ external backstop.
 - `alerts.min_confidence` outside `[0,1]`; `alerts.max_recent < 1`;
   `alerts.dedup_window_sec < 1`; an `alerts.per_class_min_confidence` key that is
   not a `traffic-classes-v1` class name or is `normal`, or a value outside `[0,1]`
+- an `alerts.suppress[]` rule with no matchers (`src`/`dst`/`dst_port`/`class`
+  all empty), an unparseable `src`/`dst`, a `dst_port` outside `[0,65535]`, a
+  `class` that is not a `traffic-classes-v1` name or is `normal`, or an empty
+  `note`
 - any unknown key is present in the file

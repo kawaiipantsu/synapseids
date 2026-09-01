@@ -55,6 +55,38 @@ func TestHeuristicNormal(t *testing.T) {
 	}
 }
 
+// TestHeuristicNeverEmitsWebAttack pins the #134/#135 decision: the removed
+// byte-asymmetry rule fired on ordinary uploads, and no flow-features-v1
+// threshold separates an upload from an injection payload, so the heuristic
+// produces no web_attack at all. The exact flow that was inspected on hardware
+// (113368 bytes out, 6478 back, port 443 — a file upload) must read as normal.
+func TestHeuristicNeverEmitsWebAttack(t *testing.T) {
+	h := NewHeuristic("", "")
+	start := time.Unix(0, 0)
+	r := flow.Record{
+		ID: 9, Proto: packet.ProtoTCP,
+		InitiatorIP: netip.MustParseAddr("192.168.1.50"), InitiatorPort: 51000,
+		ResponderIP: netip.MustParseAddr("93.184.216.34"), ResponderPort: 443,
+		FirstSeen: start, LastSeen: start.Add(2 * time.Second),
+		FwdPackets: 90, BwdPackets: 40, FwdBytes: 113368, BwdBytes: 6478,
+		SynCount: 2, AckCount: 128, FinCount: 2, PshCount: 40,
+		PktSizeMin: 52, PktSizeMax: 1460,
+	}
+	idx, _ := h.Classify(vec(r)).Top()
+	if got := schema.ClassName(idx); got == "web_attack" {
+		t.Fatalf("a large upload to :443 was classified web_attack — the removed rule is back")
+	}
+
+	if got := h.UnsupportedClasses(); len(got) != 1 || got[0] != "web_attack" {
+		t.Fatalf("UnsupportedClasses() = %v, want [web_attack]", got)
+	}
+	// The accessor must hand back a copy, not the package slice.
+	h.UnsupportedClasses()[0] = "mutated"
+	if HeuristicUnsupportedClasses[0] != "web_attack" {
+		t.Fatal("UnsupportedClasses() exposed the shared slice")
+	}
+}
+
 func TestRuntimeRecordsPerModelAndDisagreement(t *testing.T) {
 	primary := NewHeuristic("primary", RolePrimary)
 	// A second alert-driving model that always says "normal", to force a

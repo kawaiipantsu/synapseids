@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
+  that does security research — a DarkWeb monitor, a vulnerability scanner,
+  uptime probing, backup replication, CDN health-checks — produces verdicts that
+  are correctly classified and legitimately expected. A suppression rule matches
+  on stable attributes (source/destination address or prefix, destination port,
+  class) and turns such a verdict into a non-detection: it is **still scored and
+  still stored as a classification**, visible in the flow log, but raises no
+  `/api/v1/detections` row and no `AlertCreated`. Matches are counted, per rule,
+  on `/api/v1/status` (`alerts.suppressed_by_rule`, `alerts.suppress_rules`), so
+  the decision is auditable and a rule that matches nothing is visible. Malformed
+  rules — no matchers, bad CIDR, unknown/`normal` class, out-of-range port,
+  missing note — are a load error, never a silent no-op. The classifier is never
+  told about the rules. See [ADR 0032](docs/adr/0032-expected-behaviour-suppression.md). (#133)
 - **The FreeBSD BPF store-buffer size is now visible and tunable** (issue #128).
   `BIOCSBLEN` is clamped by the kernel to `net.bpf.maxbufsize` (512 KiB by
   default), and the granted size was read back and never surfaced — an operator
@@ -21,6 +34,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   between a burst and kernel drops (#127). Linux rejects the knob — AF_PACKET
   sizes its ring differently. The `synapse-sensor doctor` `bpf-access` line and a
   daemon-config equivalent are follow-ups.
+
+### Changed
+
+- **`web_attack` is now a declared labelled gap, not a silent one.** The Phase 1
+  heuristic never emits `web_attack` (its byte-asymmetry rule fired only on
+  ordinary uploads and was removed, #135), and it is doubtful `flow-features-v1`
+  can carry the class at all without payload inspection (#134). The runtime model
+  now declares that: `GET /api/v1/models` `runtime[]` entries carry
+  `unsupported_classes` (`["web_attack"]` for the heuristic), and the Models page
+  shows a labelled gap citing #134/#135. The class stays index 5 of the frozen
+  `traffic-classes-v1` vector; a trained model may still learn it. (#134)
+
+### Fixed
+
+- **`capture.Manager` discarded in-flight packets at shutdown with no counter.**
+  When the daemon stops (or a source hits a terminal error), the fan-in drains
+  and throws away whatever the source had already handed over — a deliberate
+  choice, since the alternative is blocking shutdown on a slow consumer, but it
+  was silent. PROJECT.md §22 requires every drop path to be measured, and every
+  other one in the tree already is (`events.dropped`, `ws_client_drops`,
+  `flows_evicted`, `alerts.dropped`). Those discards are now counted, surfaced on
+  `GET /api/v1/status` as `capture.shutdown_drops`, and logged once at exit
+  naming the affected source(s). A finite source read to its end still drains
+  cleanly and contributes nothing. (#138)
+- **The OPNsense sensor defaulted to one-way capture, which breaks the
+  bidirectional feature set.** The instance `Direction` field defaulted to
+  `in` ("Inbound only"). `flow-features-v1` is bidirectional: under a one-way
+  capture the backward counters and every forward/backward ratio are
+  structurally zero, so the daemon scores a vector it cannot trust — on a live
+  gateway this produced `critical dos_ddos` verdicts at 100% confidence on
+  ordinary inbound Cloudflare reply legs. The default is now `inout`, and
+  `performValidation()` refuses `in`/`out` together with the on-sensor `flow` /
+  `feature` send modes (where the features are computed from traffic that
+  cannot be bidirectional). One-way capture with `raw` streaming is still
+  allowed — the daemon at least sees the packets it is missing. Carrying
+  capture direction in the SYNPOIP record so the daemon can suppress
+  directionality-dependent rules is a separate, larger change (it needs a
+  protocol field) and is not in this fix. (#129)
 
 ## [0.2.1] - 2026-08-31
 

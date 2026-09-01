@@ -354,16 +354,29 @@
                     <ValidationMessage>Choose one of the built-in capture filter presets.</ValidationMessage>
                 </filter>
 
-                <!-- Maps to the `direction` flag; valid only together with `iface`. -->
+                <!--
+                    Maps to the `direction` flag; valid only together with `iface`.
+
+                    Defaults to `inout`, and that default matters: flow-features-v1
+                    is a BIDIRECTIONAL feature set. Under a one-way capture the
+                    backward packet and byte counters and every forward/backward
+                    ratio are structurally zero, so roughly half the 48 features
+                    carry no information and the daemon's models (the heuristic and
+                    any trained model) score a vector they cannot trust. On a live
+                    gateway `in` produced `critical dos_ddos` at full confidence on
+                    ordinary inbound reply legs (issue #129). performValidation()
+                    refuses `in` / `out` together with the on-sensor `flow` /
+                    `feature` send modes for that reason.
+                -->
                 <direction type="OptionField">
-                    <default>in</default>
+                    <default>inout</default>
                     <Required>Y</Required>
                     <OptionValues>
                         <inout>Both directions</inout>
                         <in>Inbound only</in>
                         <out>Outbound only</out>
                     </OptionValues>
-                    <ValidationMessage>Choose inbound, outbound or both.</ValidationMessage>
+                    <ValidationMessage>Choose inbound, outbound or both. One-way capture invalidates the bidirectional flow features and is refused with the flow/feature send modes.</ValidationMessage>
                 </direction>
 
                 <!-- Maps to the boolean `promisc` flag. -->

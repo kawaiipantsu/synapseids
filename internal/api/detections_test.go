@@ -275,7 +275,7 @@ func TestStatusAlertCounters(t *testing.T) {
 	if !ok {
 		t.Fatalf("status has no alerts object: %v", body["alerts"])
 	}
-	for _, k := range []string{"created", "deduped", "suppressed", "evicted"} {
+	for _, k := range []string{"created", "deduped", "suppressed", "suppressed_by_rule", "evicted"} {
 		if _, present := alerts[k]; !present {
 			t.Errorf("status.alerts has no %q counter", k)
 		}

@@ -200,6 +200,14 @@ type Store struct {
 	// taking the write lock there would make every benign flow contend with a
 	// /api/v1/detections read for no reason.
 	suppressed atomic.Uint64
+	// suppressedByRule counts verdicts that DID clear their threshold but matched
+	// an expected-behaviour rule (issue #133). suppressHits is the per-rule
+	// breakdown, index-aligned with pol.Suppress and fixed in size at New, so a
+	// rule that has matched nothing is visible on /api/v1/status and can be
+	// removed. Both are on the aggregator goroutine's write path but are atomic
+	// so Stats() can read them under the read lock.
+	suppressedByRule atomic.Uint64
+	suppressHits     []atomic.Uint64
 
 	// mu guards everything below. Only the aggregator goroutine takes the write
 	// lock; readers (the API) take the read lock. The packet path takes neither.
@@ -222,13 +230,14 @@ type Store struct {
 func New(p Policy, opt Options) *Store {
 	opt = opt.withDefaults()
 	s := &Store{
-		pol:    p,
-		opt:    opt,
-		ch:     make(chan item, opt.QueueSize),
-		quit:   make(chan struct{}),
-		ring:   make([]*Detection, opt.MaxRecent),
-		byID:   make(map[uint64]*Detection, opt.MaxRecent),
-		active: make(map[key]*Detection),
+		pol:          p,
+		opt:          opt,
+		ch:           make(chan item, opt.QueueSize),
+		quit:         make(chan struct{}),
+		ring:         make([]*Detection, opt.MaxRecent),
+		byID:         make(map[uint64]*Detection, opt.MaxRecent),
+		active:       make(map[key]*Detection),
+		suppressHits: make([]atomic.Uint64, len(p.Suppress)),
 	}
 	s.wg.Add(1)
 	go s.loop()
@@ -338,6 +347,19 @@ func (s *Store) apply(oc occurrence) {
 			// policy, are not.
 			s.suppressed.Add(1)
 		}
+		return
+	}
+
+	// Expected-behaviour suppression (issue #133). The verdict cleared its
+	// threshold; it is already stored as a classification and visible in the
+	// flow log. A matching rule means an operator has declared this traffic
+	// legitimate, so no detection is opened and no AlertCreated is published —
+	// but the count is kept, per rule, so the decision is auditable and a dead
+	// rule can be found. The classifier is untouched: this is a reporting
+	// decision, not a modelling one.
+	if idx, ok := s.matchSuppress(oc); ok {
+		s.suppressedByRule.Add(1)
+		s.suppressHits[idx].Add(1)
 		return
 	}
 
@@ -455,6 +477,19 @@ func (s *Store) open(k key, oc occurrence, v Verdict) *Detection {
 
 func keyOf(d *Detection) key {
 	return key{src: d.SrcIP, dst: d.DstIP, class: d.Class}
+}
+
+// matchSuppress returns the index of the first expected-behaviour rule that
+// covers oc, if any. Rules are evaluated in config order; the count is
+// attributed to the first match so a per-rule "matched nothing" report is
+// meaningful.
+func (s *Store) matchSuppress(oc occurrence) (int, bool) {
+	for i := range s.pol.Suppress {
+		if s.pol.Suppress[i].matches(oc.srcIP, oc.dstIP, oc.dstPort, oc.class) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // modelVerdicts projects the per-model outputs. It allocates on the aggregator
@@ -585,6 +620,12 @@ type Stats struct {
 	Deduped uint64 `json:"deduped"`
 	// Suppressed counts alertable verdicts that did not clear their threshold.
 	Suppressed uint64 `json:"suppressed"`
+	// SuppressedByRule counts verdicts that DID clear their threshold but matched
+	// an expected-behaviour rule (issue #133). SuppressRules is the per-rule
+	// breakdown in config order; a rule with Matched == 0 has never fired and is
+	// probably stale.
+	SuppressedByRule uint64             `json:"suppressed_by_rule"`
+	SuppressRules    []SuppressRuleStat `json:"suppress_rules,omitempty"`
 	// Evicted counts detections dropped by the MaxRecent bound.
 	Evicted uint64 `json:"evicted"`
 
@@ -599,6 +640,14 @@ type Stats struct {
 	DedupWindowSec int    `json:"dedup_window_sec"`
 }
 
+// SuppressRuleStat is one expected-behaviour rule's lifetime hit count, echoed
+// on /api/v1/status so an operator can see which rules are doing work and which
+// have matched nothing (issue #133).
+type SuppressRuleStat struct {
+	Note    string `json:"note"`
+	Matched uint64 `json:"matched"`
+}
+
 // Stats returns a counter snapshot.
 func (s *Store) Stats() Stats {
 	if s == nil {
@@ -610,17 +659,29 @@ func (s *Store) Stats() Stats {
 	if !s.full {
 		n = s.head
 	}
+	var rules []SuppressRuleStat
+	if len(s.pol.Suppress) > 0 {
+		rules = make([]SuppressRuleStat, len(s.pol.Suppress))
+		for i := range s.pol.Suppress {
+			rules[i] = SuppressRuleStat{
+				Note:    s.pol.Suppress[i].Note,
+				Matched: s.suppressHits[i].Load(),
+			}
+		}
+	}
 	return Stats{
-		Enabled:        s.pol.Enabled,
-		Created:        s.created,
-		Deduped:        s.deduped,
-		Suppressed:     s.suppressed.Load(),
-		Evicted:        s.evicted,
-		Retained:       n,
-		MaxRecent:      len(s.ring),
-		Observed:       s.observed.Load(),
-		Dropped:        s.dropped.Load(),
-		QueueSize:      s.opt.QueueSize,
-		DedupWindowSec: int(s.opt.DedupWindow / time.Second),
+		Enabled:          s.pol.Enabled,
+		Created:          s.created,
+		Deduped:          s.deduped,
+		Suppressed:       s.suppressed.Load(),
+		SuppressedByRule: s.suppressedByRule.Load(),
+		SuppressRules:    rules,
+		Evicted:          s.evicted,
+		Retained:         n,
+		MaxRecent:        len(s.ring),
+		Observed:         s.observed.Load(),
+		Dropped:          s.dropped.Load(),
+		QueueSize:        s.opt.QueueSize,
+		DedupWindowSec:   int(s.opt.DedupWindow / time.Second),
 	}
 }
