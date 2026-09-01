@@ -220,6 +220,7 @@ func run(args []string) int {
 	// pcap-over-ip source that opens but cannot reach its sensor surfaces later
 	// as a Manager row in state "error"; there is no auto-reconnect yet.
 	capMgr := capture.NewManager()
+	capMgr.SetLogf(log.Printf) // one line at Close if in-flight packets were discarded (issue #138)
 	live := 0
 	for _, cs := range cfg.Capture.Sources {
 		src, target, err := capturewire.Build(cs, log.Printf)

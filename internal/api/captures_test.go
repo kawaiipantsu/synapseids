@@ -18,7 +18,10 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
-type stubCaptures struct{ rows []capture.SourceStatus }
+type stubCaptures struct {
+	rows  []capture.SourceStatus
+	drops uint64
+}
 
 func (s stubCaptures) List() []capture.SourceStatus { return s.rows }
 
@@ -35,11 +38,52 @@ func (s stubCaptures) Get(name string) (capture.SourceStatus, bool) {
 // against a real *capture.Manager below.
 func (s stubCaptures) Add(string, capture.Source, capture.SourceMeta) error { return nil }
 func (s stubCaptures) Remove(string) bool                                   { return false }
+func (s stubCaptures) ShutdownDrops() uint64                                { return s.drops }
 
 func serverWithCaptures(cp CaptureStatusProvider) http.Handler {
 	return New(config.Default(), events.New(), storage.NewMem(100, 100),
 		inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
 		nil, nil, nil, nil, nil, cp, nil, nil, nil, nil, nil).Handler()
+}
+
+// TestStatusCaptureShutdownDrops: the capture shutdown-drop counter (issue #138)
+// is surfaced on /api/v1/status beside the other drop counters when a capture
+// manager is wired, and is absent (not a spurious zero) when one is not.
+func TestStatusCaptureShutdownDrops(t *testing.T) {
+	h := serverWithCaptures(stubCaptures{drops: 7})
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/status", nil))
+	if rr.Code != 200 {
+		t.Fatalf("status code %d", rr.Code)
+	}
+	var body struct {
+		Capture map[string]any `json:"capture"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("status not JSON: %v", err)
+	}
+	got, ok := body.Capture["shutdown_drops"]
+	if !ok {
+		t.Fatalf("status.capture has no shutdown_drops: %v", body.Capture)
+	}
+	if got.(float64) != 7 {
+		t.Fatalf("status.capture.shutdown_drops = %v, want 7", got)
+	}
+
+	// No capture manager wired: the block is present but carries no counter,
+	// rather than reporting a misleading 0.
+	h2 := newTestServer()
+	rr2 := httptest.NewRecorder()
+	h2.ServeHTTP(rr2, httptest.NewRequest("GET", "/api/v1/status", nil))
+	var body2 struct {
+		Capture map[string]any `json:"capture"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &body2); err != nil {
+		t.Fatalf("status not JSON: %v", err)
+	}
+	if _, present := body2.Capture["shutdown_drops"]; present {
+		t.Fatalf("shutdown_drops should be absent with no capture manager, got %v", body2.Capture)
+	}
 }
 
 // serverWithManager wires a real, idle capture.Manager into the API so the
