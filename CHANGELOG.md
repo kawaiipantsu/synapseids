@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`capture.Manager` discarded in-flight packets at shutdown with no counter.**
+  When the daemon stops (or a source hits a terminal error), the fan-in drains
+  and throws away whatever the source had already handed over — a deliberate
+  choice, since the alternative is blocking shutdown on a slow consumer, but it
+  was silent. PROJECT.md §22 requires every drop path to be measured, and every
+  other one in the tree already is (`events.dropped`, `ws_client_drops`,
+  `flows_evicted`, `alerts.dropped`). Those discards are now counted, surfaced on
+  `GET /api/v1/status` as `capture.shutdown_drops`, and logged once at exit
+  naming the affected source(s). A finite source read to its end still drains
+  cleanly and contributes nothing. (#138)
 - **The OPNsense sensor defaulted to one-way capture, which breaks the
   bidirectional feature set.** The instance `Direction` field defaulted to
   `in` ("Inbound only"). `flow-features-v1` is bidirectional: under a one-way
