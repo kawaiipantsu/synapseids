@@ -21,7 +21,8 @@ import (
 // activate/deactivate routes, where binding to loopback by default is the only
 // control. Creating a dataset reads the flow store and writes a directory under
 // datasets.directory; deleting one removes that directory.
-// TODO(#58): gate behind auth/RBAC before exposing the API off loopback.
+// When auth.enabled, POST/DELETE here require role `admin`; otherwise the
+// loopback bind is the only control (issue #58).
 //
 // Addressing a dataset: an id may contain one "/" (PROJECT.md §14 writes
 // "thugs/lab-attacks-2026-08"), which would otherwise split into two path

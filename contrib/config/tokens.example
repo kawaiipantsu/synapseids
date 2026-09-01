@@ -1,0 +1,22 @@
+# SynapseIDS API tokens — THUGS(red) SynapseIDS  (issue #58)
+#
+# Referenced by auth.tokens_file when auth.enabled is true. One line per token:
+#
+#     <role>   <token>   [free-text label...]
+#
+# role   : viewer | operator | admin  (cumulative — operator covers viewer, etc.)
+# token  : >= 8 characters, opaque. Generate one with, e.g.:
+#              head -c 24 /dev/urandom | base64
+# label  : optional, ignored by the daemon, useful to you.
+#
+# Blank lines and lines starting with '#' are ignored. Keep this file 0600 and
+# owned by the daemon user:
+#
+#     install -m 0600 -o synapse -g synapse tokens /etc/synapseids/tokens
+#
+# Clients send `Authorization: Bearer <token>`; the WebSocket route also takes
+# `?token=<token>`. See docs/api.md#authentication-issue-58.
+
+viewer    CHANGE-ME-read-only-wallboard      noc-wallboard
+operator  CHANGE-ME-run-captures-replays     soc-analyst
+admin     CHANGE-ME-full-control             ops-oncall

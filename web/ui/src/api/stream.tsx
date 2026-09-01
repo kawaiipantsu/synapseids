@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 
+import { withToken } from '../lib/auth'
 import {
   ZERO_COUNTERS,
   addCounters,
@@ -483,7 +484,10 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (disposed) return
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${proto}://${window.location.host}/api/v1/stream`)
+      // A browser cannot set the Authorization header on a WebSocket, so the
+      // token rides in the query string (the daemon accepts it there for this
+      // route only, issue #58).
+      ws = new WebSocket(withToken(`${proto}://${window.location.host}/api/v1/stream`))
       ws.onopen = () => {
         backoff = RECONNECT_MIN_MS
         setConnected(true)

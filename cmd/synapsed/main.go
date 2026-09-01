@@ -331,6 +331,11 @@ func run(args []string) int {
 	// every one of *alert.Store's methods is nil-receiver safe as well.
 	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, flowStats, capMgr, ins, trs, sensors, rvs, alerts)
 	srv.SetMetrics(metrics)
+	if err := srv.SetAuth(cfg.Auth); err != nil {
+		log.Printf("config: auth: %v", err)
+		return 1
+	}
+	log.Printf("%s", srv.AuthSummary())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
