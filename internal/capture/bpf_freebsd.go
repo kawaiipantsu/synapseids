@@ -77,13 +77,14 @@ type BPFDevice struct {
 		lastUnixNano                       int64
 	}
 
-	ifName  string
-	device  string
-	filter  string
-	link    packet.LinkType
-	layout  bpfHdrLayout
-	bufLen  int
-	snaplen int
+	ifName    string
+	device    string
+	filter    string
+	link      packet.LinkType
+	layout    bpfHdrLayout
+	bufLen    int // store-buffer size the kernel granted (BIOCSBLEN readback)
+	bufLenReq int // what we asked for, after the 0 -> default step (issue #128)
+	snaplen   int
 
 	fd    int
 	stopc chan struct{}
@@ -135,14 +136,15 @@ func NewBPFDevice(cfg BPFConfig) (*BPFDevice, error) {
 	}
 
 	d := &BPFDevice{
-		ifName:  cfg.Interface,
-		device:  device,
-		filter:  cfg.Filter,
-		bufLen:  bufLen,
-		snaplen: snap,
-		fd:      fd,
-		stopc:   make(chan struct{}),
-		layout:  bpfHostLayout(),
+		ifName:    cfg.Interface,
+		device:    device,
+		filter:    cfg.Filter,
+		bufLen:    bufLen,
+		bufLenReq: bufLen,
+		snaplen:   snap,
+		fd:        fd,
+		stopc:     make(chan struct{}),
+		layout:    bpfHostLayout(),
 	}
 	fail := func(op string, err error) (*BPFDevice, error) {
 		_ = syscall.Close(fd)
@@ -160,6 +162,19 @@ func NewBPFDevice(cfg BPFConfig) (*BPFDevice, error) {
 		return fail("BIOCSBLEN", fmt.Errorf("kernel granted an unusable buffer of %d bytes", granted))
 	}
 	d.bufLen = int(granted)
+
+	// Tell the operator what actually happened. Before issue #128 the granted
+	// size was read back and then never surfaced, so an operator who raised the
+	// buffer silently got net.bpf.maxbufsize (512 KiB by default) with no way to
+	// tell short of netstat -B.
+	if cfg.Logf != nil {
+		line, clamped := bpfBufferReport(device, d.bufLenReq, d.bufLen)
+		if clamped {
+			cfg.Logf("WARNING: %s", line)
+		} else {
+			cfg.Logf("%s", line)
+		}
+	}
 
 	// Attach the filter BEFORE binding the interface so no unfiltered frame is
 	// ever queued (the classic attach-after-bind race). BPF has no snaplen
@@ -250,6 +265,14 @@ func (d *BPFDevice) LinkType() packet.LinkType { return d.link }
 
 // Device is the BPF device path in use, for logs and the capture-sources view.
 func (d *BPFDevice) Device() string { return d.device }
+
+// BufferLen is the store-buffer size the kernel actually granted, in bytes. It
+// may be below what was requested — net.bpf.maxbufsize clamps it (issue #128).
+func (d *BPFDevice) BufferLen() int { return d.bufLen }
+
+// BufferLenRequested is the size asked of BIOCSBLEN, after the 0 -> default
+// step. BufferLen() < BufferLenRequested() means the kernel clamped it.
+func (d *BPFDevice) BufferLenRequested() int { return d.bufLenReq }
 
 // Packets streams decoded frames until ctx is cancelled or Close is called. The
 // spawned goroutine owns fd teardown.

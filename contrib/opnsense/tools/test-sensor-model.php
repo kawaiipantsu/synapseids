@@ -271,6 +271,7 @@ namespace {
             'direction'      => 'inout',
             'promiscuous'    => '1',
             'snaplen'        => '262144',
+            'bpf_buffer'     => '',
             'send_mode'      => 'raw',
             'sensor_id'      => 'opnsense-' . $name,
             'location'       => 'edge',

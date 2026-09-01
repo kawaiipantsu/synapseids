@@ -17,6 +17,10 @@ func NewLive(cfg LiveConfig) (LiveSource, error) {
 		return nil, fmt.Errorf("capture: direction %q is not supported on Linux — AF_PACKET has no "+
 			"BIOCSDIRECTION equivalent, so both directions are always captured", cfg.Direction)
 	}
+	if cfg.BufferLen != 0 {
+		return nil, fmt.Errorf("capture: buffer length %d is a FreeBSD BPF store-buffer (BIOCSBLEN) setting; "+
+			"Linux AF_PACKET sizes its ring differently and does not take this knob", cfg.BufferLen)
+	}
 	return NewAFPacket(AFPacketConfig{
 		Interface:   cfg.Interface,
 		Promiscuous: cfg.Promiscuous,

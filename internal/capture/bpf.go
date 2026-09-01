@@ -1,6 +1,9 @@
 package capture
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // This file holds the platform-independent surface of the FreeBSD /dev/bpf live
 // capture source. The device itself is FreeBSD-only: see bpf_freebsd.go for the
@@ -85,11 +88,39 @@ type BPFConfig struct {
 	Direction string
 
 	// BufferLen is the BIOCSBLEN request in bytes. 0 means
-	// DefaultBPFBufferLen. The kernel may grant less.
+	// DefaultBPFBufferLen. The kernel clamps it to net.bpf.maxbufsize and the
+	// device reports the granted size through BufferLen() (issue #128).
 	BufferLen int
 
 	// ReadTimeout is the BIOCSRTIMEOUT value. 0 means DefaultBPFReadTimeout.
 	ReadTimeout time.Duration
+
+	// Logf, when set, receives one line at open reporting the requested and
+	// granted store-buffer sizes, and a warning when the kernel clamped the
+	// request (issue #128). nil discards both.
+	Logf func(string, ...any)
+}
+
+// bpfBufferReport is the open-time line and, when the kernel clamped the
+// request, the remedy. It is split out so it can be unit-tested without a BPF
+// device: requested is what NewBPFDevice asked of BIOCSBLEN (after the 0 ->
+// default step), granted is what the kernel wrote back.
+//
+// A granted size below the request means net.bpf.maxbufsize is in the way — the
+// default ceiling is 512 KiB, and on a busy edge the store buffer is the only
+// thing between a burst and kernel drops (issue #127). The advice names the
+// exact sysctl and the persistent form.
+func bpfBufferReport(device string, requested, granted int) (line string, clamped bool) {
+	line = fmt.Sprintf("bpf: %s store buffer: requested %d bytes, kernel granted %d", device, requested, granted)
+	if granted >= requested {
+		return line, false
+	}
+	return line + fmt.Sprintf(
+		"\nbpf: the kernel clamped the store buffer to net.bpf.maxbufsize. "+
+			"Raise it to capture larger bursts without drops:\n"+
+			"    sysctl net.bpf.maxbufsize=%d\n"+
+			"    echo 'net.bpf.maxbufsize=%d' >> /etc/sysctl.conf   # persist across reboots",
+		requested, requested), true
 }
 
 // BPFDirections lists the values BPFConfig.Direction accepts in addition to ""

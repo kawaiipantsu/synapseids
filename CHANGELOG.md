@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rules — no matchers, bad CIDR, unknown/`normal` class, out-of-range port,
   missing note — are a load error, never a silent no-op. The classifier is never
   told about the rules. See [ADR 0032](docs/adr/0032-expected-behaviour-suppression.md). (#133)
+- **The FreeBSD BPF store-buffer size is now visible and tunable** (issue #128).
+  `BIOCSBLEN` is clamped by the kernel to `net.bpf.maxbufsize` (512 KiB by
+  default), and the granted size was read back and never surfaced — an operator
+  who asked for a bigger buffer silently got 512 KiB with no way to tell short of
+  `netstat -B`. The device now logs requested vs granted at open and, when the
+  kernel clamped the request, prints the exact `sysctl net.bpf.maxbufsize` line
+  (and the `/etc/sysctl.conf` form) to raise it. The size is settable:
+  `synapse-sensor --bpf-buffer <bytes>` and a **BPF buffer** field on each
+  OPNsense sensor instance. On a busy WAN edge the store buffer is the only thing
+  between a burst and kernel drops (#127). Linux rejects the knob — AF_PACKET
+  sizes its ring differently. The `synapse-sensor doctor` `bpf-access` line and a
+  daemon-config equivalent are follow-ups.
 
 ### Changed
 

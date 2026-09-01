@@ -50,6 +50,7 @@ type sensorOpts struct {
 	direction string
 	promisc   bool
 	snaplen   int
+	bpfBuffer int // FreeBSD BPF store-buffer bytes (BIOCSBLEN); 0 = default
 
 	// Sensor identity, echoed into the daemon's capture-sources view.
 	sensorID string
@@ -157,6 +158,8 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 	fs.StringVar(&o.direction, "direction", "", "traffic direction for --iface: in, out or inout (FreeBSD only)")
 	fs.BoolVar(&o.promisc, "promisc", false, "put --iface into promiscuous mode")
 	fs.IntVar(&o.snaplen, "snaplen", 0, "bytes captured per frame (0 = default)")
+	fs.IntVar(&o.bpfBuffer, "bpf-buffer", 0, "BPF store-buffer bytes for --iface (FreeBSD only; 0 = default 512 KiB). "+
+		"The kernel clamps this to net.bpf.maxbufsize; the granted size is logged at start")
 
 	fs.StringVar(&o.sensorID, "sensor-id", "", "sensor identifier, shown in the daemon's capture-sources view")
 	fs.StringVar(&o.location, "location", "", "sensor location label, shown in the daemon's capture-sources view")
@@ -381,6 +384,8 @@ func openSource(o *sensorOpts) (pcapoverip.StreamFunc, uint32, func() uint64, er
 		Filter:      o.filter,
 		Direction:   o.direction,
 		Device:      o.device,
+		BufferLen:   o.bpfBuffer,
+		Logf:        log.Printf,
 	})
 	if err != nil {
 		return nil, 0, nil, err

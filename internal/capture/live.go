@@ -67,4 +67,15 @@ type LiveConfig struct {
 	// Device names an explicit capture device. FreeBSD only ("/dev/bpf7");
 	// Linux rejects a non-empty value.
 	Device string
+
+	// BufferLen is the FreeBSD BPF store-buffer request in bytes (BIOCSBLEN).
+	// 0 means the default. The kernel clamps it to net.bpf.maxbufsize and the
+	// granted size is logged at open (issue #128). Linux rejects a non-zero
+	// value: AF_PACKET's ring is sized differently and is not this knob.
+	BufferLen int
+
+	// Logf, when set, receives the open-time buffer report (requested vs
+	// granted, and the sysctl remedy when the kernel clamped it). FreeBSD only;
+	// nil discards it.
+	Logf func(string, ...any)
 }
