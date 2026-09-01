@@ -61,8 +61,28 @@ type Config struct {
 	Review    Review    `json:"review"`
 	Alerts    Alerts    `json:"alerts"`
 	Logging   Logging   `json:"logging"`
+	Auth      Auth      `json:"auth"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
+}
+
+// Auth is the API access-control block (issue #58, PROJECT.md §21: "authenticate
+// non-local UI/API access"). When Enabled, a request needs a bearer token whose
+// role covers the route it hit; the mapping and the token-file format live in
+// internal/api. Disabled by default, so an unconfigured daemon behaves exactly
+// as it did before RBAC.
+type Auth struct {
+	// Enabled turns on the check. Default false.
+	Enabled bool `json:"enabled"`
+	// TokensFile is a file of `<role> <token> [label]` lines (see docs/api.md).
+	// Required when Enabled. The tokens are never inline in this JSON (§23):
+	// SYNAPSE_AUTH_TOKENS_FILE overrides the path.
+	TokensFile string `json:"tokens_file"`
+	// AllowLoopback exempts requests from 127.0.0.0/8 and ::1 from the check, so
+	// the local operator CLI and a same-host SPA keep working with no token
+	// while a proxied non-local request must authenticate. Default true; set
+	// false to require a token even from localhost.
+	AllowLoopback bool `json:"allow_loopback"`
 }
 
 // Server holds the HTTP/WebSocket listener settings.
@@ -316,6 +336,7 @@ func Default() Config {
 			DedupWindowSec:        60,
 		},
 		Logging: Logging{Format: "text", Level: "info"},
+		Auth:    Auth{Enabled: false, AllowLoopback: true},
 		Live:    Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
@@ -405,6 +426,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("SYNAPSE_LOG_LEVEL"); v != "" {
 		c.Logging.Level = v
 	}
+	if v := os.Getenv("SYNAPSE_AUTH_TOKENS_FILE"); v != "" {
+		c.Auth.TokensFile = v
+	}
 }
 
 // hasNICInterface reports whether srcs already contains a "nic" source bound to
@@ -476,6 +500,9 @@ func (c Config) validate() error {
 	if err := ValidateRetention(c.Retention); err != nil {
 		return fmt.Errorf("config: retention: %w", err)
 	}
+	if err := ValidateAuth(c.Auth); err != nil {
+		return fmt.Errorf("config: auth: %w", err)
+	}
 	return nil
 }
 
@@ -517,6 +544,16 @@ func ValidateLogging(l Logging) error {
 	}
 	if l.Level != "" && !slices.Contains(logLevels, l.Level) {
 		return fmt.Errorf("level %q is not one of %v", l.Level, logLevels)
+	}
+	return nil
+}
+
+// ValidateAuth checks the auth block (issue #58). Enabling the check without a
+// token file would lock out every non-loopback request with no way in — that is
+// a configuration mistake, not a lockdown.
+func ValidateAuth(a Auth) error {
+	if a.Enabled && strings.TrimSpace(a.TokensFile) == "" {
+		return fmt.Errorf("enabled is true but tokens_file is empty — set it (or SYNAPSE_AUTH_TOKENS_FILE)")
 	}
 	return nil
 }

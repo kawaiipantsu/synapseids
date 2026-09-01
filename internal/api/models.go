@@ -13,7 +13,8 @@ import (
 
 // The model routes are state-changing and unauthenticated for now — the same
 // posture as POST /api/v1/replay, where loopback-by-default is the only control.
-// TODO(#58): gate activate/deactivate behind auth/RBAC.
+// When auth.enabled, activate/deactivate require role `admin`; otherwise the
+// loopback bind is the only control (issue #58).
 
 // runtimeInfo says whether a registry entry is the model currently loaded in the
 // live inference.Runtime, and in what role.

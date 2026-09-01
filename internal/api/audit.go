@@ -10,7 +10,8 @@ import (
 // The audit trail is sensitive operational history — it names every model
 // activation, dataset edit and training run, with timestamps. It inherits the
 // same loopback-by-default, unauthenticated posture as the rest of the API
-// (PROJECT.md §21); do not expose it beyond localhost until #58 lands auth.
+// (PROJECT.md §21). It is a GET, so with auth.enabled it needs role `viewer`
+// (issue #58); off loopback without auth it is still just the loopback bind.
 //
 // This route is read-only and there is deliberately no companion DELETE or
 // PATCH: the log is append-only forever. An audit trail an operator can edit

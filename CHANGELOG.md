@@ -46,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write lock only; the alert store purges on its own aggregator goroutine. New
   counters `storage.flows_expired` / `classifications_expired` and
   `alerts.expired` on `/api/v1/status`, distinct from `*_evicted`. (#56)
+- **Role-based access control for the API** (issue #58, PROJECT.md §21).
+  `auth.enabled` + `auth.tokens_file` turns on a bearer-token check: every `GET`
+  needs role `viewer`, the capture/replay routes need `operator`, and model
+  activation, dataset/training writes and review writes need `admin`. A missing
+  or unknown token is `401`; a valid token below the route's role is `403`. Token
+  file is `<role> <token> [label]` lines (tokens ≥ 8 chars, never inline in the
+  JSON, `0600`). `auth.allow_loopback` (default true) exempts `127.0.0.0/8` and
+  `::1`, so the local CLI and a same-host browser keep working unchanged.
+  **Disabled by default** — an unconfigured daemon is unchanged. `synapse
+  --token` / `SYNAPSE_TOKEN`; the SPA adopts a `?token=` from its URL into
+  `localStorage`. `contrib/config/tokens.example`,
+  [ADR 0035](docs/adr/0035-api-rbac.md).
+
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that

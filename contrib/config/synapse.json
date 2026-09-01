@@ -33,6 +33,11 @@
     "format": "text",
     "level": "info"
   },
+  "auth": {
+    "enabled": false,
+    "tokens_file": "",
+    "allow_loopback": true
+  },
   "live": {
     "websocket_batch": "100ms",
     "client_queue_size": 5000

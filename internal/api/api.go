@@ -114,6 +114,7 @@ type Server struct {
 	rv      *review.Store
 	alerts  *alert.Store
 	hub     *wshub.Hub
+	auth    *authGuard
 	start   time.Time
 
 	// metrics is the daemon's obs.Metrics (issue #55), set by the daemon after
@@ -156,6 +157,7 @@ func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.
 		rv:      rv,
 		alerts:  al,
 		hub:     wshub.NewHub(cfg.Live.ClientQueueSize),
+		auth:    &authGuard{}, // disabled until SetAuth; wrap() is a pass-through
 		start:   time.Now(),
 	}
 }
@@ -164,6 +166,22 @@ func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.
 // daemon calls it once, after New; a Server without it still serves /metrics
 // from the counters it already holds, with empty latency histograms.
 func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
+
+// SetAuth installs the RBAC guard from the config auth block (issue #58). Call
+// it once after New; it loads and validates the token file and returns an error
+// the daemon should treat as fatal. A Server without it (embedded/test) leaves
+// the API open, which is New's default.
+func (s *Server) SetAuth(cfg config.Auth) error {
+	g, err := newAuthGuard(cfg)
+	if err != nil {
+		return err
+	}
+	s.auth = g
+	return nil
+}
+
+// AuthSummary is the one-line startup log describing the access posture.
+func (s *Server) AuthSummary() string { return s.auth.summary() }
 
 // Handler returns the routed http.Handler.
 func (s *Server) Handler() http.Handler {
@@ -232,7 +250,7 @@ func (s *Server) Handler() http.Handler {
 	} else {
 		mux.Handle("/", http.FileServerFS(web.FS()))
 	}
-	return logMiddleware(mux)
+	return logMiddleware(s.auth.wrap(mux))
 }
 
 // Run starts the event pump and serves HTTP until ctx is cancelled.

@@ -281,6 +281,28 @@ Every package's logs — including the many that take an injected `log.Printf` �
 route through the same handler; a line the code prefixes `WARNING:` / `ERROR:` is
 promoted to that level.
 
+## `auth`
+
+Role-based access control for the REST API and WebSocket (issue #58,
+PROJECT.md §21). **Disabled by default** — an unconfigured daemon behaves exactly
+as before, relying on its loopback bind and a reverse proxy.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `auth.enabled` | bool | `false` | Turn the check on. |
+| `auth.tokens_file` | string (path) | `""` | File of `<role> <token> [label]` lines (`viewer` / `operator` / `admin`); `#` comments allowed; tokens ≥ 8 chars, never inline here (§23). **Required when `enabled`.** `0600`, owned by the daemon user. Env: `SYNAPSE_AUTH_TOKENS_FILE`. |
+| `auth.allow_loopback` | bool | `true` | Exempt requests from `127.0.0.0/8` and `::1`, so the local `synapse` CLI and a same-host browser keep working with no token. Set `false` to require a token even from localhost. |
+
+Roles are cumulative: `viewer` = every `GET` + `/metrics`; `operator` adds the
+capture and replay POST/DELETE routes; `admin` adds model activation, dataset
+and training writes, and review writes. A `GET` with a token below `viewer` and a
+mutating call below its route's role both return `403`; a missing or unknown
+token is `401`. The SPA shell (`/`, `/assets/*`) is never gated.
+
+See [docs/api.md](../../docs/api.md#authentication-issue-58) for the token-file
+format and how clients send the token, and
+`contrib/config/tokens.example`.
+
 ## `live`
 
 WebSocket fan-out tuning (PROJECT.md §18, §22).
@@ -332,6 +354,10 @@ that drops anything logs `retention: purged N flow(s), …`. Counts surface on
   `client_cert_file` / `client_key_file`, or — without `authorized: true` — a
   non-loopback `addr`, `insecure_tls`, or no `token_file`
 - `live.client_queue_size < 1`
+- `auth.enabled` is true with an empty `auth.tokens_file` (and
+  `SYNAPSE_AUTH_TOKENS_FILE` unset). The file itself is read at start-up too: a
+  missing file, an unknown role word, a token under 8 characters, a duplicate
+  token, or a file with no usable line is a fatal error.
 - `alerts.min_confidence` outside `[0,1]`; `alerts.max_recent < 1`;
   `alerts.dedup_window_sec < 1`; an `alerts.per_class_min_confidence` key that is
   not a `traffic-classes-v1` class name or is `normal`, or a value outside `[0,1]`

@@ -25,6 +25,48 @@ are taken verbatim from the Go structs in `internal/storage/storage.go`,
   UI: the embedded `web/index.html`, or a directory when `server.web_root` /
   `SYNAPSE_WEB_ROOT` is set.
 
+## Authentication (issue #58, PROJECT.md §21)
+
+Disabled by default: with `auth.enabled` unset the API is open, and the daemon
+relies on its loopback bind plus an authenticating reverse proxy in front. Set
+`auth.enabled: true` and `auth.tokens_file` to require a bearer token for
+**non-loopback** requests (all requests if `auth.allow_loopback: false`).
+
+**Token file** — one `<role> <token> [label]` per line; `#` comments and blank
+lines ignored; tokens are at least 8 characters and never inline in `synapse.json`
+(§23). Keep it `0600`, owned by the daemon user.
+
+```
+# role      token                              label
+admin       t0p-s3cr3t-admin-value             ops-oncall
+operator    run-captures-and-replays-value     soc-analyst
+viewer      read-only-dashboards-value         noc-wallboard
+```
+
+**Roles** cover, cumulatively:
+
+| Role | Grants |
+|---|---|
+| `viewer` | every `GET`, and `GET /metrics` |
+| `operator` | `viewer` + `POST/DELETE /api/v1/captures*`, `POST /api/v1/replay[/stop]` |
+| `admin` | everything: model activate/deactivate, dataset create/delete, the trainer-facing `POST /api/v1/training*`, review writes |
+
+`POST /api/v1/architecture/estimate` is a stateless calculator and needs only
+`viewer`. `GET /` and `/assets/*` (the SPA shell) are never gated.
+
+**Sending the token** — `Authorization: Bearer <token>` on every request. The
+WebSocket route `GET /api/v1/stream` also accepts `?token=<token>` (a browser
+cannot set the header on a `WebSocket`); no other route does.
+
+**Responses** — `401` `{"error":"authentication required"}` (with
+`WWW-Authenticate: Bearer`) or `{"error":"invalid token"}`; `403`
+`{"error":"role \"admin\" required; this token is \"viewer\""}`.
+
+**Clients** — `synapse --token <t>` / `SYNAPSE_TOKEN`. The SPA reads a token from
+`localStorage` (`synapseids.api-token`); open it once as `…/?token=<t>#/dashboard`
+to store it, or `window.__synapse.setToken('<t>')` from devtools. A full token UI
+on the Settings page is a follow-up.
+
 ## Routes
 
 ### GET /api/v1/status

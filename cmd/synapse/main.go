@@ -36,11 +36,14 @@ Commands:
 
 Environment:
   SYNAPSE_SERVER   default --server (else http://127.0.0.1:8080)
+  SYNAPSE_TOKEN    bearer token sent as Authorization; needed when the daemon
+                   has auth.enabled and is not reached over loopback (issue #58)
 `
 
 func run(args []string) int {
 	fs := flag.NewFlagSet("synapse", flag.ContinueOnError)
 	server := fs.String("server", envOr("SYNAPSE_SERVER", "http://127.0.0.1:8080"), "synapsed base URL")
+	token := fs.String("token", envOr("SYNAPSE_TOKEN", ""), "bearer token for a daemon with auth enabled")
 	limit := fs.Int("limit", 20, "row limit for list commands")
 	speed := fs.String("speed", "1", "replay speed: 0.5, 1, 2, 10, or max")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
@@ -58,7 +61,7 @@ func run(args []string) int {
 		return 2
 	}
 
-	c := &client{base: strings.TrimRight(*server, "/")}
+	c := &client{base: strings.TrimRight(*server, "/"), token: *token}
 	switch cmd {
 	case "version", "--version", "-V":
 		fmt.Println(version.String("synapse"))
@@ -113,7 +116,10 @@ func splitCommand(fs *flag.FlagSet, args []string) (cmd string, positional []str
 	}
 }
 
-type client struct{ base string }
+type client struct {
+	base  string
+	token string
+}
 
 func (c *client) do(method, path string, body []byte) ([]byte, int, error) {
 	var r io.Reader
@@ -125,6 +131,9 @@ func (c *client) do(method, path string, body []byte) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	hc := &http.Client{Timeout: 10 * time.Second}
 	resp, err := hc.Do(req)
 	if err != nil {
