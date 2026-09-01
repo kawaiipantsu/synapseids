@@ -250,6 +250,20 @@ Rules are evaluated in file order, first match wins, and the classifier is never
 told about them — suppression is a reporting decision, not a modelling one.
 Default: no rules.
 
+## `logging`
+
+Structured logs (issue #55, PROJECT.md §24). The daemon logs through `log/slog`;
+these two keys pick the encoder and the threshold.
+
+| Key | Type | Default | This file | Meaning |
+|---|---|---|---|---|
+| `logging.format` | string enum | `text` | `text` | `text` = human-readable `key=value` lines; `json` = one JSON object per line, for a log pipeline. An unknown value is a load error. Env: `SYNAPSE_LOG_FORMAT`. **Not** hot-reloadable — a running handler cannot swap its encoder; the change takes effect on restart. |
+| `logging.level` | string enum | `info` | `info` | `debug`, `info`, `warn` or `error`. `debug` adds per-flow and per-request detail. Env: `SYNAPSE_LOG_LEVEL`. **Hot-reloadable**: `SIGHUP` applies a new level to the running process immediately. |
+
+Every package's logs — including the many that take an injected `log.Printf` —
+route through the same handler; a line the code prefixes `WARNING:` / `ERROR:` is
+promoted to that level.
+
 ## `live`
 
 WebSocket fan-out tuning (PROJECT.md §18, §22).
@@ -299,4 +313,6 @@ external backstop.
   all empty), an unparseable `src`/`dst`, a `dst_port` outside `[0,65535]`, a
   `class` that is not a `traffic-classes-v1` name or is `normal`, or an empty
   `note`
+- `logging.format` other than `text` / `json`, or `logging.level` other than
+  `debug` / `info` / `warn` / `error`
 - any unknown key is present in the file
