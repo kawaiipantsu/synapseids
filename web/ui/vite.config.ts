@@ -18,8 +18,14 @@ export default defineConfig({
     // local asset so the committed bundle works fully offline.
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
+        // Keep React (and its runtime deps) in their own cacheable chunk — it
+        // is ~140 kB of the bundle and changes far less often than app code.
+        // Vite 8 dropped the object form of manualChunks; this is the function
+        // form (issue #147).
+        manualChunks(id) {
+          if (/\/node_modules\/(react|react-dom|scheduler)\//.test(id)) {
+            return 'react'
+          }
         },
       },
     },

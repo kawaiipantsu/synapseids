@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/",
+    "test": "tsc -p tsconfig.test.json && cd .test-build && node --test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,14 +17,14 @@
     "uplot": "^1.6.31"
   },
   "devDependencies": {
-    "@types/node": "^18.19.130",
+    "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^6.0.1",
     "typescript": "^5.6.3",
-    "vite": "^6.4.3"
+    "vite": "^8.2.2"
   },
   "engines": {
-    "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+    "node": "^20.19.0 || >=22.12.0"
   }
 }

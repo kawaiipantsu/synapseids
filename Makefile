@@ -143,7 +143,8 @@ WEB_UI := web/ui
 
 # The Go build never runs any of these: web/dist/ is committed and embedded by
 # web/web.go (//go:embed all:dist). Run `make web` and commit web/dist/ after
-# touching anything under web/ui/. Requires Node 18 + npm (see web/ui/package.json).
+# touching anything under web/ui/. Requires Node >= 20.19 or >= 22.12 and npm
+# (Vite 8; see web/ui/README.md and web/ui/package.json "engines").
 .PHONY: web
 web: ## Build the React SPA into web/dist (run + commit after editing web/ui/)
 	cd $(WEB_UI) && npm ci && npm run build

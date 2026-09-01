@@ -30,11 +30,12 @@ history routing (`/flow-log`) would need an SPA-fallback handler in
 
 ## Decision
 
-- **Stack:** TypeScript 5 + React 18, bundled with **Vite 5** (Vite 6 requires
-  Node 20; the pinned toolchain is Node 18.20 / npm 9). Dependencies are locked
-  with `package-lock.json` and installed with `npm ci`. The frontend npm tree is
-  sanctioned by §27 and is entirely separate from the Go module, which keeps its
-  **zero third-party Go dependencies**.
+- **Stack:** TypeScript 5 + React 18, bundled with **Vite** (as of issue #147,
+  Vite 8; the Node floor is `^20.19 || >=22.12`, stated in `web/ui/README.md` and
+  `package.json` `engines`). Dependencies are locked with `package-lock.json` and
+  installed with `npm ci`. The frontend npm tree is sanctioned by §27 and is
+  entirely separate from the Go module, which keeps its **zero third-party Go
+  dependencies**.
 - **Charts:** **uPlot** for the streaming sparklines — ~15 KB gzipped, canvas
   based, no framework. No heavier chart library is added.
 - **Routing:** **hash routing** only (`/#/flow-log`). Every document request

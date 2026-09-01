@@ -74,3 +74,38 @@ jobs:
           cache: false
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
+
+  # The Go pipeline is deliberately Node-free (web/dist is committed and
+  # embedded), so nothing above ever runs `vite build`. This job does — in its
+  # own runner, gating nothing else — so a toolchain bump (Dependabot keeps
+  # proposing Vite majors) cannot pass review untested, and so a hand-edited or
+  # stale web/dist is caught (issue #147).
+  web-build:
+    name: SPA build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      - run: npm ci
+        working-directory: web/ui
+      - run: npm run typecheck
+        working-directory: web/ui
+      - run: npm run test
+        working-directory: web/ui
+      - run: npm run build
+        working-directory: web/ui
+      - name: Confirm web/dist matches a fresh build
+        run: |
+          git diff --exit-code web/dist || {
+            echo "::error::web/dist is stale — run 'make web' and commit"; exit 1; }
+      - name: Confirm the build is deterministic
+        run: |
+          before=$(find web/dist -type f | sort | xargs sha256sum)
+          npm --prefix web/ui run build
+          after=$(find web/dist -type f | sort | xargs sha256sum)
+          [ "$before" = "$after" ] || {
+            echo "::error::two builds of web/ui produced different output"; exit 1; }
