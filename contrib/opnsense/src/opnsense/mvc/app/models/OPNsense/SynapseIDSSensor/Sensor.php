@@ -407,6 +407,33 @@ class Sensor extends BaseModel
                 ));
             }
 
+            // One-way capture invalidates the bidirectional feature set. When the
+            // features are computed here on the sensor (`flow` / `feature` send
+            // modes), a `direction` of `in` or `out` means the daemon scores a
+            // flow-features-v1 vector whose reverse-direction half is
+            // structurally zero. On a real gateway this produced `critical
+            // dos_ddos` verdicts at 100% confidence on ordinary inbound reply
+            // legs (issue #129). Raw mode is left to the operator's judgement --
+            // the daemon at least sees the packets it is missing -- but on-sensor
+            // feature computation from half-duplex capture is refused.
+            $direction = $this->inst($node, 'direction');
+            $sendMode  = $this->inst($node, 'send_mode');
+            if (($direction === 'in' || $direction === 'out')
+                && ($sendMode === 'flow' || $sendMode === 'feature')) {
+                $this->addError($messages, $this->ref($node, 'direction'), sprintf(
+                    gettext(
+                        'Instance "%s" captures one direction only (%s) but builds flow %s on the sensor. ' .
+                        'flow-features-v1 is a bidirectional feature set: with half the traffic missing, ' .
+                        'every forward/backward ratio and all the reverse-direction counters are ' .
+                        'structurally zero, and the daemon would score a vector it cannot trust. Capture ' .
+                        'both directions, or send raw packets so the daemon can see what it is missing.'
+                    ),
+                    $label,
+                    $direction === 'in' ? gettext('inbound only') : gettext('outbound only'),
+                    $sendMode === 'feature' ? gettext('feature vectors') : gettext('records')
+                ));
+            }
+
             if ($mode !== 'listen') {
                 continue;
             }

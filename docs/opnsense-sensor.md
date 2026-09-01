@@ -117,7 +117,7 @@ one per interface, and below it the settings they share.
 | Location | free-form label shown in the daemon's capture-sources view |
 | Listen address | listen mode only: `host:port` this instance binds. **Each instance needs its own port** — four processes cannot share one |
 | Filter | a built-in cBPF preset: all, `ip`, `ip6`, `ip-any`, `not-arp`. There is no filter-expression compiler (§28.16) |
-| Direction | `in` for inbound only (the WAN-sensor default), `out`, or both |
+| Direction | **both** (the default), `in` or `out`. Leave it on both: `flow-features-v1` is bidirectional, so a one-way capture zeroes every reverse-direction counter and forward/backward ratio and skews the daemon's verdicts. `in`/`out` is refused together with the **Flow records** / **Feature vectors only** send modes, where the features are built here from traffic that cannot be bidirectional (issue #129) |
 | Promiscuous | see traffic not addressed to the firewall — usually wanted on a routed edge or a SPAN port |
 | Snaplen | bytes captured per frame |
 | Send | what leaves the firewall for **this segment** (`--mode`): **Raw packets** (every frame, the default), **Flow records** (flows assembled here — around 1.4 % of the raw bandwidth), or **Feature vectors only** (only the 48 computed features, so **no packet content from this segment ever leaves the box** — around 1.8 %). Classifications are identical in all three; the two record modes need a daemon that speaks SYNPOIP v2, and an older one refuses the connection rather than quietly reverting to sending packets. Per instance, so a sensitive internal segment can be feature-only while the WAN stays raw. See [ADR 0024](adr/0024-sensor-modes-and-synpoip-record-frames.md) |
@@ -165,7 +165,7 @@ dialling out need no inbound rules and no extra ports.
 
 | Enabled | Name | Interface | Sensor ID | Location | Direction | Promisc | Send | Authorised |
 |---|---|---|---|---|---|---|---|---|
-| ✔ | `wan` | WAN | `fw1-wan` | `hq/edge` | Inbound only | ✔ | Raw packets | ✔ |
+| ✔ | `wan` | WAN | `fw1-wan` | `hq/edge` | Both | ✔ | Raw packets | ✔ |
 | ✔ | `dmz` | DMZ | `fw1-dmz` | `hq/dmz` | Both | ✔ | Flow records | ✔ |
 | ✔ | `iot` | IOT | `fw1-iot` | `hq/iot` | Both | ✔ | Flow records | ✔ |
 | ✔ | `mgmt` | MGMT | `fw1-mgmt` | `hq/mgmt` | Both | ✔ | Feature vectors only | ✔ |
@@ -326,7 +326,7 @@ tail -f /var/log/synapseids/wan/sensor.log
 | `bpf: no usable BPF device` | every device is busy, or devfs exposes none. Another capture (tcpdump, the OPNsense packet-capture page) may be holding them. |
 | `interface "x" uses BSD loopback framing (DLT 0)` | you selected a tunnel/PPPoE pseudo-interface. Capture on the physical parent instead. |
 | `reports link type DLT n` | SynapseIDS decodes only Ethernet (DLT 1) and raw IP (DLT 12/101). |
-| The service starts but the daemon shows no packets | check the direction: `in` only captures inbound. Check the filter preset. Check the firewall rule allowing the daemon to reach the sensor port. |
+| The service starts but the daemon shows no packets | check the direction (`in` captures inbound only — and one-way capture is refused with the flow/feature send modes). Check the filter preset. Check the firewall rule allowing the daemon to reach the sensor port. |
 | `pcapoverip: server rejected connection (unauthorized)` | the daemon's token and the sensor's token differ. |
 | Rising `drops` in `/api/v1/captures` | the kernel discarded frames before the sensor read them (`BIOCGSTATS` `bs_drop`). Confirm on the box with `netstat -B`: if `Sblen`/`Hblen` are at their maximum the kernel is batching fine and the *sensor* is not draining. Lower the snaplen, narrow the filter — or stop re-streaming every byte and switch to `--mode flow` / `--mode feature`. A `raw` sensor on a saturated uplink ships as much traffic as it sees. |
 | The Services page does not appear after install | `service configd restart`, then reload the web UI. The package's post-install does this, but a partial install may not have. |
@@ -393,7 +393,7 @@ service synapseids_sensor selftest
 
 # 6. does the capture source actually open? and two at once?
 /usr/local/bin/synapse-sensor pcap-over-ip \
-    --listen 127.0.0.1:4789 --iface em0 --authorized --direction in --filter ip-any
+    --listen 127.0.0.1:4789 --iface em0 --authorized --direction inout --filter ip-any
 
 # 7. does a daemon see one sensor per instance?  GET /api/v1/sensors
 ```
