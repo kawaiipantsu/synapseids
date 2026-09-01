@@ -49,6 +49,7 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
+  "capture": { "shutdown_drops": 0 },
   "live": {
     "ws_clients": 1, "ws_client_drops": 0, "ws_frames_batched": 87,
     "clients": 1, "accepted": 3, "frames_out": 210, "client_drops": 0
@@ -115,6 +116,18 @@ of capture time, and once more after a run's final flush) — never per packet. 
 pipeline also writes a throttled warning to the daemon log on the first eviction
 of a run and every 1000th after it.
 
+`capture` carries `shutdown_drops`: the daemon-lifetime count of packets a
+capture source had already handed to the fan-in that were discarded because the
+daemon was shutting down or the source hit a terminal error — the point past
+which no flow table can still be fed. Blocking shutdown on a slow consumer is the
+worse choice, so those packets are dropped, but PROJECT.md §22 requires every
+drop path to be counted: a non-zero value explains a gap between what a sensor
+reports sending and what the daemon turned into flows. It also names the affected
+source(s) in one line on the daemon log at exit. A finite source read to its end
+(a PCAP replay, `synapse replay`) drains cleanly and contributes nothing here
+unless shutdown races its last packets. The `capture` object is `{}` when no
+capture manager is wired.
+
 `storage.flow_versions_dropped` counts snapshot versions dropped because one flow
 exceeded `storage.FlowHistoryCap` (64 versions per flow) — a long-lived flow
 losing its *earliest* snapshots while keeping the most recent. It is distinct from
@@ -134,6 +147,8 @@ not just those still in the ring (PROJECT.md §12, §24).
 | `created` | New detections opened. Exactly equal to the number of `AlertCreated` events published. |
 | `deduped` | Verdicts folded into an existing detection. **No event was published for any of them** — this is the number the WebSocket was spared. |
 | `suppressed` | Verdicts of an alertable class that did not clear their threshold. `normal` is not counted: it is not suppressed, it is not alertable. |
+| `suppressed_by_rule` | Verdicts that **did** clear their threshold but matched an [`alerts.suppress`](#expected-behaviour-suppression) expected-behaviour rule, so no detection was opened. The classification is still recorded and visible in the flow log. |
+| `suppress_rules` | Per-rule breakdown, in config order: `[{ "note": "...", "matched": N }]`. Omitted when no rules are configured. A rule with `matched: 0` has never fired and is probably stale. |
 | `evicted` | Detections dropped by the `max_recent` bound, oldest first. Non-zero means `/api/v1/detections` is a recent window, not a full history. |
 | `retained` | Detections currently held. |
 | `max_recent` | The bound (`alerts.max_recent`, default `1000`). |
@@ -543,6 +558,42 @@ becomes a detection when its class is not `normal` **and** either:
   right (PROJECT.md §12).
 
 `reason` states which of the two fired, in measured values only.
+
+#### Expected-behaviour suppression
+
+Some hosts are *supposed* to look like an attack: a DarkWeb monitor makes
+outbound connections to known-malicious infrastructure all day, a vulnerability
+scanner probes ports for a living, backup replication and CDN health-checks are
+one-directional floods by design. Those verdicts are not misclassifications —
+the traffic genuinely has the shape the rules describe — so the fix is not to
+weaken the model but to state, declaratively, that this traffic is expected.
+
+`alerts.suppress` is a list of rules, each matching on **stable** attributes
+only (never an ephemeral port):
+
+| Field | Meaning |
+|---|---|
+| `src` / `dst` | An IP or CIDR the flow's initiator / responder must fall within. `""` = any. A bare address is a single host. Pin `src` to your edge address to suppress *outbound*, `dst` to suppress *inbound*. |
+| `dst_port` | The responder port. `0` = any. |
+| `class` | A `traffic-classes-v1` class name. `""` = any alertable class. `normal` is rejected (it never alerts). |
+| `note` | **Required** free-text reason, echoed in `status.alerts.suppress_rules`. |
+
+A verdict that clears its threshold but matches a rule is **still scored and
+still stored as a classification** — it stays visible in `/api/v1/flows` and
+`/api/v1/classifications` and in the flow log, so an operator never loses the
+ability to audit what was hidden. What suppression skips is only the *detection*:
+no row in `/api/v1/detections`, no `AlertCreated`. It is counted
+(`status.alerts.suppressed_by_rule`, and per rule in `suppress_rules`) so the
+decision is auditable and a rule that has matched nothing is visible.
+
+Rules are validated at load: a rule with no matchers (it would suppress
+everything), an unparseable address, an unknown or `normal` class, a port out of
+range, or a missing note is a **config error**, not a silent no-op. Rules are
+evaluated in file order and the first match wins.
+
+Suppression is a reporting decision, not a modelling one: the classifier keeps
+scoring honestly, and "expected" is never fed back into the model. Learning what
+is normal per host is a different feature (a behavioural baseline, #47/#63).
 
 #### `AlertCreated` fires once per *new* detection
 

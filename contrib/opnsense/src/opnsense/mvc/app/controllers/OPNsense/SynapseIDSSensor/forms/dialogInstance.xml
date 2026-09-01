@@ -85,7 +85,14 @@
         <label>Direction</label>
         <type>dropdown</type>
         <style>selectpicker</style>
-        <help>Which direction of traffic to hand to the BPF device (--direction).</help>
+        <help>
+            Which direction of traffic to hand to the BPF device (--direction). Leave on "Both directions":
+            flow-features-v1 is a bidirectional feature set, so a one-way capture leaves every
+            forward/backward ratio and all the reverse-direction counters structurally zero and skews the
+            daemon's verdicts. "Inbound only" / "Outbound only" is refused together with the "Flow records"
+            and "Feature vectors only" send modes below, where the features are computed here from traffic
+            that cannot be bidirectional.
+        </help>
     </field>
     <field>
         <id>instance.send_mode</id>
