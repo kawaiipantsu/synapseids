@@ -20,6 +20,23 @@ JSON has no comments, so this file documents every key in
 Missing keys are allowed (they keep the default); the shipped `synapse.json`
 sets all of them explicitly so nothing is a surprise.
 
+### Hot-reload (SIGHUP)
+
+`kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
+subset that is safe on a running daemon (issue #59, PROJECT.md §23):
+
+| Reloadable, takes effect immediately | Logged as `restart_required` |
+|---|---|
+| `alerts.enabled`, `alerts.min_confidence`, `alerts.per_class_min_confidence`, `alerts.alert_on_disagreement`, `alerts.suppress[]` | `alerts.max_recent`, `alerts.dedup_window_sec` (the store bounds are fixed at start) |
+| `logging.level` | `logging.format` (a running handler cannot swap its encoder) |
+| | `server`, `storage`, `capture`, `models`, `datasets`, `training`, `review`, `live`, `retention` — anything here needs a restart |
+
+The whole file is re-validated first: a syntax error, an unknown key or a
+range/enum violation logs `config reload failed` and **leaves the running
+configuration untouched**. The result is one structured log line naming what was
+applied and what still needs a restart. With no `--config` file, SIGHUP is a
+logged no-op.
+
 ### Duration format
 
 Durations are Go duration strings parsed by `time.ParseDuration`: a number plus a
