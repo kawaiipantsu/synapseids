@@ -895,6 +895,66 @@ classifications instead — a ring per host would be unbounded.
 the Phase 7 anomaly model, and the API reports its absence rather than returning a
 fabricated zero series.
 
+### GET /api/v1/drift
+
+The current `flow-features-v1` distribution compared against the **active model's
+training distribution**, per feature and overall (issue #49, PROJECT.md §19.13).
+
+The reference is the active bundle's `normalizer.json`. A `standard` normalizer
+carries the per-feature training `mean` and `std` directly; that is the
+comparison. Without an active model — or when its normalizer is `identity` /
+`minmax`, which carry no mean+std pair — there is no training distribution to
+compare against: `state` is `no_baseline`, `baseline.source` is `none`, and a
+`baseline_note` says why. The per-feature `current_mean` / `current_std` are
+still returned so a distribution view has data.
+
+It is a read-side fold of the newest 5000 stored flow vectors, like
+`GET /api/v1/matrix` — no packet-path work, no new storage.
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | Inclusive RFC3339 bounds on a flow version's `last_seen`. A bad value → `400`. |
+| `sensor`, `location` | The scope shared with the flow and classification lists. |
+
+`200`:
+
+```json
+{
+  "state": "warn",
+  "baseline": { "source": "model_normalizer",
+                "model_id": "flow-classifier-v1-cph-0002", "method": "standard" },
+  "window": { "flows": 4213, "scanned": 4213, "truncated": false,
+              "first_seen": "2026-09-01T08:00:00Z", "last_seen": "2026-09-01T09:10:00Z" },
+  "thresholds": { "warn": 2.0, "drift": 4.0 },
+  "overall": { "max_z": 3.1, "mean_z": 0.7, "features_warn": 3, "features_drift": 0 },
+  "features": [
+    { "index": 12, "name": "bytes_per_second",
+      "baseline_mean": 1234.5, "baseline_std": 456.7,
+      "current_mean": 2510.2, "current_std": 690.1,
+      "z": 2.79, "std_ratio": 1.51, "state": "warn" }
+  ],
+  "advisory": "Drift is informational. The daemon never retrains or activates a model automatically (PROJECT.md §19.13, §28.10)."
+}
+```
+
+- `z` — the standardized mean shift `|current_mean − training_mean| / training_std`.
+  `state` per feature is `stable` (`z < 2`), `warn` (`2 ≤ z < 4`) or `drift`
+  (`z ≥ 4`). The bands are documented constants for now; a config block is a
+  follow-up.
+- `std_ratio` — `current_std / training_std`, so a feature whose spread changed
+  without its mean moving is still visible.
+- `features` is sorted worst-`z` first when a baseline exists, schema order
+  otherwise.
+- `state` (top level) is the worst per-feature band: `drift` if any feature is
+  `drift`, else `warn` if any is `warn`, else `stable`; `no_baseline` when there
+  is no training distribution or no flows in the window.
+- `window.truncated` is `true` once the 5000-record scan is full — older traffic
+  is not covered.
+
+**Drift never triggers an action.** The daemon does not retrain, deploy or
+activate a model on its own; this route is a signal for an operator (PROJECT.md
+§19.13, §28.10). See [ADR 0036](adr/0036-feature-drift-monitoring.md).
+
 ### GET /api/v1/reports/host/{ip}
 
 A **downloadable host investigation report** (PROJECT.md §19.3, §19.4; issue #66,
