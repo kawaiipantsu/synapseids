@@ -134,8 +134,10 @@ cmd/synapsed ─▶ internal/pipeline ─▶ (per flow) features.Extract ─▶ 
   clean cross-compilation to `386`/`arm` and an offline build. Adding a dependency
   is a spec-level decision: justify it in the PR, and it must be pure Go
   (`CGO_ENABLED=0` and the four Linux targets are non-negotiable — §27, §28.16).
-- **Config is JSON** for now (`internal/config`), not YAML — native YAML is a
-  tracked issue. One explicit file + `SYNAPSE_*` env overrides for secrets (§23).
+- **Config is JSON or YAML** (`internal/config`): `--config foo.yaml` / `.yml`
+  uses a small hand-rolled block-style YAML reader (no dependency, issue #54);
+  anything else is JSON. Both go through one schema, `DisallowUnknownFields` and
+  `validate()`. One explicit file + `SYNAPSE_*` env overrides for secrets (§23).
 - **Committed PCAP fixtures are allowed here** (unlike some sibling repos): §25 and
   §31.9 mandate golden PCAP → feature-vector tests. `testdata/gen/` builds them;
   commit both.

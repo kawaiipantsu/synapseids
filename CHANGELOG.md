@@ -58,7 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --token` / `SYNAPSE_TOKEN`; the SPA adopts a `?token=` from its URL into
   `localStorage`. `contrib/config/tokens.example`,
   [ADR 0035](docs/adr/0035-api-rbac.md).
-
+- **YAML configuration** (issue #54). `synapsed --config foo.yaml` / `.yml`
+  reads a small hand-rolled block-style YAML subset — **no third-party
+  dependency** (CLAUDE.md). It supports block mappings and sequences, plain and
+  quoted scalars, and `#` comments; it *rejects with a line number* the parts of
+  YAML it does not implement (tabs in indentation, flow style, anchors/aliases,
+  tags, block scalars, multiple documents) rather than mis-parsing them. YAML is
+  decoded into the same tree the JSON path uses, so `DisallowUnknownFields` and
+  every validation rule are identical — `contrib/config/synapse.yaml` loads to
+  exactly the same `Config` as `synapse.json` (pinned by a test). JSON stays the
+  default and is unchanged.
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that

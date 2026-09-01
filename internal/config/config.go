@@ -347,13 +347,15 @@ func Default() Config {
 	}
 }
 
-// Load reads the configuration from path (JSON), overlaying it on Default. An
-// empty path returns Default with environment overrides applied. Environment
-// variables (SYNAPSE_LISTEN, SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH,
-// SYNAPSE_MODELS_DIR, SYNAPSE_DATASETS_DIR, SYNAPSE_TRAINING_DIR,
-// SYNAPSE_REVIEW_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS,
-// SYNAPSE_CAPTURE_IFACE) always win so secrets and deployment paths stay out of
-// the file.
+// Load reads the configuration from path, overlaying it on Default. The format
+// is JSON, or YAML when the path ends `.yaml` / `.yml` (issue #54) — a
+// restricted block-style subset, see yaml.go. An empty path returns Default with
+// environment overrides applied. Environment variables (SYNAPSE_LISTEN,
+// SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH, SYNAPSE_MODELS_DIR,
+// SYNAPSE_DATASETS_DIR, SYNAPSE_TRAINING_DIR, SYNAPSE_REVIEW_DIR,
+// SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS, SYNAPSE_CAPTURE_IFACE,
+// SYNAPSE_AUTH_TOKENS_FILE, SYNAPSE_LOG_*) always win so secrets and deployment
+// paths stay out of the file.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -361,9 +363,7 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("config: %w", err)
 		}
-		dec := json.NewDecoder(strings.NewReader(string(b)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg); err != nil {
+		if err := decodeInto(&cfg, path, b); err != nil {
 			return Config{}, fmt.Errorf("config: %s: %w", path, err)
 		}
 	}
@@ -372,6 +372,27 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// decodeInto overlays the file bytes onto cfg. YAML is parsed into the same
+// JSON-shaped tree the JSON decoder consumes, so DisallowUnknownFields, the
+// Duration string/number handling and validate() are all shared — the only YAML
+// code is turning indentation into nesting.
+func decodeInto(cfg *Config, path string, b []byte) error {
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		tree, err := parseYAML(b)
+		if err != nil {
+			return err
+		}
+		b, err = json.Marshal(tree)
+		if err != nil {
+			return err
+		}
+	}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	return dec.Decode(cfg)
 }
 
 func applyEnv(c *Config) {

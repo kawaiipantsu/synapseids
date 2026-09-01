@@ -10,15 +10,31 @@ JSON has no comments, so this file documents every key in
 ## How the daemon loads config
 
 1. Start from the built-in defaults (`config.Default()`).
-2. If `--config FILE` is given, decode the JSON on top of the defaults. Unknown
-   keys are a **hard error** (`DisallowUnknownFields`) — keep the file exactly to
-   the schema below; do not leave stray keys.
+2. If `--config FILE` is given, decode it on top of the defaults. The format is
+   **JSON**, or **YAML** when the path ends `.yaml` / `.yml` (issue #54). Unknown
+   keys are a **hard error** either way (`DisallowUnknownFields`) — keep the file
+   exactly to the schema below; do not leave stray keys.
 3. Apply `SYNAPSE_*` environment overrides — these **always win** over the file
    (see `contrib/systemd/synapsed.env`).
 4. Validate. A validation failure exits non-zero before the listener opens.
 
-Missing keys are allowed (they keep the default); the shipped `synapse.json`
-sets all of them explicitly so nothing is a surprise.
+Missing keys are allowed (they keep the default); the shipped `synapse.json` and
+`synapse.yaml` set all of them explicitly so nothing is a surprise.
+
+### YAML subset
+
+The YAML reader is a small hand-rolled block-style parser (no third-party
+dependency, CLAUDE.md). It **supports** block mappings, block sequences, plain
+and single/double-quoted scalars, `#` comments, blank lines and one leading
+`---`; indentation is spaces, the step is inferred. It **rejects, with a
+line-numbered error rather than mis-parsing**: tabs in indentation, flow style
+(`{...}` / `[...]`, though an empty `[]` / `{}` is fine), anchors and aliases
+(`&` / `*`), tags (`!`), block scalars (`|` / `>`), multi-line plain scalars, and
+multiple documents. The config file has never needed any of those. YAML is
+parsed into the same tree the JSON decoder consumes, so every type rule,
+`DisallowUnknownFields` and `validate()` are identical — `contrib/config/synapse.yaml`
+loads to exactly the same `Config` as `contrib/config/synapse.json` (pinned by a
+test).
 
 ### Hot-reload (SIGHUP)
 
