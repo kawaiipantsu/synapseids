@@ -33,9 +33,11 @@ contract.
 
 **2. Phase-1 configuration is a single JSON file plus `SYNAPSE_*` env
 overrides**, loaded by `config.Load` (`encoding/json` only, unknown fields
-rejected). Not YAML — this keeps the Phase-1 build free of third-party
-dependencies. PROJECT.md §23's YAML example is treated as illustrative; a native
-YAML loader is tracked and will be added as an alternative, not a replacement.
+rejected). YAML was deferred to keep the Phase-1 build free of third-party
+dependencies; it landed in issue #54 as a **hand-rolled restricted block-style
+reader** (still zero dependencies), parsing into the same tree the JSON decoder
+consumes so `DisallowUnknownFields` and `validate()` are shared. `--config
+foo.yaml` selects it; JSON stays the default and is unchanged.
 
 ## Consequences
 
@@ -43,7 +45,9 @@ YAML loader is tracked and will be added as an alternative, not a replacement.
   silently mis-fed.
 - Trainer and daemon share exactly one definition of the feature and output
   vectors.
-- No YAML dependency, no parser CVE surface, for Phase 1.
+- No YAML *dependency* or parser CVE surface — the #54 reader is a few hundred
+  lines of stdlib and deliberately refuses the parts of YAML (anchors, tags,
+  flow style, merge keys) where the CVEs live.
 - A schema mistake found after the freeze costs a full `v2` plus a model
   retrain — the freeze is a real commitment, not a label.
 - JSON config has no comments; the mitigation is an annotated example

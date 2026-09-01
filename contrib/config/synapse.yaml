@@ -1,0 +1,48 @@
+# synapse.yaml — THUGS(red) SynapseIDS  (issue #54)
+#
+# The same schema as contrib/config/synapse.json, in YAML. synapsed picks the
+# parser from the file extension:  synapsed --config /etc/synapseids/synapse.yaml
+#
+# SUPPORTED subset (docs/api.md / contrib/config/synapse.annotated.md): block
+# mappings, block sequences, plain and quoted scalars, "#" comments. NOT
+# supported and rejected with a line number: tabs in indentation, flow style
+# ({...} / [...]), anchors/aliases (& / *), tags (!), block scalars (| / >),
+# multiple documents. Durations are quoted-or-plain strings ("30s", 5m).
+# SYNAPSE_* environment variables still override the file.
+
+server:
+  listen: 127.0.0.1:8080
+  web_root: ""
+
+storage:
+  driver: memory
+  path: /var/lib/synapseids/synapse.db
+  max_flows: 50000
+
+capture:
+  flow_idle_timeout: 30s
+  flow_max_lifetime: 5m
+  snapshot_interval: 60s
+  max_flows: 200000
+  sources: []
+
+models:
+  directory: /var/lib/synapseids/models
+  primary: ""
+
+alerts:
+  enabled: true
+  min_confidence: 0.7
+  per_class_min_confidence:
+    suspicious: 0.85
+  alert_on_disagreement: true
+  max_recent: 1000
+  dedup_window_sec: 60
+
+live:
+  websocket_batch: 100ms
+  client_queue_size: 5000
+
+retention:
+  flows: 720h
+  classifications: 2160h
