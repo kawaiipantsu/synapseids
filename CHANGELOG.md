@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
+  default config** (issue #60). Previously it held only binaries + man pages.
+  New: `/lib/systemd/system/{synapsed,synapse-sensor}.service`,
+  `/usr/lib/{sysusers.d,tmpfiles.d}/synapseids.conf`, and
+  `/etc/synapseids/{synapse.json,synapsed.env}` as conffiles. The maintainer
+  scripts (`postinst`/`prerm`/`postrm`) create the unprivileged `synapse` user
+  and its directories, fix the conffile group, and `daemon-reload` — but
+  **never `enable` or `start`**: capturing traffic is an explicit operator
+  decision (PROJECT.md §21). All guarded to be safe on a host without systemd.
+
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that

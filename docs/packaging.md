@@ -57,12 +57,18 @@ Ruby. It needs `dpkg-deb` (`dpkg-dev`). Contents:
 /usr/bin/synapsed
 /usr/bin/synapse
 /usr/bin/synapse-sensor
-/usr/share/man/man1/synapsed.1.gz
-/usr/share/man/man1/synapse.1.gz
-/usr/share/man/man1/synapse-sensor.1.gz
+/usr/share/man/man1/{synapsed,synapse,synapse-sensor}.1.gz
 /usr/share/doc/synapseids/copyright              DEP-5, from packaging/debian/copyright
 /usr/share/doc/synapseids/changelog.Debian.gz    from packaging/debian/changelog.in
+/lib/systemd/system/synapsed.service             from contrib/systemd/
+/lib/systemd/system/synapse-sensor.service       from contrib/systemd/
+/usr/lib/sysusers.d/synapseids.conf              from contrib/systemd/synapseids.sysusers
+/usr/lib/tmpfiles.d/synapseids.conf              from contrib/systemd/synapseids.tmpfiles
+/etc/synapseids/synapse.json                     conffile, from contrib/config/synapse.json
+/etc/synapseids/synapsed.env                     conffile, from contrib/systemd/synapsed.env
 DEBIAN/control                                    from packaging/debian/control.in
+DEBIAN/conffiles                                 packaging/debian/conffiles
+DEBIAN/{postinst,prerm,postrm}                   packaging/debian/
 ```
 
 `control.in` (`@VERSION@` / `@ARCH@` substituted; a leading `v` is stripped from
@@ -72,12 +78,26 @@ the version):
 - `Maintainer: kawaiipantsu <12233528+kawaiipantsu@users.noreply.github.com>`,
   `Homepage: https://github.com/kawaiipantsu/synapseids`
 - **no `Depends`** — the binaries are static
-- **no maintainer scripts** — no `preinst` / `postinst` / `prerm` / `postrm`
 
-> [!NOTE]
-> systemd units are **not in the `.deb`** yet. They are intended to ship in
-> `contrib/` (referenced by `package-deb.sh` and the man page; the directory is
-> not in the tree yet). Tracked: "Ship systemd units inside the `.deb`".
+### Maintainer scripts (issue #60)
+
+`packaging/debian/{postinst,prerm,postrm}`. All idempotent, all guarded so they
+are safe on a host without a running systemd (`[ -d /run/systemd/system ]`).
+
+- **`postinst configure`** — `systemd-sysusers` (create the unprivileged
+  `synapse` user/group), `systemd-tmpfiles --create` (`/var/lib/synapseids`,
+  `/etc/synapseids`), `chgrp synapse` + `chmod 0640` the two `/etc` conffiles now
+  that the group exists, then `systemctl daemon-reload`. **It never runs
+  `systemctl enable` or `start`** — capturing traffic is an explicit operator
+  decision (PROJECT.md §21, §28.18). The daemon is started with
+  `systemctl enable --now synapsed`.
+- **`prerm remove`** — `systemctl stop synapsed synapse-sensor` (not on upgrade).
+- **`postrm remove|purge`** — `systemctl daemon-reload`. The `synapse` user and
+  `/var/lib/synapseids` are left in place even on purge (removing a UID that
+  still owns files on disk is how you get orphaned ownership).
+
+`/etc/synapseids/synapse.json` and `synapsed.env` are **conffiles**: an
+operator's edits survive an upgrade.
 
 Inspect a built package:
 

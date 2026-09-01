@@ -1,0 +1,43 @@
+#!/bin/sh
+# synapseids postinst — THUGS(red) SynapseIDS
+#
+# Creates the unprivileged `synapse` user, its runtime directories, and reloads
+# the systemd manager so the shipped units are visible. It DOES NOT enable or
+# start anything: an IDS daemon that captures traffic is an explicit operator
+# decision (PROJECT.md §21, §28.18). To run it:
+#
+#     systemctl enable --now synapsed
+#
+set -e
+
+case "$1" in
+configure)
+	# 1. the system user/group (u/g lines in /usr/lib/sysusers.d/synapseids.conf)
+	if command -v systemd-sysusers >/dev/null 2>&1; then
+		systemd-sysusers /usr/lib/sysusers.d/synapseids.conf || true
+	fi
+
+	# 2. /var/lib/synapseids and /etc/synapseids with the right owner/mode
+	if command -v systemd-tmpfiles >/dev/null 2>&1; then
+		systemd-tmpfiles --create /usr/lib/tmpfiles.d/synapseids.conf || true
+	fi
+
+	# 3. the config files: readable by the daemon's group, not world. dpkg lays
+	#    them down root:root; the group only exists after step 1.
+	if getent group synapse >/dev/null 2>&1; then
+		for f in /etc/synapseids/synapse.json /etc/synapseids/synapsed.env; do
+			[ -e "$f" ] || continue
+			chgrp synapse "$f" 2>/dev/null || true
+			chmod 0640 "$f" 2>/dev/null || true
+		done
+	fi
+
+	# 4. make the units visible (no enable, no start)
+	if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload || true
+	fi
+	;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+esac
+
+exit 0
