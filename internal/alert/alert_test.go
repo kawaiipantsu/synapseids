@@ -534,7 +534,9 @@ func TestNilStoreIsSafe(t *testing.T) {
 	if _, ok := s.Detection(1); ok {
 		t.Error("a nil store found a detection")
 	}
-	if st := s.Stats(); st != (alert.Stats{}) {
+	if st := s.Stats(); (st.Observed|st.Created|st.Deduped|st.Suppressed|
+		st.SuppressedByRule|st.Evicted|st.Dropped) != 0 ||
+		st.Enabled || st.Retained != 0 || st.SuppressRules != nil {
 		t.Errorf("Stats = %+v, want the zero value", st)
 	}
 }

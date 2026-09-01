@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
+  that does security research — a DarkWeb monitor, a vulnerability scanner,
+  uptime probing, backup replication, CDN health-checks — produces verdicts that
+  are correctly classified and legitimately expected. A suppression rule matches
+  on stable attributes (source/destination address or prefix, destination port,
+  class) and turns such a verdict into a non-detection: it is **still scored and
+  still stored as a classification**, visible in the flow log, but raises no
+  `/api/v1/detections` row and no `AlertCreated`. Matches are counted, per rule,
+  on `/api/v1/status` (`alerts.suppressed_by_rule`, `alerts.suppress_rules`), so
+  the decision is auditable and a rule that matches nothing is visible. Malformed
+  rules — no matchers, bad CIDR, unknown/`normal` class, out-of-range port,
+  missing note — are a load error, never a silent no-op. The classifier is never
+  told about the rules. See [ADR 0032](docs/adr/0032-expected-behaviour-suppression.md). (#133)
+
 ## [0.2.1] - 2026-08-31
 
 ### Fixed
