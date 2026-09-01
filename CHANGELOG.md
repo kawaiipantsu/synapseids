@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Config hot-reload on SIGHUP** (issue #59, PROJECT.md §23).
+  `kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
+  subset that is safe on a running daemon: the alert policy (`alerts.enabled`,
+  the confidence thresholds, `alert_on_disagreement`, and the `alerts.suppress`
+  rules) and `logging.level`. Everything else that changed — a listener, storage,
+  capture sources, flow-engine timing, `logging.format`, the alert-store bounds —
+  is named in a structured `restart_required` log line. The whole file is
+  re-validated first: a bad file logs `config reload failed` and leaves the
+  running configuration untouched. `alert.Store.SetPolicy` swaps the policy on
+  the aggregator goroutine (the same lock-free whole-value swap the inference
+  runtime uses for models). systemd unit gains `ExecReload`. See
+  [ADR 0034](docs/adr/0034-config-hot-reload.md).
 - **`GET /metrics` and structured logging** (issue #55, PROJECT.md §24). A new
   `/metrics` endpoint renders Prometheus text (version `0.0.4`): the counters
   `/api/v1/status` already carries — packets, kernel drops, decode errors, flow

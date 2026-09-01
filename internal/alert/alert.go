@@ -151,6 +151,11 @@ type occurrence struct {
 type item struct {
 	oc   occurrence
 	done chan struct{}
+	// setPol, when non-nil, is a policy swap for config hot-reload (issue #59).
+	// It travels the same queue as occurrences so the aggregator goroutine — the
+	// only reader of s.pol and s.suppressHits — applies it with no lock and no
+	// race, the same way inference.Runtime swaps its whole model slice.
+	setPol *Policy
 }
 
 // Options configure a Store's bounds and wiring. A zero value selects every
@@ -314,6 +319,26 @@ func (s *Store) Sync() {
 	}
 }
 
+// SetPolicy swaps the alert policy on the aggregator goroutine and blocks until
+// the swap has taken effect (config hot-reload, issue #59). The compiled
+// suppression rules travel inside p — recompile them with CompileSuppress
+// before calling. A swap after Close returns without doing anything.
+func (s *Store) SetPolicy(p Policy) {
+	if s == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.ch <- item{setPol: &p, done: done}:
+	case <-s.quit:
+		return
+	}
+	select {
+	case <-done:
+	case <-s.quit:
+	}
+}
+
 func (s *Store) loop() {
 	defer s.wg.Done()
 	for {
@@ -321,11 +346,18 @@ func (s *Store) loop() {
 		case <-s.quit:
 			return
 		case it := <-s.ch:
+			if it.setPol != nil {
+				s.pol = *it.setPol
+				// Keep the per-rule hit slice index-aligned with the new rule
+				// list. The counts reset — the rules changed, so the old
+				// per-rule totals no longer describe anything.
+				s.suppressHits = make([]atomic.Uint64, len(s.pol.Suppress))
+			} else if it.done == nil {
+				s.apply(it.oc)
+			}
 			if it.done != nil {
 				close(it.done)
-				continue
 			}
-			s.apply(it.oc)
 		}
 	}
 }

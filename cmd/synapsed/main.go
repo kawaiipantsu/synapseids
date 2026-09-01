@@ -335,6 +335,12 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// SIGHUP re-reads --config and applies the subset that is safe on a running
+	// daemon: the alert policy (thresholds + alerts.suppress) and the log level.
+	// Everything else that changed is logged as needing a restart. A file that
+	// fails to re-validate leaves the running configuration untouched (issue #59).
+	go newReloader(*cfgPath, logger, alerts, cfg).watch(ctx)
+
 	// One pipeline goroutine consumes the merged live-capture stream. It runs
 	// even with no startup source so a source added later via
 	// POST /api/v1/captures has a consumer on the merged channel. It shares the
