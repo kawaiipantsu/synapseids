@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing note — are a load error, never a silent no-op. The classifier is never
   told about the rules. See [ADR 0032](docs/adr/0032-expected-behaviour-suppression.md). (#133)
 
+### Changed
+
+- **`web_attack` is now a declared labelled gap, not a silent one.** The Phase 1
+  heuristic never emits `web_attack` (its byte-asymmetry rule fired only on
+  ordinary uploads and was removed, #135), and it is doubtful `flow-features-v1`
+  can carry the class at all without payload inspection (#134). The runtime model
+  now declares that: `GET /api/v1/models` `runtime[]` entries carry
+  `unsupported_classes` (`["web_attack"]` for the heuristic), and the Models page
+  shows a labelled gap citing #134/#135. The class stays index 5 of the frozen
+  `traffic-classes-v1` vector; a trained model may still learn it. (#134)
+
 ### Fixed
 
 - **`capture.Manager` discarded in-flight packets at shutdown with no counter.**

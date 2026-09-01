@@ -35,7 +35,17 @@ type runtimeModel struct {
 	Family     string `json:"family"`
 	Role       string `json:"role"`
 	Registered bool   `json:"registered"`
+	// UnsupportedClasses names traffic-classes-v1 classes this model never emits,
+	// so the UI can show a labelled gap rather than implying full coverage. The
+	// Phase 1 heuristic reports "web_attack" here (issue #134). Omitted when the
+	// model claims full coverage.
+	UnsupportedClasses []string `json:"unsupported_classes,omitempty"`
 }
+
+// classCoverageReporter is implemented by a model that knows it cannot produce
+// some traffic-classes-v1 classes (the Phase 1 heuristic and web_attack, issue
+// #134). A model that does not implement it is assumed to cover the full vector.
+type classCoverageReporter interface{ UnsupportedClasses() []string }
 
 // loadedRoles maps model ID -> role for every classifier live in the Runtime.
 func (s *Server) loadedRoles() map[string]string {
@@ -81,10 +91,16 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 
 	rtModels := make([]runtimeModel, 0, len(loaded))
 	for _, m := range s.rtModels() {
-		rtModels = append(rtModels, runtimeModel{
+		rm := runtimeModel{
 			ID: m.ID(), Family: m.Family(), Role: string(m.Role()),
 			Registered: registered[m.ID()],
-		})
+		}
+		if cr, ok := m.(classCoverageReporter); ok {
+			if u := cr.UnsupportedClasses(); len(u) > 0 {
+				rm.UnsupportedClasses = u
+			}
+		}
+		rtModels = append(rtModels, rm)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
