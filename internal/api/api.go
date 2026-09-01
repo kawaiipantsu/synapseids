@@ -90,6 +90,9 @@ type CaptureStatusProvider interface {
 	Add(name string, src capture.Source, meta capture.SourceMeta) error
 	// Remove stops, closes and deregisters a source; false if unknown.
 	Remove(name string) bool
+	// ShutdownDrops is the daemon-lifetime count of packets discarded on the
+	// capture shutdown / terminal-error path (issue #138, PROJECT.md §22).
+	ShutdownDrops() uint64
 }
 
 // Server bundles the HTTP handler, the live hub and the event pump.
@@ -304,6 +307,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.fs != nil {
 		fs = s.fs.FlowStats()
 	}
+	capStats := map[string]any{}
+	if s.cap != nil {
+		capStats["shutdown_drops"] = s.cap.ShutdownDrops()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":    version.Short("synapsed"),
 		"commit":     version.Commit,
@@ -312,6 +319,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"loopback":   s.cfg.LoopbackOnly(),
 		"storage":    s.store.Stats(),
 		"events":     map[string]any{"published": pub, "dropped": drop, "subscribers": subs},
+		"capture":    capStats,
 		"live": map[string]any{
 			// Canonical WebSocket-hub counters (issue #70).
 			"ws_clients":        ws.Clients,

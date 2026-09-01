@@ -23,6 +23,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing note — are a load error, never a silent no-op. The classifier is never
   told about the rules. See [ADR 0032](docs/adr/0032-expected-behaviour-suppression.md). (#133)
 
+### Fixed
+
+- **`capture.Manager` discarded in-flight packets at shutdown with no counter.**
+  When the daemon stops (or a source hits a terminal error), the fan-in drains
+  and throws away whatever the source had already handed over — a deliberate
+  choice, since the alternative is blocking shutdown on a slow consumer, but it
+  was silent. PROJECT.md §22 requires every drop path to be measured, and every
+  other one in the tree already is (`events.dropped`, `ws_client_drops`,
+  `flows_evicted`, `alerts.dropped`). Those discards are now counted, surfaced on
+  `GET /api/v1/status` as `capture.shutdown_drops`, and logged once at exit
+  naming the affected source(s). A finite source read to its end still drains
+  cleanly and contributes nothing. (#138)
+- **The OPNsense sensor defaulted to one-way capture, which breaks the
+  bidirectional feature set.** The instance `Direction` field defaulted to
+  `in` ("Inbound only"). `flow-features-v1` is bidirectional: under a one-way
+  capture the backward counters and every forward/backward ratio are
+  structurally zero, so the daemon scores a vector it cannot trust — on a live
+  gateway this produced `critical dos_ddos` verdicts at 100% confidence on
+  ordinary inbound Cloudflare reply legs. The default is now `inout`, and
+  `performValidation()` refuses `in`/`out` together with the on-sensor `flow` /
+  `feature` send modes (where the features are computed from traffic that
+  cannot be bidirectional). One-way capture with `raw` streaming is still
+  allowed — the daemon at least sees the packets it is missing. Carrying
+  capture direction in the SYNPOIP record so the daemon can suppress
+  directionality-dependent rules is a separate, larger change (it needs a
+  protocol field) and is not in this fix. (#129)
+
 ## [0.2.1] - 2026-08-31
 
 ### Fixed

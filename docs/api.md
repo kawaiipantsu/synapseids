@@ -49,6 +49,7 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
+  "capture": { "shutdown_drops": 0 },
   "live": {
     "ws_clients": 1, "ws_client_drops": 0, "ws_frames_batched": 87,
     "clients": 1, "accepted": 3, "frames_out": 210, "client_drops": 0
@@ -114,6 +115,18 @@ The counters are refreshed on the flow table's tick cadence (about once a second
 of capture time, and once more after a run's final flush) — never per packet. The
 pipeline also writes a throttled warning to the daemon log on the first eviction
 of a run and every 1000th after it.
+
+`capture` carries `shutdown_drops`: the daemon-lifetime count of packets a
+capture source had already handed to the fan-in that were discarded because the
+daemon was shutting down or the source hit a terminal error — the point past
+which no flow table can still be fed. Blocking shutdown on a slow consumer is the
+worse choice, so those packets are dropped, but PROJECT.md §22 requires every
+drop path to be counted: a non-zero value explains a gap between what a sensor
+reports sending and what the daemon turned into flows. It also names the affected
+source(s) in one line on the daemon log at exit. A finite source read to its end
+(a PCAP replay, `synapse replay`) drains cleanly and contributes nothing here
+unless shutdown races its last packets. The `capture` object is `{}` when no
+capture manager is wired.
 
 `storage.flow_versions_dropped` counts snapshot versions dropped because one flow
 exceeded `storage.FlowHistoryCap` (64 versions per flow) — a long-lived flow
