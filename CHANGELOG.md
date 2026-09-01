@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /metrics` and structured logging** (issue #55, PROJECT.md §24). A new
+  `/metrics` endpoint renders Prometheus text (version `0.0.4`): the counters
+  `/api/v1/status` already carries — packets, kernel drops, decode errors, flow
+  create/close/evict, event bus, WebSocket, storage, detections, investigation —
+  plus two new **histograms**, model-scoring latency and `features.Extract`
+  latency, and a per-class `synapseids_classifications_total` counter. Recording
+  is off the packet loop (a `time.Now` pair when a flow closes). `/api/v1/status`
+  gains an `inference` block (scored, failures, p50/p95/p99, by_class). The
+  Prometheus text and the histogram are hand-rolled — no client library — to
+  keep the zero-dependency build. Logs now go through `log/slog` with a
+  `logging` config block (`format: text|json`, `level`, plus `SYNAPSE_LOG_*`);
+  the standard `log` package is bridged so every existing line lands in the
+  structured stream. See [ADR 0033](docs/adr/0033-observability-metrics-and-structured-logging.md). (#55)
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that

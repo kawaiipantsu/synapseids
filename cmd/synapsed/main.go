@@ -32,6 +32,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/model"
+	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/review"
@@ -81,6 +82,18 @@ func run(args []string) int {
 		log.Printf("config: %v", err)
 		return 1
 	}
+
+	// Structured logging (issue #55). From here on every log line — including the
+	// many packages that take an injected log.Printf — goes through the slog
+	// handler at the configured level. logger holds a live level knob for
+	// config hot-reload (issue #59). A bad format/level was rejected by
+	// config.Load, so logSetupErr should always be nil.
+	logger, logSetupErr := obs.SetupLogging(os.Stderr, cfg.Logging.Format, cfg.Logging.Level)
+	if logSetupErr != nil {
+		logger.Warn("logging setup fell back to defaults", "err", logSetupErr)
+	}
+	metrics := obs.New()
+
 	if *listen != "" {
 		cfg.Server.Listen = *listen
 	}
@@ -215,7 +228,7 @@ func run(args []string) int {
 	// it, so /api/v1/status describes the table that is actually doing the work
 	// rather than whichever one happened to be wired (issue #125).
 	flowStats := newFlowStatsHub(flowOpt.MaxFlows)
-	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID, flowStats)
+	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID, flowStats, metrics)
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -317,6 +330,7 @@ func run(args []string) int {
 	// through an interface, which is exactly what makes them immune to that bug;
 	// every one of *alert.Store's methods is nil-receiver safe as well.
 	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, flowStats, capMgr, ins, trs, sensors, rvs, alerts)
+	srv.SetMetrics(metrics)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -336,6 +350,7 @@ func run(args []string) int {
 			// This is the table that serves live NICs and every raw-mode sensor.
 			// Leaving it unreported was issue #125.
 			OnStats: flowStats.Reporter("capture"),
+			Metrics: metrics,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)
@@ -355,8 +370,16 @@ func run(args []string) int {
 		}()
 	}
 
-	log.Printf("synapsed %s listening on http://%s  (feature schema %s, %d models, %d live capture source(s), collector=%t)",
-		version.Version, cfg.Server.Listen, features.SchemaID, len(rt.Models()), live, collector != nil)
+	logger.Info("synapsed listening",
+		"version", version.Version,
+		"listen", cfg.Server.Listen,
+		"feature_schema", features.SchemaID,
+		"models", len(rt.Models()),
+		"capture_sources", live,
+		"collector", collector != nil,
+		"metrics", "/metrics",
+		"log_level", logger.Level(),
+	)
 	if err := srv.Run(ctx); err != nil {
 		log.Printf("server: %v", err)
 		return 1

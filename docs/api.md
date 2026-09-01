@@ -62,6 +62,15 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "evicted": 0,
     "max": 200000
   },
+  "inference": {
+    "scored": 4082,
+    "failures": 0,
+    "latency_p50_ms": 0.031,
+    "latency_p95_ms": 0.12,
+    "latency_p99_ms": 0.44,
+    "by_class": { "normal": 3200, "scan": 512, "brute_force": 304, "dos_ddos": 1,
+                  "botnet_c2": 0, "web_attack": 0, "suspicious": 65 }
+  },
   "alerts": {
     "enabled": true,
     "created": 6,
@@ -156,6 +165,44 @@ not just those still in the ring (PROJECT.md §12, §24).
 | `dropped` | Verdicts the ingest queue could not accept, so they were never evaluated. Non-zero means the alert goroutine fell behind the packet path (PROJECT.md §22, §24). |
 | `queue_size` | Depth of that queue. |
 | `dedup_window_sec` | `alerts.dedup_window_sec`, default `60`. |
+
+`inference` is the scoring instrumentation (issue #55, PROJECT.md §24): `scored`
+(runtime calls this lifetime), `failures`, `latency_p50_ms` / `latency_p95_ms` /
+`latency_p99_ms` (approximate quantiles read off the histogram buckets — the raw
+buckets are on [`GET /metrics`](#get-metrics)), and `by_class`, the per-class
+verdict tally keyed by `traffic-classes-v1` class name.
+
+### GET /metrics
+
+Prometheus text exposition (version `0.0.4`), for a scraper. No params, always
+`200`, `Content-Type: text/plain; version=0.0.4`. It is the same data
+`/api/v1/status` carries plus the scoring and feature-extraction latency
+**histograms** and the per-class verdict counter, rendered as metric families:
+
+```text
+# HELP synapseids_inference_latency_seconds Wall-clock cost of one runtime scoring call.
+# TYPE synapseids_inference_latency_seconds histogram
+synapseids_inference_latency_seconds_bucket{le="5e-06"} 41213
+...
+synapseids_inference_latency_seconds_bucket{le="+Inf"} 41902
+synapseids_inference_latency_seconds_sum 0.2371
+synapseids_inference_latency_seconds_count 41902
+synapseids_classifications_total{class="scan"} 512
+synapseids_capture_packets_total{source="wan"} 91771
+synapseids_capture_packets_total{source="_all"} 91771
+synapseids_flows_active 128
+synapseids_detections_created_total 6
+```
+
+Every metric name is prefixed `synapseids_`; counters end `_total`; capture
+counters carry a `source` label (plus a `source="_all"` aggregate). The endpoint
+sits at `/metrics`, not under `/api/v1`, by Prometheus convention, and carries no
+auth of its own — like the mutating routes it relies on the loopback bind and an
+authenticating reverse proxy in front (issue #58, PROJECT.md §21).
+
+`storage` latency (§24) is not instrumented: the Phase 1 store is an in-memory
+ring where a put is a slice write. It gets a histogram when a durable backend
+lands (#53).
 
 ### GET /api/v1/flows
 

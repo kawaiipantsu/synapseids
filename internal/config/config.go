@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ type Config struct {
 	Training  Training  `json:"training"`
 	Review    Review    `json:"review"`
 	Alerts    Alerts    `json:"alerts"`
+	Logging   Logging   `json:"logging"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
 }
@@ -254,6 +256,16 @@ type SuppressRule struct {
 	Note string `json:"note"`
 }
 
+// Logging configures the daemon's structured logs (issue #55, PROJECT.md §24).
+// Both fields are hot-reloadable: `level` takes effect immediately on SIGHUP,
+// `format` on the next restart (a handler cannot swap its encoder mid-stream).
+type Logging struct {
+	// Format is "text" (default, human-readable key=value) or "json".
+	Format string `json:"format"`
+	// Level is "debug", "info" (default), "warn" or "error".
+	Level string `json:"level"`
+}
+
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
 type Live struct {
 	WebSocketBatch  Duration `json:"websocket_batch"`
@@ -290,7 +302,8 @@ func Default() Config {
 			MaxRecent:             1000,
 			DedupWindowSec:        60,
 		},
-		Live: Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
+		Logging: Logging{Format: "text", Level: "info"},
+		Live:    Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
 			Classifications: Duration(90 * 24 * time.Hour),
@@ -371,6 +384,12 @@ func applyEnv(c *Config) {
 			})
 		}
 	}
+	if v := os.Getenv("SYNAPSE_LOG_FORMAT"); v != "" {
+		c.Logging.Format = v
+	}
+	if v := os.Getenv("SYNAPSE_LOG_LEVEL"); v != "" {
+		c.Logging.Level = v
+	}
 }
 
 // hasNICInterface reports whether srcs already contains a "nic" source bound to
@@ -420,6 +439,9 @@ func (c Config) validate() error {
 	if err := ValidateAlerts(c.Alerts); err != nil {
 		return fmt.Errorf("config: alerts: %w", err)
 	}
+	if err := ValidateLogging(c.Logging); err != nil {
+		return fmt.Errorf("config: logging: %w", err)
+	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {
 		if s.Name == "" {
@@ -435,6 +457,27 @@ func (c Config) validate() error {
 	}
 	if err := ValidateCollector(c.Capture.Collector); err != nil {
 		return fmt.Errorf("config: capture.collector: %w", err)
+	}
+	return nil
+}
+
+// logFormats / logLevels mirror internal/obs. config is a leaf package and must
+// not import obs (docs/architecture.md); TestLoggingValuesMatchObs in
+// internal/obs fails if the two drift.
+var (
+	logFormats = []string{"text", "json"}
+	logLevels  = []string{"debug", "info", "warn", "error"}
+)
+
+// ValidateLogging checks the logging block (issue #55). An unknown format or
+// level is a typo that would otherwise silently fall back to the default, so it
+// is a load error like every other config mistake.
+func ValidateLogging(l Logging) error {
+	if l.Format != "" && !slices.Contains(logFormats, l.Format) {
+		return fmt.Errorf("format %q is not one of %v", l.Format, logFormats)
+	}
+	if l.Level != "" && !slices.Contains(logLevels, l.Level) {
+		return fmt.Errorf("level %q is not one of %v", l.Level, logLevels)
 	}
 	return nil
 }

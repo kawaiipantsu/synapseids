@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +27,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
+	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
@@ -115,6 +116,11 @@ type Server struct {
 	hub     *wshub.Hub
 	start   time.Time
 
+	// metrics is the daemon's obs.Metrics (issue #55), set by the daemon after
+	// New via SetMetrics. nil in embedded/test use — GET /metrics then renders
+	// every counter it can still reach and empty latency histograms.
+	metrics *obs.Metrics
+
 	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
 	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
 	// model.onnx, so it must not run per request; a registered bundle is
@@ -154,9 +160,15 @@ func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.
 	}
 }
 
+// SetMetrics wires the process metric set for GET /metrics (issue #55). The
+// daemon calls it once, after New; a Server without it still serves /metrics
+// from the counters it already holds, with empty latency histograms.
+func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
+
 // Handler returns the routed http.Handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/flows", s.handleFlows)
 	mux.HandleFunc("GET /api/v1/flows/{id}", s.handleFlow)
@@ -311,6 +323,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.cap != nil {
 		capStats["shutdown_drops"] = s.cap.ShutdownDrops()
 	}
+	ms := s.metrics.Snapshot()
+	inf := map[string]any{
+		"scored":         ms.InferenceLatency.Total,
+		"failures":       ms.InferenceFailures,
+		"latency_p50_ms": s.metrics.InferenceQuantile(0.50) * 1000,
+		"latency_p95_ms": s.metrics.InferenceQuantile(0.95) * 1000,
+		"latency_p99_ms": s.metrics.InferenceQuantile(0.99) * 1000,
+		"by_class":       ms.Classified,
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":    version.Short("synapsed"),
 		"commit":     version.Commit,
@@ -332,6 +353,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			"client_drops": ws.Drops,
 		},
 		"flow":           fs,
+		"inference":      inf,
 		"insight":        s.insight.Stats(),
 		"alerts":         s.alerts.Stats(),
 		"models":         s.modelList(),
@@ -755,6 +777,18 @@ func logMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.code, time.Since(start).Round(time.Millisecond))
+		// Structured access log (issue #55): one record per request with the
+		// fields a log query needs. 4xx/5xx are warnings; the rest stay at info,
+		// which is the level the plain-text line used before this change.
+		lvl := slog.LevelInfo
+		if rec.code >= 400 {
+			lvl = slog.LevelWarn
+		}
+		slog.LogAttrs(r.Context(), lvl, "http request",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", rec.code),
+			slog.Int64("dur_ms", time.Since(start).Milliseconds()),
+		)
 	})
 }
