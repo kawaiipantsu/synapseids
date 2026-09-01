@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OPNsense sensor defaulted to one-way capture, which breaks the
+  bidirectional feature set.** The instance `Direction` field defaulted to
+  `in` ("Inbound only"). `flow-features-v1` is bidirectional: under a one-way
+  capture the backward counters and every forward/backward ratio are
+  structurally zero, so the daemon scores a vector it cannot trust — on a live
+  gateway this produced `critical dos_ddos` verdicts at 100% confidence on
+  ordinary inbound Cloudflare reply legs. The default is now `inout`, and
+  `performValidation()` refuses `in`/`out` together with the on-sensor `flow` /
+  `feature` send modes (where the features are computed from traffic that
+  cannot be bidirectional). One-way capture with `raw` streaming is still
+  allowed — the daemon at least sees the packets it is missing. Carrying
+  capture direction in the SYNPOIP record so the daemon can suppress
+  directionality-dependent rules is a separate, larger change (it needs a
+  protocol field) and is not in this fix. (#129)
+
 ## [0.2.1] - 2026-08-31
 
 ### Fixed
