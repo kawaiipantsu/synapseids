@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Signed `.deb` packages + APT repository** (issue #57). `make deb-sign`
+  (`scripts/sign-deb.sh`) writes an armoured detached `.asc` for every `.deb`
+  and for `SHA256SUMS` (the anchor `install.sh` already verifies), an optional
+  in-`.deb` `debsigs` signature when that tool is present, and exports the
+  public key; with no usable secret key it explains how to make one and exits
+  non-zero. `make apt-repo` (`scripts/apt-repo.sh`) builds a flat, single-suite
+  APT repository under `dist/apt/` — `pool/main/`, per-arch `Packages[.gz]`, a
+  `Release`, and a clearsigned `InRelease` + detached `Release.gpg` when a key
+  is available — publishable as static files. Both use `gpg` / `apt-ftparchive`
+  only (no `dpkg-sig`, no Ruby); the key is `SYNAPSE_GPG_KEY` or gpg's default.
+  The release workflow gains an optional signing + apt-repo step, skipped
+  cleanly when the `GPG_PRIVATE_KEY` secret is absent, and attaches the `.asc`
+  files. `docs/packaging.md` updated. (#57)
 - **Config hot-reload on SIGHUP** (issue #59, PROJECT.md §23).
   `kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
   subset that is safe on a running daemon: the alert policy (`alerts.enabled`,
