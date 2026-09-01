@@ -381,6 +381,22 @@
                     <ValidationMessage>Snap length must be between 64 and 262144 bytes.</ValidationMessage>
                 </snaplen>
 
+                <!--
+                    Maps to the `bpf-buffer` flag (FreeBSD BIOCSBLEN, issue #128).
+                    Blank uses the sensor default (512 KiB). The kernel clamps the
+                    request to net.bpf.maxbufsize, which is also 512 KiB out of
+                    the box, so a larger value here has no effect until that
+                    sysctl is raised too. The sensor log shows requested vs
+                    granted at start. On a busy WAN edge the store buffer is the
+                    only thing between a burst and kernel drops.
+                -->
+                <bpf_buffer type="IntegerField">
+                    <Required>N</Required>
+                    <MinimumValue>32</MinimumValue>
+                    <MaximumValue>16777216</MaximumValue>
+                    <ValidationMessage>BPF buffer must be between 32 and 16777216 bytes, or blank for the default.</ValidationMessage>
+                </bpf_buffer>
+
                 <!-- ======================= what to send ==================== -->
                 <!--
                     Maps to the `mode` flag: how much of the pipeline runs here on

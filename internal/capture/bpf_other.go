@@ -30,6 +30,12 @@ func (*BPFDevice) LinkType() packet.LinkType { return packet.LinkEthernet }
 // Device returns an empty path.
 func (*BPFDevice) Device() string { return "" }
 
+// BufferLen returns 0; the device cannot be opened here.
+func (*BPFDevice) BufferLen() int { return 0 }
+
+// BufferLenRequested returns 0; the device cannot be opened here.
+func (*BPFDevice) BufferLenRequested() int { return 0 }
+
 // Packets returns an immediately-closed stream carrying errBPFUnsupported.
 func (*BPFDevice) Packets(context.Context) (<-chan packet.Packet, <-chan error) {
 	out := make(chan packet.Packet)

@@ -121,6 +121,18 @@
         <advanced>true</advanced>
     </field>
     <field>
+        <id>instance.bpf_buffer</id>
+        <label>BPF buffer</label>
+        <type>text</type>
+        <help>
+            BPF store-buffer bytes (--bpf-buffer). Blank uses the 512 KiB default. The kernel clamps this to
+            net.bpf.maxbufsize (also 512 KiB by default), so raising it here only helps once you raise that
+            sysctl too — the sensor log shows requested vs granted at start. A bigger buffer absorbs bursts
+            before the kernel drops frames on a busy WAN edge.
+        </help>
+        <advanced>true</advanced>
+    </field>
+    <field>
         <id>instance.description</id>
         <label>Description</label>
         <type>text</type>

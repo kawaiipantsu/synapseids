@@ -41,6 +41,10 @@ func NewLiveStreamer(cfg LiveConfig) (*LiveStreamer, error) {
 	if err := probe.Close(); err != nil {
 		return nil, fmt.Errorf("capture: closing the probe capture on %s: %w", cfg.Interface, err)
 	}
+	// The probe has already logged the BPF buffer report (issue #128). Drop the
+	// logger from the stored config so a reconnect does not repeat it once per
+	// daemon connection.
+	cfg.Logf = nil
 	return &LiveStreamer{cfg: cfg, link: link, active: make(map[LiveSource]struct{})}, nil
 }
 

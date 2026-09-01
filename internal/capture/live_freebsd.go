@@ -15,5 +15,7 @@ func NewLive(cfg LiveConfig) (LiveSource, error) {
 		Snaplen:     cfg.Snaplen,
 		Filter:      cfg.Filter,
 		Direction:   cfg.Direction,
+		BufferLen:   cfg.BufferLen,
+		Logf:        cfg.Logf,
 	})
 }
