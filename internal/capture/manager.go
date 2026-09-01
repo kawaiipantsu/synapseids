@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kawaiipantsu/synapseids/internal/packet"
@@ -75,6 +76,13 @@ type managedSource struct {
 	sensor   string
 	location string
 
+	// shutdownDrops counts packets this source had already handed to the
+	// forwarder that were discarded because the Manager was shutting down or the
+	// source hit a terminal error — a Table can no longer be fed at that point.
+	// PROJECT.md §22 requires every drop path to be counted; this is the one that
+	// used to be silent (issue #138).
+	shutdownDrops atomic.Uint64
+
 	mu       sync.Mutex
 	state    string
 	errText  string
@@ -97,14 +105,22 @@ type managedSource struct {
 // Manager itself satisfies Source, so pipeline.Run consumes it directly.
 type Manager struct {
 	sampleEvery time.Duration
+	logf        func(string, ...any)
 
-	mu      sync.Mutex
-	order   []string
-	srcs    map[string]*managedSource
-	out     chan packet.Packet
-	started bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// shutdownDrops is the daemon-lifetime total of packets discarded on the
+	// shutdown / terminal-error path, aggregated across every source including
+	// ones since removed. Surfaced on GET /api/v1/status alongside the other
+	// drop counters (issue #138, PROJECT.md §22).
+	shutdownDrops atomic.Uint64
+
+	mu         sync.Mutex
+	order      []string
+	srcs       map[string]*managedSource
+	out        chan packet.Packet
+	started    bool
+	ctx        context.Context
+	cancel     context.CancelFunc
+	sampleDone chan struct{} // closed when sampleLoop has drained and closed m.out
 
 	fwg sync.WaitGroup // per-source forwarder goroutines
 }
@@ -116,8 +132,19 @@ func NewManager() *Manager { return newManager(1024, time.Second) }
 func newManager(buf int, sample time.Duration) *Manager {
 	return &Manager{
 		sampleEvery: sample,
+		logf:        func(string, ...any) {},
 		srcs:        make(map[string]*managedSource),
 		out:         make(chan packet.Packet, buf),
+		sampleDone:  make(chan struct{}),
+	}
+}
+
+// SetLogf installs the logger the Manager uses for the one shutdown line it
+// emits when Close discarded in-flight packets (issue #138). Call it before
+// Packets; the zero configuration logs nothing. A nil argument is ignored.
+func (m *Manager) SetLogf(logf func(string, ...any)) {
+	if logf != nil {
+		m.logf = logf
 	}
 }
 
@@ -238,8 +265,16 @@ func (m *Manager) launch(ms *managedSource) {
 		defer scancel()
 
 		pkts, errs := ms.src.Packets(sctx)
+		// drain discards whatever the source has already buffered once there is
+		// no longer anywhere to send it — Manager shutdown or a terminal source
+		// error. Blocking Close on a slow consumer is the worse choice, but the
+		// loss must not be silent: count every discarded packet so an operator
+		// comparing "packets the sensor sent" against "flows the daemon built"
+		// has an explanation (issue #138, PROJECT.md §22).
 		drain := func() {
 			for range pkts { //nolint:revive // intentional drain until the source closes its channel
+				ms.shutdownDrops.Add(1)
+				m.shutdownDrops.Add(1)
 			}
 		}
 
@@ -281,6 +316,10 @@ func (m *Manager) launch(ms *managedSource) {
 				select {
 				case m.out <- p:
 				case <-m.ctx.Done():
+					// p was pulled from the source but never forwarded: it is a
+					// discard too, so count it before draining the rest.
+					ms.shutdownDrops.Add(1)
+					m.shutdownDrops.Add(1)
 					m.setState(ms, StateStopped, "")
 					scancel()
 					drain()
@@ -326,6 +365,7 @@ func (m *Manager) setStateIfRunning(ms *managedSource, state, errText string) {
 // sampleLoop refreshes per-source PPS/BPS off the packet path, then closes the
 // merged channel once every forwarder has exited (ctx shutdown).
 func (m *Manager) sampleLoop(errc chan error) {
+	defer close(m.sampleDone)
 	t := time.NewTicker(m.sampleEvery)
 	defer t.Stop()
 	for {
@@ -333,6 +373,13 @@ func (m *Manager) sampleLoop(errc chan error) {
 		case <-m.ctx.Done():
 			m.fwg.Wait()
 			close(m.out)
+			// The pipeline stops reading m.out on the same ctx cancel, so
+			// whatever the forwarders had already merged but it had not yet
+			// consumed is discarded here. Fold it into the same counter as the
+			// per-source drains (issue #138).
+			for range m.out {
+				m.shutdownDrops.Add(1)
+			}
 			close(errc)
 			return
 		case now := <-t.C:
@@ -507,9 +554,27 @@ func (m *Manager) Close() error {
 	}
 	if started {
 		m.fwg.Wait()
+		<-m.sampleDone // sampleLoop closes m.out and drains its residue
+	}
+
+	if n := m.shutdownDrops.Load(); n > 0 {
+		var perSource string
+		for _, ms := range srcs {
+			if d := ms.shutdownDrops.Load(); d > 0 {
+				perSource += fmt.Sprintf(" %s=%d", ms.name, d)
+			}
+		}
+		m.logf("capture: discarded %d in-flight packet(s) at shutdown (source not fed past Close, PROJECT.md §22);%s", n, perSource)
 	}
 	return firstErr
 }
+
+// ShutdownDrops is the daemon-lifetime count of packets a source had already
+// handed over that were discarded because the Manager was shutting down or the
+// source had failed. It is exposed on GET /api/v1/status beside the other drop
+// counters (issue #138); a non-zero value explains a gap between packets a
+// sensor reports sending and flows the daemon built.
+func (m *Manager) ShutdownDrops() uint64 { return m.shutdownDrops.Load() }
 
 func isCancel(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type fakeSource struct {
 	total    int
 	errAfter int // >0: send a terminal error on errc after this many packets
 	delay    time.Duration
+	buffered int // >0: capacity of the packet channel, so packets can strand behind a stalled consumer
 	tag      uint16
 
 	emitted atomic.Uint64
@@ -26,7 +28,7 @@ type fakeSource struct {
 }
 
 func (f *fakeSource) Packets(ctx context.Context) (<-chan packet.Packet, <-chan error) {
-	out := make(chan packet.Packet)
+	out := make(chan packet.Packet, f.buffered)
 	errc := make(chan error, 1)
 	go func() {
 		defer close(out)
@@ -342,6 +344,72 @@ func TestManagerDuplicateName(t *testing.T) {
 	}
 	if err := m.Add("", &fakeSource{total: 1}, SourceMeta{Kind: "nic"}); err == nil {
 		t.Fatal("expected an empty-name error")
+	}
+}
+
+// TestManagerCountsPacketsDiscardedAtClose: packets a source has already handed
+// over but that Close cannot forward are counted, not silently dropped
+// (issue #138, PROJECT.md §22). One log line at Close names the source.
+func TestManagerCountsPacketsDiscardedAtClose(t *testing.T) {
+	m := newManager(2, time.Hour) // tiny merged buffer, no sampling ticks in the test window
+	var logged []string
+	m.SetLogf(func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+
+	// A source that keeps producing into a 64-deep channel, behind a consumer
+	// that never reads: dozens of real packets strand in the pipes.
+	src := &fakeSource{total: 1_000_000, tag: 1, buffered: 64}
+	mustAdd(t, m.Add("noisy", src, SourceMeta{Kind: "nic"}))
+
+	out, _ := m.Packets(context.Background())
+	_ = out // deliberately never drained
+	waitFor(t, "packets stranded behind a stalled consumer", func() bool {
+		return src.emitted.Load() >= 64
+	})
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got := m.ShutdownDrops()
+	if got == 0 {
+		t.Fatal("ShutdownDrops() = 0 after Close stranded dozens of buffered packets")
+	}
+	if emitted := src.emitted.Load(); got > emitted {
+		t.Fatalf("ShutdownDrops() = %d exceeds packets the source emitted (%d)", got, emitted)
+	}
+	if len(logged) != 1 {
+		t.Fatalf("want exactly one shutdown log line, got %d: %q", len(logged), logged)
+	}
+	if !strings.Contains(logged[0], "noisy") || !strings.Contains(logged[0], fmt.Sprint(got)) {
+		t.Fatalf("shutdown log must name the source and the total; got %q", logged[0])
+	}
+}
+
+// TestManagerCleanShutdownDropsNothing: a source consumed to completion before
+// Close leaves the discard counter at zero, so the log line stays silent on a
+// normal stop.
+func TestManagerCleanShutdownDropsNothing(t *testing.T) {
+	m := newManager(64, 20*time.Millisecond)
+	var logs int
+	m.SetLogf(func(string, ...any) { logs++ })
+
+	src := &fakeSource{total: 200, tag: 1}
+	mustAdd(t, m.Add("tidy", src, SourceMeta{Kind: "nic"}))
+
+	out, _ := m.Packets(context.Background())
+	for i := 0; i < 200; i++ {
+		if _, ok := <-out; !ok {
+			t.Fatalf("stream closed early at %d/200", i)
+		}
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := m.ShutdownDrops(); got != 0 {
+		t.Fatalf("ShutdownDrops() = %d after a fully consumed source, want 0", got)
+	}
+	if logs != 0 {
+		t.Fatalf("shutdown logged %d line(s) on a clean stop, want 0", logs)
 	}
 }
 
