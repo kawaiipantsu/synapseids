@@ -17,6 +17,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
+	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
@@ -75,6 +76,12 @@ type Options struct {
 	// flow-table size and eviction pressure without adding work to the packet
 	// path (PROJECT.md §22, §24).
 	OnStats func(flow.Stats)
+	// Metrics, when non-nil, records feature-extraction and model-scoring
+	// latency and the per-class verdict tally for GET /metrics (issue #55,
+	// PROJECT.md §24). Recording is a time.Now pair plus a histogram add, done
+	// on this goroutine when a flow closes — never on the packet loop. A nil
+	// *obs.Metrics is inert.
+	Metrics *obs.Metrics
 }
 
 // Stats summarizes a completed (or in-progress) run.
@@ -114,6 +121,15 @@ func Run(
 	// throttled capacity warning below.
 	var evicted uint64
 
+	// extract times features.Extract for GET /metrics (issue #55). It runs when
+	// a flow closes, on this goroutine, never on the packet loop.
+	extract := func(r flow.Record) features.Vector {
+		s := time.Now()
+		v := features.Extract(r)
+		opt.Metrics.ObserveFeatureExtract(time.Since(s))
+		return v
+	}
+
 	// publish is the tail of the data plane, shared by every way a record can get
 	// here: store it, announce it, score it, store and announce the verdict.
 	//
@@ -136,7 +152,9 @@ func Run(
 		}
 		bus.Publish(events.FeaturesGenerated, fr.Features)
 
+		scoreStart := time.Now()
 		res := rt.Score(fr.Features)
+		opt.Metrics.ObserveScore(res.ClassID, time.Since(scoreStart))
 		cl := storage.Classification{
 			FlowID:        fr.ID,
 			TS:            fr.LastSeen,
@@ -179,7 +197,7 @@ func Run(
 		// packets carried — the sensor id capture.Manager stamped on them. Local
 		// capture and replay stamp nothing, and fall back to this pipeline's own
 		// configured name (issue #126).
-		publish(storage.FlowRecordFrom(r, features.Extract(r)), sensorOr(r.Sensor(), opt.Sensor))
+		publish(storage.FlowRecordFrom(r, extract(r)), sensorOr(r.Sensor(), opt.Sensor))
 	}
 
 	fopt := opt.Flow
@@ -212,7 +230,7 @@ func Run(
 			r := (*rec.Flow).WithSensor(sensor)
 			sensorFlowID := r.ID
 			r.ID = nextID()
-			fr := storage.FlowRecordFrom(r, features.Extract(r))
+			fr := storage.FlowRecordFrom(r, extract(r))
 			fr.SensorMode = pcapoverip.ModeFlow.String()
 			fr.SensorFlowID = sensorFlowID
 			st.FlowRecords++

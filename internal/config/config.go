@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -59,8 +60,29 @@ type Config struct {
 	Training  Training  `json:"training"`
 	Review    Review    `json:"review"`
 	Alerts    Alerts    `json:"alerts"`
+	Logging   Logging   `json:"logging"`
+	Auth      Auth      `json:"auth"`
 	Live      Live      `json:"live"`
 	Retention Retention `json:"retention"`
+}
+
+// Auth is the API access-control block (issue #58, PROJECT.md §21: "authenticate
+// non-local UI/API access"). When Enabled, a request needs a bearer token whose
+// role covers the route it hit; the mapping and the token-file format live in
+// internal/api. Disabled by default, so an unconfigured daemon behaves exactly
+// as it did before RBAC.
+type Auth struct {
+	// Enabled turns on the check. Default false.
+	Enabled bool `json:"enabled"`
+	// TokensFile is a file of `<role> <token> [label]` lines (see docs/api.md).
+	// Required when Enabled. The tokens are never inline in this JSON (§23):
+	// SYNAPSE_AUTH_TOKENS_FILE overrides the path.
+	TokensFile string `json:"tokens_file"`
+	// AllowLoopback exempts requests from 127.0.0.0/8 and ::1 from the check, so
+	// the local operator CLI and a same-host SPA keep working with no token
+	// while a proxied non-local request must authenticate. Default true; set
+	// false to require a token even from localhost.
+	AllowLoopback bool `json:"allow_loopback"`
 }
 
 // Server holds the HTTP/WebSocket listener settings.
@@ -254,16 +276,39 @@ type SuppressRule struct {
 	Note string `json:"note"`
 }
 
+// Logging configures the daemon's structured logs (issue #55, PROJECT.md §24).
+// Both fields are hot-reloadable: `level` takes effect immediately on SIGHUP,
+// `format` on the next restart (a handler cannot swap its encoder mid-stream).
+type Logging struct {
+	// Format is "text" (default, human-readable key=value) or "json".
+	Format string `json:"format"`
+	// Level is "debug", "info" (default), "warn" or "error".
+	Level string `json:"level"`
+}
+
 // Live tunes the WebSocket fan-out (PROJECT.md §18, §22).
 type Live struct {
 	WebSocketBatch  Duration `json:"websocket_batch"`
 	ClientQueueSize int      `json:"client_queue_size"`
 }
 
-// Retention holds per-category history windows (PROJECT.md §20).
+// Retention holds per-category history windows (PROJECT.md §20, issue #56). A
+// background sweeper drops stored records older than the window for their
+// category; a window of `0` disables the sweep for that category, leaving it
+// bounded only by the ring capacity (`storage.max_flows`, `alerts.max_recent`).
+//
+// Only the store-backed histories with an independent lifetime are here. Feature
+// vectors and per-model outputs live *inside* a flow record and a classification
+// and share their retention; capture-source counters are live state, not
+// history; review decisions are operator artefacts kept until explicitly
+// deleted, never on a timer.
 type Retention struct {
 	Flows           Duration `json:"flows"`
 	Classifications Duration `json:"classifications"`
+	Detections      Duration `json:"detections"`
+	// SweepInterval is how often the retention sweep runs. Default 5m; minimum
+	// 1s. It is not itself a retention window.
+	SweepInterval Duration `json:"sweep_interval"`
 }
 
 // Default returns the built-in configuration. The management listener binds to
@@ -290,21 +335,27 @@ func Default() Config {
 			MaxRecent:             1000,
 			DedupWindowSec:        60,
 		},
-		Live: Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
+		Logging: Logging{Format: "text", Level: "info"},
+		Auth:    Auth{Enabled: false, AllowLoopback: true},
+		Live:    Live{WebSocketBatch: Duration(100 * time.Millisecond), ClientQueueSize: 5000},
 		Retention: Retention{
 			Flows:           Duration(30 * 24 * time.Hour),
 			Classifications: Duration(90 * 24 * time.Hour),
+			Detections:      Duration(30 * 24 * time.Hour),
+			SweepInterval:   Duration(5 * time.Minute),
 		},
 	}
 }
 
-// Load reads the configuration from path (JSON), overlaying it on Default. An
-// empty path returns Default with environment overrides applied. Environment
-// variables (SYNAPSE_LISTEN, SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH,
-// SYNAPSE_MODELS_DIR, SYNAPSE_DATASETS_DIR, SYNAPSE_TRAINING_DIR,
-// SYNAPSE_REVIEW_DIR, SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS,
-// SYNAPSE_CAPTURE_IFACE) always win so secrets and deployment paths stay out of
-// the file.
+// Load reads the configuration from path, overlaying it on Default. The format
+// is JSON, or YAML when the path ends `.yaml` / `.yml` (issue #54) — a
+// restricted block-style subset, see yaml.go. An empty path returns Default with
+// environment overrides applied. Environment variables (SYNAPSE_LISTEN,
+// SYNAPSE_STORAGE_DRIVER, SYNAPSE_STORAGE_PATH, SYNAPSE_MODELS_DIR,
+// SYNAPSE_DATASETS_DIR, SYNAPSE_TRAINING_DIR, SYNAPSE_REVIEW_DIR,
+// SYNAPSE_WEB_ROOT, SYNAPSE_MAX_FLOWS, SYNAPSE_CAPTURE_IFACE,
+// SYNAPSE_AUTH_TOKENS_FILE, SYNAPSE_LOG_*) always win so secrets and deployment
+// paths stay out of the file.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
@@ -312,9 +363,7 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("config: %w", err)
 		}
-		dec := json.NewDecoder(strings.NewReader(string(b)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg); err != nil {
+		if err := decodeInto(&cfg, path, b); err != nil {
 			return Config{}, fmt.Errorf("config: %s: %w", path, err)
 		}
 	}
@@ -323,6 +372,27 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// decodeInto overlays the file bytes onto cfg. YAML is parsed into the same
+// JSON-shaped tree the JSON decoder consumes, so DisallowUnknownFields, the
+// Duration string/number handling and validate() are all shared — the only YAML
+// code is turning indentation into nesting.
+func decodeInto(cfg *Config, path string, b []byte) error {
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		tree, err := parseYAML(b)
+		if err != nil {
+			return err
+		}
+		b, err = json.Marshal(tree)
+		if err != nil {
+			return err
+		}
+	}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	return dec.Decode(cfg)
 }
 
 func applyEnv(c *Config) {
@@ -370,6 +440,15 @@ func applyEnv(c *Config) {
 				Name: v, Kind: "nic", Interface: v, Promiscuous: true,
 			})
 		}
+	}
+	if v := os.Getenv("SYNAPSE_LOG_FORMAT"); v != "" {
+		c.Logging.Format = v
+	}
+	if v := os.Getenv("SYNAPSE_LOG_LEVEL"); v != "" {
+		c.Logging.Level = v
+	}
+	if v := os.Getenv("SYNAPSE_AUTH_TOKENS_FILE"); v != "" {
+		c.Auth.TokensFile = v
 	}
 }
 
@@ -420,6 +499,9 @@ func (c Config) validate() error {
 	if err := ValidateAlerts(c.Alerts); err != nil {
 		return fmt.Errorf("config: alerts: %w", err)
 	}
+	if err := ValidateLogging(c.Logging); err != nil {
+		return fmt.Errorf("config: logging: %w", err)
+	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {
 		if s.Name == "" {
@@ -435,6 +517,64 @@ func (c Config) validate() error {
 	}
 	if err := ValidateCollector(c.Capture.Collector); err != nil {
 		return fmt.Errorf("config: capture.collector: %w", err)
+	}
+	if err := ValidateRetention(c.Retention); err != nil {
+		return fmt.Errorf("config: retention: %w", err)
+	}
+	if err := ValidateAuth(c.Auth); err != nil {
+		return fmt.Errorf("config: auth: %w", err)
+	}
+	return nil
+}
+
+// ValidateRetention checks the retention block (issue #56). A negative window is
+// a typo; a window of 0 is allowed and means "keep until the ring evicts it".
+func ValidateRetention(r Retention) error {
+	for name, d := range map[string]Duration{
+		"flows":           r.Flows,
+		"classifications": r.Classifications,
+		"detections":      r.Detections,
+	} {
+		if d < 0 {
+			return fmt.Errorf("%s window %s is negative", name, d.D())
+		}
+	}
+	if r.SweepInterval < 0 {
+		return fmt.Errorf("sweep_interval %s is negative", r.SweepInterval.D())
+	}
+	if r.SweepInterval > 0 && r.SweepInterval.D() < time.Second {
+		return fmt.Errorf("sweep_interval %s is below the 1s minimum", r.SweepInterval.D())
+	}
+	return nil
+}
+
+// logFormats / logLevels mirror internal/obs. config is a leaf package and must
+// not import obs (docs/architecture.md); TestLoggingValuesMatchObs in
+// internal/obs fails if the two drift.
+var (
+	logFormats = []string{"text", "json"}
+	logLevels  = []string{"debug", "info", "warn", "error"}
+)
+
+// ValidateLogging checks the logging block (issue #55). An unknown format or
+// level is a typo that would otherwise silently fall back to the default, so it
+// is a load error like every other config mistake.
+func ValidateLogging(l Logging) error {
+	if l.Format != "" && !slices.Contains(logFormats, l.Format) {
+		return fmt.Errorf("format %q is not one of %v", l.Format, logFormats)
+	}
+	if l.Level != "" && !slices.Contains(logLevels, l.Level) {
+		return fmt.Errorf("level %q is not one of %v", l.Level, logLevels)
+	}
+	return nil
+}
+
+// ValidateAuth checks the auth block (issue #58). Enabling the check without a
+// token file would lock out every non-loopback request with no way in — that is
+// a configuration mistake, not a lockdown.
+func ValidateAuth(a Auth) error {
+	if a.Enabled && strings.TrimSpace(a.TokensFile) == "" {
+		return fmt.Errorf("enabled is true but tokens_file is empty — set it (or SYNAPSE_AUTH_TOKENS_FILE)")
 	}
 	return nil
 }

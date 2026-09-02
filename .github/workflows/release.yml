@@ -11,6 +11,10 @@ jobs:
   release:
     name: Build and publish
     runs-on: ubuntu-latest
+    env:
+      # "true" only when a signing key is configured, so the sign / apt-repo
+      # steps skip cleanly on a fork without the secret.
+      HAVE_GPG: ${{ secrets.GPG_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -39,6 +43,28 @@ jobs:
           # documented command returned 404.
           cp contrib/opnsense/install.sh dist/install.sh
 
+      - name: Sign packages and build APT repo
+        if: ${{ env.HAVE_GPG == 'true' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -eu
+          GNUPGHOME="$(mktemp -d)"; export GNUPGHOME; chmod 700 "$GNUPGHOME"
+          printf 'allow-loopback-pinentry\n' > "$GNUPGHOME/gpg-agent.conf"
+          printf 'pinentry-mode loopback\n'  > "$GNUPGHOME/gpg.conf"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')"
+          # Warm-up signature: caches the passphrase in the agent so the
+          # signing scripts can then call gpg with no passphrase plumbing.
+          printf 'warmup' | gpg --batch --yes --local-user "$key" \
+            ${GPG_PASSPHRASE:+--passphrase "$GPG_PASSPHRASE"} \
+            --sign --output /dev/null || true
+          echo "SYNAPSE_GPG_KEY=$key" >> "$GITHUB_ENV"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          make deb-sign
+          make apt-repo
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,8 +79,10 @@ jobs:
           [ -n "$notes" ] || notes="See CHANGELOG.md for $GITHUB_REF_NAME."
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          # *.asc and the public key exist only when the signing step ran.
+          sigs="$(ls dist/*.asc dist/synapseids-signing-key.asc 2>/dev/null || true)"
           gh release create "$GITHUB_REF_NAME" \
             --title "SynapseIDS $GITHUB_REF_NAME" \
             --notes "$notes" \
             $prerelease \
-            dist/*.tar.gz dist/*.deb dist/*.pkg dist/SHA256SUMS dist/install.sh
+            dist/*.tar.gz dist/*.deb dist/*.pkg dist/SHA256SUMS dist/install.sh $sigs

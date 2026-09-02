@@ -24,8 +24,8 @@ import (
 // The three POST routes are the trainer-facing write surface. They are
 // unauthenticated and rely on the daemon binding to loopback by default, the
 // same posture as POST /api/v1/datasets and the model activate routes.
-// TODO(#58): a trainer on another host needs auth (a bearer token or mTLS)
-// before these are exposed off loopback.
+// When auth.enabled, the trainer-facing POSTs require role `admin` (a bearer
+// token); otherwise the loopback bind is the only control (issue #58).
 
 // maxTrainingRegisterBody bounds a register request: a name, a version string
 // and the resolved recipe JSON — kilobytes.

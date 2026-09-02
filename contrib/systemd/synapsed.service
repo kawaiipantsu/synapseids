@@ -21,7 +21,12 @@
 # A replay-only host (no `--capture` / `capture.sources`) needs NO capabilities —
 # comment out AmbientCapabilities= and CapabilityBoundingSet= there.
 #
-# There is no config hot-reload: `systemctl restart synapsed` to apply changes.
+# `systemctl reload synapsed` (SIGHUP) re-reads the config file and applies the
+# subset that is safe on a running daemon: the alert policy (thresholds and the
+# alerts.suppress rules) and logging.level. Anything else that changed is logged
+# as needing a restart, and an invalid file leaves the running config untouched.
+# Use `systemctl restart synapsed` for a listener, storage, capture or
+# flow-engine change (issue #59).
 
 [Unit]
 Description=SynapseIDS daemon (flow capture, feature extraction, inference, API)
@@ -35,6 +40,7 @@ User=synapse
 Group=synapse
 
 ExecStart=/usr/bin/synapsed --config /etc/synapseids/synapse.json
+ExecReload=/bin/kill -HUP $MAINPID
 EnvironmentFile=-/etc/synapseids/synapsed.env
 
 Restart=on-failure

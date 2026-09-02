@@ -15,6 +15,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
+	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
@@ -35,6 +36,10 @@ type replayController struct {
 	// own table into it under replayStatsName; the capture pipeline reports the
 	// table that serves live and sensor traffic (issue #125).
 	stats *flowStatsHub
+	// metrics records scoring / feature latency and per-class counts for
+	// /metrics from the replay pipeline too, so `synapse replay` populates the
+	// same histograms live capture does (issue #55).
+	metrics *obs.Metrics
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -45,8 +50,8 @@ type replayController struct {
 // replayStatsName is the flowStatsHub key for the replay pipeline's flow table.
 const replayStatsName = "replay"
 
-func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, al *alert.Store, fo flow.Options, sensor string, flowID *atomic.Uint64, stats *flowStatsHub) *replayController {
-	return &replayController{bus: bus, store: store, rt: rt, insight: ins, alerts: al, flowOpt: fo, sensor: sensor, flowID: flowID, stats: stats}
+func newReplayController(bus *events.Bus, store storage.Store, rt *inference.Runtime, ins *insight.Index, al *alert.Store, fo flow.Options, sensor string, flowID *atomic.Uint64, stats *flowStatsHub, metrics *obs.Metrics) *replayController {
+	return &replayController{bus: bus, store: store, rt: rt, insight: ins, alerts: al, flowOpt: fo, sensor: sensor, flowID: flowID, stats: stats, metrics: metrics}
 }
 
 // Start opens path and begins replaying it at speed. It fails if a replay is
@@ -85,6 +90,7 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 			OnStats:  c.stats.Reporter(replayStatsName),
 			Observer: c.insight,
 			Alerts:   c.alerts,
+			Metrics:  c.metrics,
 		})
 		c.mu.Lock()
 		c.status.Running = false

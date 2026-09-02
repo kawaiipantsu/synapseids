@@ -249,6 +249,14 @@ dist: build-linux build-freebsd man ## tar.gz per arch + OPNsense .pkg + SHA256S
 deb: build-linux man ## Four .deb packages (amd64, i386, arm64, armhf)
 	@VERSION=$(VERSION) DIST=$(DIST) BINARIES="$(BINARIES)" scripts/package-deb.sh
 
+.PHONY: deb-sign
+deb-sign: ## GPG-sign the built .deb files and SHA256SUMS (needs gpg; SYNAPSE_GPG_KEY)
+	@DIST=$(DIST) scripts/sign-deb.sh
+
+.PHONY: apt-repo
+apt-repo: ## Build a signed flat APT repo under dist/apt from the built .deb files
+	@DIST=$(DIST) scripts/apt-repo.sh
+
 .PHONY: snapshot
 snapshot: ## dist + deb with a snapshot version
 	@$(MAKE) --no-print-directory dist deb VERSION=$(VERSION)-snapshot.$(COMMIT)

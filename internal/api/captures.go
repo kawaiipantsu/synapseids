@@ -18,7 +18,8 @@ import (
 // model activate/deactivate routes, where binding to loopback by default is the
 // only control. Starting a capture spawns a raw socket, a tcpdump subprocess, an
 // SSH session or a TLS client, so this is a powerful endpoint.
-// TODO(#58): gate behind auth/RBAC before exposing the API off loopback.
+// When auth.enabled, POST/DELETE here require role `operator`; otherwise the
+// loopback bind is the only control (issue #58).
 
 // handleCaptures serves GET /api/v1/captures — the live capture manager's
 // per-source status (PROJECT.md §18, §19.14). With no capture configured it
