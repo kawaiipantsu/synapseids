@@ -48,6 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on amd64/386/arm64/arm); drained by `epoll_wait` only when the ring is empty.
   Also on `capture.LiveConfig` (rejected on FreeBSD, which has `buffer_len`).
 
+- **A backend seam for storage and events** (EPIC Phase 8, #8,
+  [ADR 0042](docs/adr/0042-storage-and-events-backend-seam.md)), so the
+  ClickHouse history backend (#51) and the NATS/Kafka message bus (#52) become
+  drop-ins against a fixed contract when their measurements justify them — no
+  new backend and no new dependency now. `internal/storage/storagetest`
+  exports `RunConformance`, the executable `storage.Store` contract
+  (round-trip, history ordering, newest-first + `limit` semantics, bounded
+  eviction, named `Driver`, idempotent `Close`); `Mem` runs it in `make test`.
+  `events.Sink` is the bus write side (`*Bus` satisfies it), and the package
+  doc + a test pin the relay pattern a distribution bridge uses — it attaches
+  as an ordinary bounded subscriber, no bus rewrite.
+
 - **`flow-sequence-v1` — a temporal model family** (issue #62, EPIC Phase 7,
   [ADR 0040](docs/adr/0040-temporal-flow-sequence-model.md)). A third model
   family that scores the last **16** flow-features-v1 vectors of one
