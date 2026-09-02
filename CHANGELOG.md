@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The release workflow gains an optional signing + apt-repo step, skipped
   cleanly when the `GPG_PRIVATE_KEY` secret is absent, and attaches the `.asc`
   files. `docs/packaging.md` updated. (#57)
+- **Feature drift monitoring** (issue #49, PROJECT.md §19.13). New
+  `GET /api/v1/drift` compares the current `flow-features-v1` distribution
+  against the **active model's training distribution** — the per-feature `mean` /
+  `std` a `standard` `normalizer.json` records — and reports, per feature, the
+  standardized mean shift `z = |current_mean − training_mean| / training_std`
+  (bands: `stable` `z<2`, `warn` `2≤z<4`, `drift` `z≥4`), the `std_ratio`, and
+  an overall `state`. It is a read-side fold of the newest stored vectors (one
+  Welford pass, no packet-path work, no new storage), takes the shared `from` /
+  `to` and `sensor` / `location` scope, and is honest about the gap: no active
+  model, or an `identity` / `minmax` normalizer, yields `state: "no_baseline"`
+  with the current distributions and a `baseline_note` — never a fabricated
+  zero. Drift never triggers an action (no retrain, no deploy, no activate;
+  §28.10). The SPA's `#49` Drift stub can now render real data.
+  [ADR 0036](docs/adr/0036-feature-drift-monitoring.md). (#49)
 - **Model comparison view** (issue #48, PROJECT.md §12, §19.7). New
   `GET /api/v1/models/comparison` folds the newest window of stored verdicts
   into a side-by-side agreement view: per model (primary-first) its row count,
