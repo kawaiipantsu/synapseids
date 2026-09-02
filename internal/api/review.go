@@ -25,7 +25,8 @@ import (
 // model activate/deactivate routes, where binding to loopback by default is the
 // only control. A review write appends to the audit log and publishes
 // events.ReviewUpdated.
-// TODO(#58): gate behind auth/RBAC before exposing the API off loopback.
+// When auth.enabled, PUT/POST here require role `admin`; otherwise the loopback
+// bind is the only control (issue #58).
 //
 // The §16 invariant is visible on the wire: every response carries
 // predicted_class / predicted_score / model_id next to human_label, and no

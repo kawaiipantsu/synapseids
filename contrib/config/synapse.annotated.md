@@ -10,15 +10,48 @@ JSON has no comments, so this file documents every key in
 ## How the daemon loads config
 
 1. Start from the built-in defaults (`config.Default()`).
-2. If `--config FILE` is given, decode the JSON on top of the defaults. Unknown
-   keys are a **hard error** (`DisallowUnknownFields`) — keep the file exactly to
-   the schema below; do not leave stray keys.
+2. If `--config FILE` is given, decode it on top of the defaults. The format is
+   **JSON**, or **YAML** when the path ends `.yaml` / `.yml` (issue #54). Unknown
+   keys are a **hard error** either way (`DisallowUnknownFields`) — keep the file
+   exactly to the schema below; do not leave stray keys.
 3. Apply `SYNAPSE_*` environment overrides — these **always win** over the file
    (see `contrib/systemd/synapsed.env`).
 4. Validate. A validation failure exits non-zero before the listener opens.
 
-Missing keys are allowed (they keep the default); the shipped `synapse.json`
-sets all of them explicitly so nothing is a surprise.
+Missing keys are allowed (they keep the default); the shipped `synapse.json` and
+`synapse.yaml` set all of them explicitly so nothing is a surprise.
+
+### YAML subset
+
+The YAML reader is a small hand-rolled block-style parser (no third-party
+dependency, CLAUDE.md). It **supports** block mappings, block sequences, plain
+and single/double-quoted scalars, `#` comments, blank lines and one leading
+`---`; indentation is spaces, the step is inferred. It **rejects, with a
+line-numbered error rather than mis-parsing**: tabs in indentation, flow style
+(`{...}` / `[...]`, though an empty `[]` / `{}` is fine), anchors and aliases
+(`&` / `*`), tags (`!`), block scalars (`|` / `>`), multi-line plain scalars, and
+multiple documents. The config file has never needed any of those. YAML is
+parsed into the same tree the JSON decoder consumes, so every type rule,
+`DisallowUnknownFields` and `validate()` are identical — `contrib/config/synapse.yaml`
+loads to exactly the same `Config` as `contrib/config/synapse.json` (pinned by a
+test).
+
+### Hot-reload (SIGHUP)
+
+`kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
+subset that is safe on a running daemon (issue #59, PROJECT.md §23):
+
+| Reloadable, takes effect immediately | Logged as `restart_required` |
+|---|---|
+| `alerts.enabled`, `alerts.min_confidence`, `alerts.per_class_min_confidence`, `alerts.alert_on_disagreement`, `alerts.suppress[]` | `alerts.max_recent`, `alerts.dedup_window_sec` (the store bounds are fixed at start) |
+| `logging.level` | `logging.format` (a running handler cannot swap its encoder) |
+| | `server`, `storage`, `capture`, `models`, `datasets`, `training`, `review`, `live`, `retention` — anything here needs a restart |
+
+The whole file is re-validated first: a syntax error, an unknown key or a
+range/enum violation logs `config reload failed` and **leaves the running
+configuration untouched**. The result is one structured log line naming what was
+applied and what still needs a restart. With no `--config` file, SIGHUP is a
+logged no-op.
 
 ### Duration format
 
@@ -250,6 +283,42 @@ Rules are evaluated in file order, first match wins, and the classifier is never
 told about them — suppression is a reporting decision, not a modelling one.
 Default: no rules.
 
+## `logging`
+
+Structured logs (issue #55, PROJECT.md §24). The daemon logs through `log/slog`;
+these two keys pick the encoder and the threshold.
+
+| Key | Type | Default | This file | Meaning |
+|---|---|---|---|---|
+| `logging.format` | string enum | `text` | `text` | `text` = human-readable `key=value` lines; `json` = one JSON object per line, for a log pipeline. An unknown value is a load error. Env: `SYNAPSE_LOG_FORMAT`. **Not** hot-reloadable — a running handler cannot swap its encoder; the change takes effect on restart. |
+| `logging.level` | string enum | `info` | `info` | `debug`, `info`, `warn` or `error`. `debug` adds per-flow and per-request detail. Env: `SYNAPSE_LOG_LEVEL`. **Hot-reloadable**: `SIGHUP` applies a new level to the running process immediately. |
+
+Every package's logs — including the many that take an injected `log.Printf` —
+route through the same handler; a line the code prefixes `WARNING:` / `ERROR:` is
+promoted to that level.
+
+## `auth`
+
+Role-based access control for the REST API and WebSocket (issue #58,
+PROJECT.md §21). **Disabled by default** — an unconfigured daemon behaves exactly
+as before, relying on its loopback bind and a reverse proxy.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `auth.enabled` | bool | `false` | Turn the check on. |
+| `auth.tokens_file` | string (path) | `""` | File of `<role> <token> [label]` lines (`viewer` / `operator` / `admin`); `#` comments allowed; tokens ≥ 8 chars, never inline here (§23). **Required when `enabled`.** `0600`, owned by the daemon user. Env: `SYNAPSE_AUTH_TOKENS_FILE`. |
+| `auth.allow_loopback` | bool | `true` | Exempt requests from `127.0.0.0/8` and `::1`, so the local `synapse` CLI and a same-host browser keep working with no token. Set `false` to require a token even from localhost. |
+
+Roles are cumulative: `viewer` = every `GET` + `/metrics`; `operator` adds the
+capture and replay POST/DELETE routes; `admin` adds model activation, dataset
+and training writes, and review writes. A `GET` with a token below `viewer` and a
+mutating call below its route's role both return `403`; a missing or unknown
+token is `401`. The SPA shell (`/`, `/assets/*`) is never gated.
+
+See [docs/api.md](../../docs/api.md#authentication-issue-58) for the token-file
+format and how clients send the token, and
+`contrib/config/tokens.example`.
+
 ## `live`
 
 WebSocket fan-out tuning (PROJECT.md §18, §22).
@@ -261,17 +330,26 @@ WebSocket fan-out tuning (PROJECT.md §18, §22).
 
 ## `retention`
 
-History windows (PROJECT.md §20). Retention policy must be configurable; these
-are the knobs. With the `memory` driver the rings are self-bounding by
-`storage.max_flows`, so these values are **advisory** until a durable backend
-(sqlite/ClickHouse) lands — keep them meaningful now so the durable backend
-inherits a sane policy, and see `contrib/cron/synapseids-retention` for an
-external backstop.
+Per-category history windows (PROJECT.md §20, issue #56). A background sweep runs
+every `sweep_interval` and drops stored records older than the window for their
+category. With the `memory` driver the rings still bound total size
+(`storage.max_flows`, `alerts.max_recent`); the sweep is what enforces *age*, and
+a durable backend (#53) will inherit the same policy. `contrib/cron/synapseids-retention`
+remains as an external backstop.
 
 | Key | Type | Default | This file | Meaning |
 |---|---|---|---|---|
-| `retention.flows` | duration | `720h` (30d) | `720h` | How long flow records / feature vectors are kept. |
-| `retention.classifications` | duration | `2160h` (90d) | `2160h` | How long classification/verdict history is kept. |
+| `retention.flows` | duration | `720h` (30d) | `720h` | Max age of a stored flow **version** (judged by its `last_seen`), so a long flow keeps recent snapshots while stale early ones age out. Feature vectors live inside the record and share this. `0` = keep until the ring evicts it. |
+| `retention.classifications` | duration | `2160h` (90d) | `2160h` | Max age of a stored verdict (by its `ts`). Per-model outputs live inside it and share this. `0` disables. |
+| `retention.detections` | duration | `720h` (30d) | `720h` | Max age of a retained detection (by `last_ts`), from `alert.Store`. `0` disables. |
+| `retention.sweep_interval` | duration | `5m` | `5m` | How often the sweep runs. Not a retention window. Minimum `1s`; `0` uses the `5m` default. |
+
+Review decisions and the audit log are **not** on a timer — they are operator
+artefacts kept until explicitly deleted. Capture-source counters are live state,
+not history. The sweep runs on its own goroutine, off every hot path; each pass
+that drops anything logs `retention: purged N flow(s), …`. Counts surface on
+`/api/v1/status` as `storage.flows_expired` / `classifications_expired` and
+`alerts.expired`.
 
 ## Validation summary
 
@@ -292,6 +370,10 @@ external backstop.
   `client_cert_file` / `client_key_file`, or — without `authorized: true` — a
   non-loopback `addr`, `insecure_tls`, or no `token_file`
 - `live.client_queue_size < 1`
+- `auth.enabled` is true with an empty `auth.tokens_file` (and
+  `SYNAPSE_AUTH_TOKENS_FILE` unset). The file itself is read at start-up too: a
+  missing file, an unknown role word, a token under 8 characters, a duplicate
+  token, or a file with no usable line is a fatal error.
 - `alerts.min_confidence` outside `[0,1]`; `alerts.max_recent < 1`;
   `alerts.dedup_window_sec < 1`; an `alerts.per_class_min_confidence` key that is
   not a `traffic-classes-v1` class name or is `normal`, or a value outside `[0,1]`
@@ -299,4 +381,8 @@ external backstop.
   all empty), an unparseable `src`/`dst`, a `dst_port` outside `[0,65535]`, a
   `class` that is not a `traffic-classes-v1` name or is `normal`, or an empty
   `note`
+- `logging.format` other than `text` / `json`, or `logging.level` other than
+  `debug` / `info` / `warn` / `error`
+- a negative `retention.*` window, or `retention.sweep_interval` negative or
+  below `1s`
 - any unknown key is present in the file

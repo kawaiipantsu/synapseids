@@ -147,10 +147,21 @@ type occurrence struct {
 	models       []inference.ModelOutput
 }
 
-// item is one queue element: either an occurrence or a sync barrier.
+// item is one queue element: an occurrence, a sync barrier, a policy swap, or a
+// retention purge.
 type item struct {
 	oc   occurrence
 	done chan struct{}
+	// setPol, when non-nil, is a policy swap for config hot-reload (issue #59).
+	// It travels the same queue as occurrences so the aggregator goroutine — the
+	// only reader of s.pol and s.suppressHits — applies it with no lock and no
+	// race, the same way inference.Runtime swaps its whole model slice.
+	setPol *Policy
+	// purgeBefore, when non-zero, tells the aggregator to drop detections whose
+	// LastTS is older than it (issue #56); it travels the queue so the
+	// aggregator — the only writer of the ring and the maps — does the work
+	// unlocked.
+	purgeBefore time.Time
 }
 
 // Options configure a Store's bounds and wiring. A zero value selects every
@@ -222,6 +233,7 @@ type Store struct {
 	created uint64
 	deduped uint64
 	evicted uint64
+	expired uint64 // detections dropped by the retention sweep (issue #56)
 }
 
 // New starts a Store and its aggregator goroutine. p is applied verbatim: pass
@@ -314,6 +326,64 @@ func (s *Store) Sync() {
 	}
 }
 
+// SetPolicy swaps the alert policy on the aggregator goroutine and blocks until
+// the swap has taken effect (config hot-reload, issue #59). The compiled
+// suppression rules travel inside p — recompile them with CompileSuppress
+// before calling. A swap after Close returns without doing anything.
+func (s *Store) SetPolicy(p Policy) {
+	if s == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.ch <- item{setPol: &p, done: done}:
+	case <-s.quit:
+		return
+	}
+	select {
+	case <-done:
+	case <-s.quit:
+	}
+}
+
+// PurgeBefore drops every retained detection whose LastTS is older than before,
+// on the aggregator goroutine, and blocks until it is done (issue #56). A
+// zero-time before, or a call after Close, is a no-op.
+func (s *Store) PurgeBefore(before time.Time) {
+	if s == nil || before.IsZero() {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.ch <- item{purgeBefore: before, done: done}:
+	case <-s.quit:
+		return
+	}
+	select {
+	case <-done:
+	case <-s.quit:
+	}
+}
+
+// purge removes detections older than before from the ring and the lookup maps.
+// It runs on the aggregator goroutine (the only writer) under the write lock, so
+// a /api/v1/detections read never sees a half-purged ring. Caller: loop only.
+func (s *Store) purge(before time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, d := range s.ring {
+		if d == nil || !d.LastTS.Before(before) {
+			continue
+		}
+		delete(s.byID, d.ID)
+		if cur, ok := s.active[keyOf(d)]; ok && cur == d {
+			delete(s.active, keyOf(d))
+		}
+		s.ring[i] = nil
+		s.expired++
+	}
+}
+
 func (s *Store) loop() {
 	defer s.wg.Done()
 	for {
@@ -321,11 +391,20 @@ func (s *Store) loop() {
 		case <-s.quit:
 			return
 		case it := <-s.ch:
+			if it.setPol != nil {
+				s.pol = *it.setPol
+				// Keep the per-rule hit slice index-aligned with the new rule
+				// list. The counts reset — the rules changed, so the old
+				// per-rule totals no longer describe anything.
+				s.suppressHits = make([]atomic.Uint64, len(s.pol.Suppress))
+			} else if !it.purgeBefore.IsZero() {
+				s.purge(it.purgeBefore)
+			} else if it.done == nil {
+				s.apply(it.oc)
+			}
 			if it.done != nil {
 				close(it.done)
-				continue
 			}
-			s.apply(it.oc)
 		}
 	}
 }
@@ -628,6 +707,9 @@ type Stats struct {
 	SuppressRules    []SuppressRuleStat `json:"suppress_rules,omitempty"`
 	// Evicted counts detections dropped by the MaxRecent bound.
 	Evicted uint64 `json:"evicted"`
+	// Expired counts detections dropped by the retention sweep for being older
+	// than alerts' retention window (issue #56, PROJECT.md §20).
+	Expired uint64 `json:"expired"`
 
 	Retained  int    `json:"retained"`
 	MaxRecent int    `json:"max_recent"`
@@ -655,9 +737,13 @@ func (s *Store) Stats() Stats {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	n := len(s.ring)
-	if !s.full {
-		n = s.head
+	// Count live detections, not ring slots used: the retention sweep (issue
+	// #56) can leave nil holes behind.
+	n := 0
+	for _, d := range s.ring {
+		if d != nil {
+			n++
+		}
 	}
 	var rules []SuppressRuleStat
 	if len(s.pol.Suppress) > 0 {
@@ -677,6 +763,7 @@ func (s *Store) Stats() Stats {
 		SuppressedByRule: s.suppressedByRule.Load(),
 		SuppressRules:    rules,
 		Evicted:          s.evicted,
+		Expired:          s.expired,
 		Retained:         n,
 		MaxRecent:        len(s.ring),
 		Observed:         s.observed.Load(),

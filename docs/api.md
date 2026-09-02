@@ -25,6 +25,48 @@ are taken verbatim from the Go structs in `internal/storage/storage.go`,
   UI: the embedded `web/index.html`, or a directory when `server.web_root` /
   `SYNAPSE_WEB_ROOT` is set.
 
+## Authentication (issue #58, PROJECT.md §21)
+
+Disabled by default: with `auth.enabled` unset the API is open, and the daemon
+relies on its loopback bind plus an authenticating reverse proxy in front. Set
+`auth.enabled: true` and `auth.tokens_file` to require a bearer token for
+**non-loopback** requests (all requests if `auth.allow_loopback: false`).
+
+**Token file** — one `<role> <token> [label]` per line; `#` comments and blank
+lines ignored; tokens are at least 8 characters and never inline in `synapse.json`
+(§23). Keep it `0600`, owned by the daemon user.
+
+```
+# role      token                              label
+admin       t0p-s3cr3t-admin-value             ops-oncall
+operator    run-captures-and-replays-value     soc-analyst
+viewer      read-only-dashboards-value         noc-wallboard
+```
+
+**Roles** cover, cumulatively:
+
+| Role | Grants |
+|---|---|
+| `viewer` | every `GET`, and `GET /metrics` |
+| `operator` | `viewer` + `POST/DELETE /api/v1/captures*`, `POST /api/v1/replay[/stop]` |
+| `admin` | everything: model activate/deactivate, dataset create/delete, the trainer-facing `POST /api/v1/training*`, review writes |
+
+`POST /api/v1/architecture/estimate` is a stateless calculator and needs only
+`viewer`. `GET /` and `/assets/*` (the SPA shell) are never gated.
+
+**Sending the token** — `Authorization: Bearer <token>` on every request. The
+WebSocket route `GET /api/v1/stream` also accepts `?token=<token>` (a browser
+cannot set the header on a `WebSocket`); no other route does.
+
+**Responses** — `401` `{"error":"authentication required"}` (with
+`WWW-Authenticate: Bearer`) or `{"error":"invalid token"}`; `403`
+`{"error":"role \"admin\" required; this token is \"viewer\""}`.
+
+**Clients** — `synapse --token <t>` / `SYNAPSE_TOKEN`. The SPA reads a token from
+`localStorage` (`synapseids.api-token`); open it once as `…/?token=<t>#/dashboard`
+to store it, or `window.__synapse.setToken('<t>')` from devtools. A full token UI
+on the Settings page is a follow-up.
+
 ## Routes
 
 ### GET /api/v1/status
@@ -46,6 +88,8 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "classifications_evicted": 0,
     "flow_versions_dropped": 0,
     "disagreements": 3,
+    "flows_expired": 0,
+    "classifications_expired": 0,
     "driver": "memory"
   },
   "events": { "published": 542, "dropped": 0, "subscribers": 1 },
@@ -61,6 +105,15 @@ Daemon, storage, event-bus, live-channel and replay state. No params. Always
     "snapshots": 17,
     "evicted": 0,
     "max": 200000
+  },
+  "inference": {
+    "scored": 4082,
+    "failures": 0,
+    "latency_p50_ms": 0.031,
+    "latency_p95_ms": 0.12,
+    "latency_p99_ms": 0.44,
+    "by_class": { "normal": 3200, "scan": 512, "brute_force": 304, "dos_ddos": 1,
+                  "botnet_c2": 0, "web_attack": 0, "suspicious": 65 }
   },
   "alerts": {
     "enabled": true,
@@ -134,6 +187,13 @@ losing its *earliest* snapshots while keeping the most recent. It is distinct fr
 `flows_evicted`, which is the global ring overwriting its oldest slot. See
 [`/api/v1/flows/{id}/snapshots`](#get-apiv1flowsidsnapshots).
 
+`storage.flows_expired` / `classifications_expired` (and `alerts.expired`) count
+records the **retention sweep** dropped for being older than their configured
+window (`retention.flows` / `retention.classifications` / `retention.detections`,
+issue #56, PROJECT.md §20) — as distinct from `*_evicted`, which is the ring
+overflowing. A window of `0` disables the sweep for that category. The sweep runs
+every `retention.sweep_interval` (default `5m`), off every hot path.
+
 `storage.disagreements` is the cumulative number of stored classifications whose
 ensemble raised `result.disagreement` — every disagreeing verdict ever recorded,
 not just those still in the ring (PROJECT.md §12, §24).
@@ -150,12 +210,51 @@ not just those still in the ring (PROJECT.md §12, §24).
 | `suppressed_by_rule` | Verdicts that **did** clear their threshold but matched an [`alerts.suppress`](#expected-behaviour-suppression) expected-behaviour rule, so no detection was opened. The classification is still recorded and visible in the flow log. |
 | `suppress_rules` | Per-rule breakdown, in config order: `[{ "note": "...", "matched": N }]`. Omitted when no rules are configured. A rule with `matched: 0` has never fired and is probably stale. |
 | `evicted` | Detections dropped by the `max_recent` bound, oldest first. Non-zero means `/api/v1/detections` is a recent window, not a full history. |
+| `expired` | Detections dropped by the retention sweep for being older than `retention.detections` (issue #56). |
 | `retained` | Detections currently held. |
 | `max_recent` | The bound (`alerts.max_recent`, default `1000`). |
 | `observed` | Verdicts the alert store evaluated. |
 | `dropped` | Verdicts the ingest queue could not accept, so they were never evaluated. Non-zero means the alert goroutine fell behind the packet path (PROJECT.md §22, §24). |
 | `queue_size` | Depth of that queue. |
 | `dedup_window_sec` | `alerts.dedup_window_sec`, default `60`. |
+
+`inference` is the scoring instrumentation (issue #55, PROJECT.md §24): `scored`
+(runtime calls this lifetime), `failures`, `latency_p50_ms` / `latency_p95_ms` /
+`latency_p99_ms` (approximate quantiles read off the histogram buckets — the raw
+buckets are on [`GET /metrics`](#get-metrics)), and `by_class`, the per-class
+verdict tally keyed by `traffic-classes-v1` class name.
+
+### GET /metrics
+
+Prometheus text exposition (version `0.0.4`), for a scraper. No params, always
+`200`, `Content-Type: text/plain; version=0.0.4`. It is the same data
+`/api/v1/status` carries plus the scoring and feature-extraction latency
+**histograms** and the per-class verdict counter, rendered as metric families:
+
+```text
+# HELP synapseids_inference_latency_seconds Wall-clock cost of one runtime scoring call.
+# TYPE synapseids_inference_latency_seconds histogram
+synapseids_inference_latency_seconds_bucket{le="5e-06"} 41213
+...
+synapseids_inference_latency_seconds_bucket{le="+Inf"} 41902
+synapseids_inference_latency_seconds_sum 0.2371
+synapseids_inference_latency_seconds_count 41902
+synapseids_classifications_total{class="scan"} 512
+synapseids_capture_packets_total{source="wan"} 91771
+synapseids_capture_packets_total{source="_all"} 91771
+synapseids_flows_active 128
+synapseids_detections_created_total 6
+```
+
+Every metric name is prefixed `synapseids_`; counters end `_total`; capture
+counters carry a `source` label (plus a `source="_all"` aggregate). The endpoint
+sits at `/metrics`, not under `/api/v1`, by Prometheus convention, and carries no
+auth of its own — like the mutating routes it relies on the loopback bind and an
+authenticating reverse proxy in front (issue #58, PROJECT.md §21).
+
+`storage` latency (§24) is not instrumented: the Phase 1 store is an in-memory
+ring where a put is a slice write. It gets a histogram when a durable backend
+lands (#53).
 
 ### GET /api/v1/flows
 
@@ -796,6 +895,66 @@ classifications instead — a ring per host would be unbounded.
 the Phase 7 anomaly model, and the API reports its absence rather than returning a
 fabricated zero series.
 
+### GET /api/v1/drift
+
+The current `flow-features-v1` distribution compared against the **active model's
+training distribution**, per feature and overall (issue #49, PROJECT.md §19.13).
+
+The reference is the active bundle's `normalizer.json`. A `standard` normalizer
+carries the per-feature training `mean` and `std` directly; that is the
+comparison. Without an active model — or when its normalizer is `identity` /
+`minmax`, which carry no mean+std pair — there is no training distribution to
+compare against: `state` is `no_baseline`, `baseline.source` is `none`, and a
+`baseline_note` says why. The per-feature `current_mean` / `current_std` are
+still returned so a distribution view has data.
+
+It is a read-side fold of the newest 5000 stored flow vectors, like
+`GET /api/v1/matrix` — no packet-path work, no new storage.
+
+| Param | Meaning |
+|---|---|
+| `from`, `to` | Inclusive RFC3339 bounds on a flow version's `last_seen`. A bad value → `400`. |
+| `sensor`, `location` | The scope shared with the flow and classification lists. |
+
+`200`:
+
+```json
+{
+  "state": "warn",
+  "baseline": { "source": "model_normalizer",
+                "model_id": "flow-classifier-v1-cph-0002", "method": "standard" },
+  "window": { "flows": 4213, "scanned": 4213, "truncated": false,
+              "first_seen": "2026-09-01T08:00:00Z", "last_seen": "2026-09-01T09:10:00Z" },
+  "thresholds": { "warn": 2.0, "drift": 4.0 },
+  "overall": { "max_z": 3.1, "mean_z": 0.7, "features_warn": 3, "features_drift": 0 },
+  "features": [
+    { "index": 12, "name": "bytes_per_second",
+      "baseline_mean": 1234.5, "baseline_std": 456.7,
+      "current_mean": 2510.2, "current_std": 690.1,
+      "z": 2.79, "std_ratio": 1.51, "state": "warn" }
+  ],
+  "advisory": "Drift is informational. The daemon never retrains or activates a model automatically (PROJECT.md §19.13, §28.10)."
+}
+```
+
+- `z` — the standardized mean shift `|current_mean − training_mean| / training_std`.
+  `state` per feature is `stable` (`z < 2`), `warn` (`2 ≤ z < 4`) or `drift`
+  (`z ≥ 4`). The bands are documented constants for now; a config block is a
+  follow-up.
+- `std_ratio` — `current_std / training_std`, so a feature whose spread changed
+  without its mean moving is still visible.
+- `features` is sorted worst-`z` first when a baseline exists, schema order
+  otherwise.
+- `state` (top level) is the worst per-feature band: `drift` if any feature is
+  `drift`, else `warn` if any is `warn`, else `stable`; `no_baseline` when there
+  is no training distribution or no flows in the window.
+- `window.truncated` is `true` once the 5000-record scan is full — older traffic
+  is not covered.
+
+**Drift never triggers an action.** The daemon does not retrain, deploy or
+activate a model on its own; this route is a signal for an operator (PROJECT.md
+§19.13, §28.10). See [ADR 0036](adr/0036-feature-drift-monitoring.md).
+
 ### GET /api/v1/reports/host/{ip}
 
 A **downloadable host investigation report** (PROJECT.md §19.3, §19.4; issue #66,
@@ -1018,6 +1177,75 @@ reconciled to `deactivated` on startup and must be re-activated explicitly
 
 When the daemon runs without a registry (embedded/test), `models` is `[]` and
 only `runtime` is populated.
+
+### GET /api/v1/models/comparison
+
+Side-by-side agreement of every model that scored the same flows (PROJECT.md
+§12, §19.7). The inference runtime records each model's individual output on
+every `Classification` (`result.models[]`), so this route is a read-side fold of
+the newest window of stored verdicts — no packet-path work, no new storage, the
+same on-demand scan `GET /api/v1/matrix` does for a filtered query.
+
+Query parameters are the shared class filters and time range (see
+[`GET /api/v1/classifications`](#query-parameters) and the `from` / `to` bounds):
+`class`, `model`, `min_confidence`, `disagreement`, `sensor`, `location`,
+`from`, `to`. `model=` narrows the window to rows that model scored; the
+comparison is then within that subset. A bad `from` / `to` / `min_confidence` /
+`class` is a `400`.
+
+`200`:
+
+```json
+{
+  "window": { "scanned": 4213, "matched": 4213, "truncated": false,
+              "from": null, "to": null },
+  "classes": ["normal","scan","dos_ddos","brute_force","botnet_c2","web_attack","suspicious"],
+  "flows_compared": 4000,
+  "single_model_rows": 213,
+  "disagreement_rate": 0.021,
+  "models": [
+    { "model_id": "flow-classifier-v1-cph-0002", "role": "primary", "rows": 4213,
+      "mean_confidence": 0.883,
+      "class_distribution": { "normal": 3800, "scan": 210, "brute_force": 203 } },
+    { "model_id": "heuristic-v1", "role": "experimental", "rows": 4213,
+      "mean_confidence": 0.71,
+      "class_distribution": { "normal": 3900, "scan": 150, "brute_force": 163 },
+      "unsupported_classes": ["web_attack"] }
+  ],
+  "pairs": [
+    { "a": "flow-classifier-v1-cph-0002", "b": "heuristic-v1",
+      "both_scored": 4000, "agree": 3860, "disagree": 140,
+      "agreement_rate": 0.965, "mean_abs_confidence_delta": 0.071,
+      "class_matrix": [[3780, 5, 0, 3, 0, 0, 2], /* ... 7×7 ... */] }
+  ],
+  "notes": [ /* what this view does and does not claim */ ]
+}
+```
+
+- `window.matched` — verdicts in scope after filters and time range;
+  `window.truncated` is `true` once the 5000-record scan window is full, meaning
+  older traffic is not covered.
+- `flows_compared` — rows carrying **≥ 2** model outputs; `single_model_rows`
+  cannot be compared (only one model scored them — the usual case until a second
+  model is loaded or run as a shadow).
+- `disagreement_rate` — matched rows whose ensemble `result.disagreement` was
+  set, over `matched` (the alert-driving models predicted more than one top
+  class; experimental and anomaly roles are excluded from that flag by the
+  runtime).
+- `models[]` — one entry per model id seen, primary role first: how many rows it
+  scored, its mean verdict confidence, its class distribution, and
+  `unsupported_classes` when the loaded model declares a coverage gap (#134).
+- `pairs[]` — one entry per unordered model-id pair that scored a common flow.
+  `agree` counts equal top class; `class_matrix[i][j]` counts flows where model
+  `a` said `classes[i]` and model `b` said `classes[j]` (rows = `a`, columns =
+  `b`, in the `classes` order). `mean_abs_confidence_delta` is the mean
+  `|score_a − score_b|` over the common flows.
+
+**What it does not do.** Accuracy / F1 / precision / recall need ground-truth
+labels, which live in the review store and the datasets, not on a live verdict —
+that comparison is an offline evaluation run against a labelled dataset or a
+replay, and is out of scope here. Per-model inference latency is not recorded
+per verdict; `GET /metrics` carries the aggregate scoring-latency histogram.
 
 ### GET /api/v1/models/{id}
 

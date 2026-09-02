@@ -38,6 +38,8 @@ reproducibility). `-ldflags` stamps `internal/version` with `Version`, `Commit`,
 | `make man` | `dist/{synapsed,synapse,synapse-sensor}.1.gz` — `gzip -9 -n` of `packaging/man/*.1`. |
 | `make dist` | Depends on `build-linux` + `man`. Runs `scripts/package.sh`: one `dist/synapseids_<ver>_linux_<arch>.tar.gz` per arch (each holds all three binaries, plus `LICENSE` and — when present — `README.md`, `CHANGELOG.md` and the three `*.1.gz`) and writes `dist/SHA256SUMS`. |
 | `make deb` | Depends on `build-linux` + `man`. Runs `scripts/package-deb.sh`: `dist/synapseids_<debver>_<debarch>.deb` for `amd64`, `i386`, `arm64`, `armhf`. Appends the `.deb` checksums to `dist/SHA256SUMS` **if it already exists** — so run `make dist` before `make deb` (the release workflow does). |
+| `make deb-sign` | `scripts/sign-deb.sh`: GPG detached signatures for every `.deb` and `SHA256SUMS`, plus an optional in-`.deb` `debsigs` signature. See [Signing](#signing). |
+| `make apt-repo` | `scripts/apt-repo.sh`: a signed flat APT repository under `dist/apt/` from the built `.deb` files. See [APT repository](#apt-repository). |
 | `make snapshot` | `dist` + `deb` with `VERSION=<ver>-snapshot.<commit>`. |
 | `make release-check` | `fmt-check`, `vet`, `lint`, `test`, `build-linux`, then `scripts/release-check.sh` (clean tree, changelog heading present, tag free, no `TODO(release)`/`XXX(release)`, all four cross-builds green). |
 
@@ -109,10 +111,56 @@ sudo dpkg -i dist/synapseids_0.1.0_amd64.deb
 
 ## Signing
 
-`.deb` packages are **unsigned**. Integrity is via `SHA256SUMS`, published with
-every release: `scripts/package.sh` seeds it with the `.tar.gz` and `*.1.gz`
-sums, `scripts/package-deb.sh` appends the `.deb` sums. Tracked: "Signed `.deb`
-packages + apt repository" (`dpkg-sig` / a hosted apt repo).
+Two layers, both driven by `gpg` (no `dpkg-sig`, no Ruby). The signing key is
+chosen by `SYNAPSE_GPG_KEY` (id / fingerprint / uid), falling back to gpg's
+default key; CI imports one from the `GPG_PRIVATE_KEY` / `GPG_PASSPHRASE`
+secrets.
+
+| Target | Produces |
+|---|---|
+| `make deb-sign` | `scripts/sign-deb.sh`: an armoured detached signature `<file>.asc` for **every `.deb`** and for **`SHA256SUMS`** (the anchor `install.sh` already verifies, so signing it covers the `.tar.gz` archives too); an in-`.deb` `origin` signature via `debsigs` **when it is installed** (optional — consumers normally verify the repo's `Release`, not the package); and the public key as `dist/synapseids-signing-key.{asc,gpg}`. With no usable secret key it prints how to make one and **exits non-zero** — a release must not silently ship unsigned. |
+| `make apt-repo` | `scripts/apt-repo.sh`: a signed APT repository under `dist/apt/` — see below. |
+
+Verify a downloaded package or the checksum file:
+
+```bash
+gpg --verify synapseids_0.2.1_amd64.deb.asc synapseids_0.2.1_amd64.deb
+gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c SHA256SUMS
+```
+
+## APT repository
+
+`make apt-repo` (after `make deb`) builds a **flat, single-suite** repository
+from `dist/*.deb` that publishes as static files anywhere — GitHub Pages, S3, a
+plain web root. It needs `apt-ftparchive` (`apt-utils`).
+
+```
+dist/apt/
+  pool/main/synapseids_<ver>_<arch>.deb
+  dists/stable/main/binary-{amd64,i386,arm64,armhf}/Packages[.gz]
+  dists/stable/Release
+  dists/stable/InRelease       clearsigned  ┐ written when a signing key
+  dists/stable/Release.gpg     detached     ┘ is available
+  synapseids-archive-keyring.gpg            dearmored public key, for signed-by=
+```
+
+Overridable via env: `APT_SUITE` (default `stable`), `APT_COMPONENT` (`main`),
+`APT_ORIGIN` / `APT_LABEL` (`SynapseIDS`), `APT_OUT` (`dist/apt`). Without a
+signing key the `Release` file is still written but left unsigned and the script
+warns; such a repo must be added with `deb [trusted=yes] …`.
+
+Consume it (signed):
+
+```bash
+sudo install -m 0644 synapseids-archive-keyring.gpg \
+  /usr/share/keyrings/synapseids-archive-keyring.gpg
+echo 'deb [signed-by=/usr/share/keyrings/synapseids-archive-keyring.gpg] \
+  https://<host>/apt stable main' | sudo tee /etc/apt/sources.list.d/synapseids.list
+sudo apt update && sudo apt install synapseids
+```
+
+The repo is regenerated whole on every run (`pool/` and `dists/` are wiped
+first); hosting is just serving the directory.
 
 ## Release workflow
 
@@ -122,9 +170,17 @@ packages + apt repository" (`dpkg-sig` / a hosted apt repo).
 1. Checkout; `actions/setup-go` at Go `1.27`.
 2. Verify `${tag#v}` equals the first `## [x.y.z]` heading in `CHANGELOG.md`.
 3. `make dist` then `make deb`.
-4. `gh release create <tag> --title "SynapseIDS <tag>" --notes "<changelog section>"`
+4. When the `GPG_PRIVATE_KEY` secret is set: import it, then `make deb-sign` and
+   `make apt-repo`. The step is skipped (not failed) when the secret is absent,
+   so a fork without signing keys still produces a release.
+5. `gh release create <tag> --title "SynapseIDS <tag>" --notes "<changelog section>"`
    — with `--prerelease` when the tag contains a hyphen — attaching
-   `dist/*.tar.gz`, `dist/*.deb` and `dist/SHA256SUMS`.
+   `dist/*.tar.gz`, `dist/*.deb`, `dist/SHA256SUMS` and, when signing ran, the
+   `*.asc` signatures and `dist/synapseids-signing-key.asc`.
+
+The `dist/apt/` tree is built but not attached to the GitHub release — it is
+meant to be rsync'd to a web root. Publishing it (a `gh-pages` push, an S3 sync)
+is deployment config, out of scope for this repo.
 
 `install.sh` (`curl -fsSL … | sh`) resolves the latest release (or
 `SYNAPSEIDS_VERSION`), downloads `synapseids_<ver>_linux_<arch>.tar.gz`, verifies

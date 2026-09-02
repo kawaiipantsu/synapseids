@@ -29,12 +29,23 @@
     "max_recent": 1000,
     "dedup_window_sec": 60
   },
+  "logging": {
+    "format": "text",
+    "level": "info"
+  },
+  "auth": {
+    "enabled": false,
+    "tokens_file": "",
+    "allow_loopback": true
+  },
   "live": {
     "websocket_batch": "100ms",
     "client_queue_size": 5000
   },
   "retention": {
     "flows": "720h",
-    "classifications": "2160h"
+    "classifications": "2160h",
+    "detections": "720h",
+    "sweep_interval": "5m"
   }
 }

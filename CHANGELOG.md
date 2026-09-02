@@ -18,7 +18,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and its directories, fix the conffile group, and `daemon-reload` — but
   **never `enable` or `start`**: capturing traffic is an explicit operator
   decision (PROJECT.md §21). All guarded to be safe on a host without systemd.
-
+- **Signed `.deb` packages + APT repository** (issue #57). `make deb-sign`
+  (`scripts/sign-deb.sh`) writes an armoured detached `.asc` for every `.deb`
+  and for `SHA256SUMS` (the anchor `install.sh` already verifies), an optional
+  in-`.deb` `debsigs` signature when that tool is present, and exports the
+  public key; with no usable secret key it explains how to make one and exits
+  non-zero. `make apt-repo` (`scripts/apt-repo.sh`) builds a flat, single-suite
+  APT repository under `dist/apt/` — `pool/main/`, per-arch `Packages[.gz]`, a
+  `Release`, and a clearsigned `InRelease` + detached `Release.gpg` when a key
+  is available — publishable as static files. Both use `gpg` / `apt-ftparchive`
+  only (no `dpkg-sig`, no Ruby); the key is `SYNAPSE_GPG_KEY` or gpg's default.
+  The release workflow gains an optional signing + apt-repo step, skipped
+  cleanly when the `GPG_PRIVATE_KEY` secret is absent, and attaches the `.asc`
+  files. `docs/packaging.md` updated. (#57)
+- **Feature drift monitoring** (issue #49, PROJECT.md §19.13). New
+  `GET /api/v1/drift` compares the current `flow-features-v1` distribution
+  against the **active model's training distribution** — the per-feature `mean` /
+  `std` a `standard` `normalizer.json` records — and reports, per feature, the
+  standardized mean shift `z = |current_mean − training_mean| / training_std`
+  (bands: `stable` `z<2`, `warn` `2≤z<4`, `drift` `z≥4`), the `std_ratio`, and
+  an overall `state`. It is a read-side fold of the newest stored vectors (one
+  Welford pass, no packet-path work, no new storage), takes the shared `from` /
+  `to` and `sensor` / `location` scope, and is honest about the gap: no active
+  model, or an `identity` / `minmax` normalizer, yields `state: "no_baseline"`
+  with the current distributions and a `baseline_note` — never a fabricated
+  zero. Drift never triggers an action (no retrain, no deploy, no activate;
+  §28.10). The SPA's `#49` Drift stub can now render real data.
+  [ADR 0036](docs/adr/0036-feature-drift-monitoring.md). (#49)
+- **Model comparison view** (issue #48, PROJECT.md §12, §19.7). New
+  `GET /api/v1/models/comparison` folds the newest window of stored verdicts
+  into a side-by-side agreement view: per model (primary-first) its row count,
+  mean confidence, class distribution and declared coverage gaps; per
+  model-id pair its `agree` / `disagree` counts, `agreement_rate`, mean
+  `|score_a − score_b|`, and a 7×7 class-vs-class matrix; plus the overall
+  `disagreement_rate`. It reuses the shared class filters and `from` / `to`
+  range, needs no packet-path work and no new storage (the runtime already
+  records each model's output on every `Classification`, PROJECT.md §12), and is
+  explicit that accuracy / F1 need labels from an offline evaluation run and that
+  per-verdict latency is not recorded. The SPA's `#48` Model Comparison stub can
+  now render real data. `docs/api.md` updated. (#48)
+- **Config hot-reload on SIGHUP** (issue #59, PROJECT.md §23).
+  `kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
+  subset that is safe on a running daemon: the alert policy (`alerts.enabled`,
+  the confidence thresholds, `alert_on_disagreement`, and the `alerts.suppress`
+  rules) and `logging.level`. Everything else that changed — a listener, storage,
+  capture sources, flow-engine timing, `logging.format`, the alert-store bounds —
+  is named in a structured `restart_required` log line. The whole file is
+  re-validated first: a bad file logs `config reload failed` and leaves the
+  running configuration untouched. `alert.Store.SetPolicy` swaps the policy on
+  the aggregator goroutine (the same lock-free whole-value swap the inference
+  runtime uses for models). systemd unit gains `ExecReload`. See
+  [ADR 0034](docs/adr/0034-config-hot-reload.md).
+- **`GET /metrics` and structured logging** (issue #55, PROJECT.md §24). A new
+  `/metrics` endpoint renders Prometheus text (version `0.0.4`): the counters
+  `/api/v1/status` already carries — packets, kernel drops, decode errors, flow
+  create/close/evict, event bus, WebSocket, storage, detections, investigation —
+  plus two new **histograms**, model-scoring latency and `features.Extract`
+  latency, and a per-class `synapseids_classifications_total` counter. Recording
+  is off the packet loop (a `time.Now` pair when a flow closes). `/api/v1/status`
+  gains an `inference` block (scored, failures, p50/p95/p99, by_class). The
+  Prometheus text and the histogram are hand-rolled — no client library — to
+  keep the zero-dependency build. Logs now go through `log/slog` with a
+  `logging` config block (`format: text|json`, `level`, plus `SYNAPSE_LOG_*`);
+  the standard `log` package is bridged so every existing line lands in the
+  structured stream. See [ADR 0033](docs/adr/0033-observability-metrics-and-structured-logging.md). (#55)
+- **Configurable retention engine** (issue #56, PROJECT.md §20). A background
+  sweep (`retention.sweep_interval`, default 5m) drops stored records older than
+  their per-category window: `retention.flows` (by a flow version's `last_seen`,
+  so a long flow keeps recent snapshots), `retention.classifications` (by `ts`),
+  and `retention.detections` (retained detections in `alert.Store`, by
+  `last_ts`). A window of `0` disables the sweep for that category — the pre-#56
+  behaviour, bounded only by the ring. Feature vectors and per-model outputs
+  share their parent record's window; review decisions and the audit log are
+  never on a timer. `storage.PurgeBefore` compacts the in-memory rings under the
+  write lock only; the alert store purges on its own aggregator goroutine. New
+  counters `storage.flows_expired` / `classifications_expired` and
+  `alerts.expired` on `/api/v1/status`, distinct from `*_evicted`. (#56)
+- **Role-based access control for the API** (issue #58, PROJECT.md §21).
+  `auth.enabled` + `auth.tokens_file` turns on a bearer-token check: every `GET`
+  needs role `viewer`, the capture/replay routes need `operator`, and model
+  activation, dataset/training writes and review writes need `admin`. A missing
+  or unknown token is `401`; a valid token below the route's role is `403`. Token
+  file is `<role> <token> [label]` lines (tokens ≥ 8 chars, never inline in the
+  JSON, `0600`). `auth.allow_loopback` (default true) exempts `127.0.0.0/8` and
+  `::1`, so the local CLI and a same-host browser keep working unchanged.
+  **Disabled by default** — an unconfigured daemon is unchanged. `synapse
+  --token` / `SYNAPSE_TOKEN`; the SPA adopts a `?token=` from its URL into
+  `localStorage`. `contrib/config/tokens.example`,
+  [ADR 0035](docs/adr/0035-api-rbac.md).
+- **YAML configuration** (issue #54). `synapsed --config foo.yaml` / `.yml`
+  reads a small hand-rolled block-style YAML subset — **no third-party
+  dependency** (CLAUDE.md). It supports block mappings and sequences, plain and
+  quoted scalars, and `#` comments; it *rejects with a line number* the parts of
+  YAML it does not implement (tabs in indentation, flow style, anchors/aliases,
+  tags, block scalars, multiple documents) rather than mis-parsing them. YAML is
+  decoded into the same tree the JSON path uses, so `DisallowUnknownFields` and
+  every validation rule are identical — `contrib/config/synapse.yaml` loads to
+  exactly the same `Config` as `synapse.json` (pinned by a test). JSON stays the
+  default and is unchanged.
 - **Expected-behaviour suppression for detections** (`alerts.suppress`). A host
   that does security research — a DarkWeb monitor, a vulnerability scanner,
   uptime probing, backup replication, CDN health-checks — produces verdicts that
