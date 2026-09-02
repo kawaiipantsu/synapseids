@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The release workflow gains an optional signing + apt-repo step, skipped
   cleanly when the `GPG_PRIVATE_KEY` secret is absent, and attaches the `.asc`
   files. `docs/packaging.md` updated. (#57)
+- **Model comparison view** (issue #48, PROJECT.md §12, §19.7). New
+  `GET /api/v1/models/comparison` folds the newest window of stored verdicts
+  into a side-by-side agreement view: per model (primary-first) its row count,
+  mean confidence, class distribution and declared coverage gaps; per
+  model-id pair its `agree` / `disagree` counts, `agreement_rate`, mean
+  `|score_a − score_b|`, and a 7×7 class-vs-class matrix; plus the overall
+  `disagreement_rate`. It reuses the shared class filters and `from` / `to`
+  range, needs no packet-path work and no new storage (the runtime already
+  records each model's output on every `Classification`, PROJECT.md §12), and is
+  explicit that accuracy / F1 need labels from an offline evaluation run and that
+  per-verdict latency is not recorded. The SPA's `#48` Model Comparison stub can
+  now render real data. `docs/api.md` updated. (#48)
+>>>>>>> origin/develop
 - **Config hot-reload on SIGHUP** (issue #59, PROJECT.md §23).
   `kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
   subset that is safe on a running daemon: the alert policy (`alerts.enabled`,
