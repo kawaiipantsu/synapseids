@@ -176,6 +176,61 @@ func TestModelActivateHappyPathAndDeactivate(t *testing.T) {
 	}
 }
 
+// An anomaly autoencoder activates alongside the primary classifier: neither
+// role displaces the other (ADR 0037).
+func TestModelActivateAnomalyCoexistsWithPrimary(t *testing.T) {
+	srv, dir := modelServer(t)
+	h := srv.Handler()
+
+	registerBundle(t, srv, dir, "clf", modeltest.Bundle{ModelID: "clf-1"})
+	registerBundle(t, srv, dir, "ae", modeltest.Bundle{Family: "flow-anomaly-v1", ModelID: "ae-1"})
+
+	if rr := do(t, h, "POST", "/api/v1/models/clf-1/activate"); rr.Code != http.StatusOK {
+		t.Fatalf("activate clf-1 = %d (%s)", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, h, "POST", "/api/v1/models/ae-1/activate"); rr.Code != http.StatusOK {
+		t.Fatalf("activate ae-1 = %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	if got := srv.rt.Models(); len(got) != 1 || got[0].ID() != "clf-1" {
+		t.Fatalf("primary set disturbed by anomaly activate: %v", got)
+	}
+	if got := srv.rt.AnomalyModels(); len(got) != 1 || got[0].ID() != "ae-1" {
+		t.Fatalf("anomaly set = %v", got)
+	}
+	if e, _ := srv.reg.Get("clf-1"); e.Status != registry.StatusActive {
+		t.Fatalf("clf-1 demoted by anomaly activate: %s", e.Status)
+	}
+
+	// The runtime view lists both roles.
+	rr := do(t, h, "GET", "/api/v1/models")
+	var list struct {
+		Runtime []struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+		} `json:"runtime"`
+	}
+	mustJSON(t, rr, &list)
+	roles := map[string]string{}
+	for _, m := range list.Runtime {
+		roles[m.ID] = m.Role
+	}
+	if roles["clf-1"] != "primary" || roles["ae-1"] != "anomaly" {
+		t.Fatalf("runtime roles = %+v", roles)
+	}
+
+	// Deactivating the anomaly model leaves the primary untouched.
+	if rr := do(t, h, "POST", "/api/v1/models/ae-1/deactivate"); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate ae-1 = %d (%s)", rr.Code, rr.Body.String())
+	}
+	if got := srv.rt.AnomalyModels(); len(got) != 0 {
+		t.Fatalf("anomaly model still live after deactivate: %v", got)
+	}
+	if got := srv.rt.Models(); len(got) != 1 || got[0].ID() != "clf-1" {
+		t.Fatalf("primary disturbed by anomaly deactivate: %v", got)
+	}
+}
+
 func TestModelLineageEndpoint(t *testing.T) {
 	srv, dir := modelServer(t)
 	registerBundle(t, srv, dir, "g", modeltest.Bundle{ModelID: "global", Seed: 1})

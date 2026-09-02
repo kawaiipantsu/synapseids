@@ -48,13 +48,17 @@ type runtimeModel struct {
 // #134). A model that does not implement it is assumed to cover the full vector.
 type classCoverageReporter interface{ UnsupportedClasses() []string }
 
-// loadedRoles maps model ID -> role for every classifier live in the Runtime.
+// loadedRoles maps model ID -> role for every model live in the Runtime, both
+// supervised classifiers and the anomaly-role autoencoder.
 func (s *Server) loadedRoles() map[string]string {
 	out := map[string]string{}
 	if s.rt == nil {
 		return out
 	}
 	for _, m := range s.rt.Models() {
+		out[m.ID()] = string(m.Role())
+	}
+	for _, m := range s.rt.AnomalyModels() {
 		out[m.ID()] = string(m.Role())
 	}
 	return out
@@ -102,6 +106,14 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 		rtModels = append(rtModels, rm)
+	}
+	if s.rt != nil {
+		for _, m := range s.rt.AnomalyModels() {
+			rtModels = append(rtModels, runtimeModel{
+				ID: m.ID(), Family: m.Family(), Role: string(m.Role()),
+				Registered: registered[m.ID()],
+			})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -190,39 +202,43 @@ func (s *Server) handleModelActivate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bundle no longer validates: "+err.Error(), http.StatusConflict)
 		return
 	}
-	cls, err := modelrun.Build(id, b)
+	live, err := modelrun.BuildLive(id, b)
 	if err != nil {
 		http.Error(w, "bundle cannot be run: "+err.Error(), http.StatusConflict)
 		return
 	}
+	role := string(live.Role)
 
-	prev, hadPrev := s.reg.Active()
+	// A model is only ever swapped for another in the same role: activating an
+	// anomaly autoencoder leaves the primary classifier live and vice versa
+	// (ADR 0037).
+	prev, hadPrev := s.reg.ActiveByRole(role)
 
 	updated, err := s.reg.SetStatus(id, registry.StatusActive)
 	if err != nil {
 		http.Error(w, "registry: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.rt.Activate(cls)
+	s.rt.ActivateRole(live.Role, live.Classifier, live.Anomaly)
 
-	detail := "hash=" + e.ContentHash
+	detail := "role=" + role + "; hash=" + e.ContentHash
 	replaced := ""
 	if hadPrev && prev.ModelID != id {
 		replaced = prev.ModelID
 		detail += "; replaced=" + replaced
-		// Activating one model implicitly deactivates the previous one
-		// (registry.SetStatus enforces a single active entry). Audit that
-		// demotion under the *previous* model's own subject, and before this
-		// activation, so reading the log per model gives the right answer:
+		// Activating one model implicitly deactivates the previous one in the
+		// same role (registry.SetStatus enforces one Active per role). Audit
+		// that demotion under the *previous* model's own subject, and before
+		// this activation, so reading the log per model gives the right answer:
 		// without this line the previous model's most recent record still
 		// claims it is active (PROJECT.md §21).
 		s.audit.Log(audit.EventModelDeactivated, audit.ActorLocal, replaced,
-			"implicitly deactivated: replaced as active primary by "+id)
+			"implicitly deactivated: replaced as active "+role+" by "+id)
 	}
 	s.audit.Log(audit.EventModelActivated, audit.ActorLocal, id, detail)
 	if s.bus != nil {
 		s.bus.Publish(events.ModelActivated, map[string]any{
-			"model_id": id, "content_hash": e.ContentHash, "replaced": replaced,
+			"model_id": id, "content_hash": e.ContentHash, "replaced": replaced, "role": role,
 		})
 	}
 
@@ -249,19 +265,27 @@ func (s *Server) handleModelDeactivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wasActive := before.Status == registry.StatusActive
+	role := before.Role
+	if role == "" {
+		role = "primary"
+	}
 
 	updated, err := s.reg.SetStatus(id, registry.StatusDeactivated)
 	if err != nil {
 		http.Error(w, "registry: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.rt.Deactivate()
-	// Only claim the heuristic was restored when this model actually was the
-	// live primary. Deactivating an already-inactive entry is a legal no-op and
-	// the audit line must not overstate what changed.
-	detail := "restored heuristic as primary"
+	s.rt.DeactivateRole(inference.Role(role))
+	// Only claim something was restored when this model actually was live in its
+	// role. Deactivating an already-inactive entry is a legal no-op and the
+	// audit line must not overstate what changed.
+	restored := "restored heuristic as primary"
+	if role == "anomaly" {
+		restored = "anomaly scoring disabled"
+	}
+	detail := restored
 	if !wasActive {
-		detail = "no-op: was already " + string(before.Status) + "; heuristic remains primary"
+		detail = "no-op: was already " + string(before.Status)
 	}
 	s.audit.Log(audit.EventModelDeactivated, audit.ActorLocal, id, detail)
 	if s.bus != nil {

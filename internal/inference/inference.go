@@ -206,6 +206,40 @@ func (r *Runtime) SetModels(models ...Classifier) {
 	r.models = models
 }
 
+// ActivateRole atomically installs one trained model in the given role, leaving
+// every other role's live models untouched — unlike Activate, which replaces the
+// whole supervised set. Exactly one of class / anomaly is non-nil and must match
+// role (anomaly ⇒ RoleAnomaly, anything else ⇒ the supervised set). It runs only
+// from an explicit operator action, never on load or startup (PROJECT.md
+// §28.10).
+func (r *Runtime) ActivateRole(role Role, class Classifier, anomaly AnomalyScorer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if role == RoleAnomaly {
+		if anomaly != nil {
+			r.anomaly = []AnomalyScorer{anomaly}
+		}
+		return
+	}
+	if class != nil {
+		r.models = []Classifier{class}
+	}
+}
+
+// DeactivateRole atomically removes the given role's trained model. The
+// supervised roles fall back to the set NewRuntime was given (the heuristic, in
+// the daemon); the anomaly role falls back to its own fallback set (nil in the
+// daemon, so anomaly scoring simply goes dark).
+func (r *Runtime) DeactivateRole(role Role) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if role == RoleAnomaly {
+		r.anomaly = r.fallbackAnomaly
+		return
+	}
+	r.models = r.fallback
+}
+
 // Score runs every loaded model over v and combines their outputs into one
 // ensemble Result. Each model's individual verdict is always recorded in
 // Result.Models — never just the combined decision (PROJECT.md §12).

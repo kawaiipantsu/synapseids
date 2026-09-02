@@ -63,4 +63,39 @@ func TestBuildNilBundle(t *testing.T) {
 	if _, err := modelrun.Build("x", nil); err == nil {
 		t.Fatalf("Build(nil) must error")
 	}
+	if _, err := modelrun.BuildLive("x", nil); err == nil {
+		t.Fatalf("BuildLive(nil) must error")
+	}
+	if _, err := modelrun.BuildAnomaly("x", nil); err == nil {
+		t.Fatalf("BuildAnomaly(nil) must error")
+	}
+}
+
+func TestBuildLiveDispatchesOnFamily(t *testing.T) {
+	clf := load(t, filepath.Join(t.TempDir(), "clf"), modeltest.Bundle{ModelID: "clf-1"})
+	live, err := modelrun.BuildLive("clf-1", clf)
+	if err != nil {
+		t.Fatalf("BuildLive classifier: %v", err)
+	}
+	if string(live.Role) != "primary" || live.Classifier == nil || live.Anomaly != nil {
+		t.Fatalf("classifier Live = %+v", live)
+	}
+
+	ae := load(t, filepath.Join(t.TempDir(), "ae"), modeltest.Bundle{Family: "flow-anomaly-v1", ModelID: "ae-1"})
+	live, err = modelrun.BuildLive("ae-1", ae)
+	if err != nil {
+		t.Fatalf("BuildLive autoencoder: %v", err)
+	}
+	if string(live.Role) != "anomaly" || live.Anomaly == nil || live.Classifier != nil {
+		t.Fatalf("autoencoder Live = %+v", live)
+	}
+	if live.Anomaly.ID() != "ae-1" || live.Anomaly.Family() != "flow-anomaly-v1" {
+		t.Fatalf("anomaly id/family = %q/%q", live.Anomaly.ID(), live.Anomaly.Family())
+	}
+
+	// It scores a vector into a bounded reconstruction result.
+	out := live.Anomaly.ScoreAnomaly(features.Vector{})
+	if !out.Available || out.Score < 0 || out.Score >= 1 {
+		t.Fatalf("ScoreAnomaly = %+v", out)
+	}
 }
