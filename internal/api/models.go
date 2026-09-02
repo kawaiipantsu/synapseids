@@ -48,8 +48,9 @@ type runtimeModel struct {
 // #134). A model that does not implement it is assumed to cover the full vector.
 type classCoverageReporter interface{ UnsupportedClasses() []string }
 
-// loadedRoles maps model ID -> role for every model live in the Runtime, both
-// supervised classifiers and the anomaly-role autoencoder.
+// loadedRoles maps model ID -> role for every model live in the Runtime:
+// supervised classifiers, the anomaly-role autoencoder, and the sequence-role
+// temporal peers.
 func (s *Server) loadedRoles() map[string]string {
 	out := map[string]string{}
 	if s.rt == nil {
@@ -59,6 +60,9 @@ func (s *Server) loadedRoles() map[string]string {
 		out[m.ID()] = string(m.Role())
 	}
 	for _, m := range s.rt.AnomalyModels() {
+		out[m.ID()] = string(m.Role())
+	}
+	for _, m := range s.rt.SequenceModels() {
 		out[m.ID()] = string(m.Role())
 	}
 	return out
@@ -109,6 +113,12 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.rt != nil {
 		for _, m := range s.rt.AnomalyModels() {
+			rtModels = append(rtModels, runtimeModel{
+				ID: m.ID(), Family: m.Family(), Role: string(m.Role()),
+				Registered: registered[m.ID()],
+			})
+		}
+		for _, m := range s.rt.SequenceModels() {
 			rtModels = append(rtModels, runtimeModel{
 				ID: m.ID(), Family: m.Family(), Role: string(m.Role()),
 				Registered: registered[m.ID()],
@@ -219,7 +229,7 @@ func (s *Server) handleModelActivate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registry: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.rt.ActivateRole(live.Role, live.Classifier, live.Anomaly)
+	s.rt.ActivateRole(live.Role, live.Model)
 
 	detail := "role=" + role + "; hash=" + e.ContentHash
 	replaced := ""

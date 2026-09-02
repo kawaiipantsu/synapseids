@@ -33,7 +33,7 @@ type LayerParams struct {
 // should set them to the frozen 48 / 7 first (PROJECT.md §10).
 func (a Architecture) ParameterCount() int {
 	total := 0
-	prev := a.InputSize
+	prev := a.effectiveInputSize()
 	for _, h := range a.Hidden {
 		total += prev*h.Width + h.Width
 		if h.BatchNorm {
@@ -56,7 +56,7 @@ func (a Architecture) ApproxBytes() int { return a.ParameterCount() * 4 }
 // normalisation ignored. It matches architecture.py's rough_flops.
 func (a Architecture) RoughFLOPs() int {
 	flops := 0
-	prev := a.InputSize
+	prev := a.effectiveInputSize()
 	for _, h := range a.Hidden {
 		flops += 2 * prev * h.Width
 		prev = h.Width
@@ -70,7 +70,7 @@ func (a Architecture) RoughFLOPs() int {
 // affine, so the rows sum to ParameterCount.
 func (a Architecture) LayerBreakdown() []LayerParams {
 	rows := make([]LayerParams, 0, len(a.Hidden)+1)
-	prev := a.InputSize
+	prev := a.effectiveInputSize()
 	for i, h := range a.Hidden {
 		p := prev*h.Width + h.Width
 		if h.BatchNorm {
@@ -99,7 +99,7 @@ func (a Architecture) LayerBreakdown() []LayerParams {
 // trainer's architecture.py so the builder UI, the estimate endpoint and a
 // trained bundle all agree on what is buildable (PROJECT.md §10, §19.9).
 func validateHiddenStack(a Architecture) error {
-	prev := a.InputSize
+	prev := a.effectiveInputSize()
 	for i, h := range a.Hidden {
 		if h.Width <= 0 {
 			return fmt.Errorf("architecture.hidden[%d]: width %d must be > 0", i, h.Width)

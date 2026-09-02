@@ -231,6 +231,60 @@ func TestModelActivateAnomalyCoexistsWithPrimary(t *testing.T) {
 	}
 }
 
+func TestModelActivateSequenceCoexistsWithPrimaryAndAnomaly(t *testing.T) {
+	srv, dir := modelServer(t)
+	h := srv.Handler()
+
+	registerBundle(t, srv, dir, "clf", modeltest.Bundle{ModelID: "clf-1"})
+	registerBundle(t, srv, dir, "ae", modeltest.Bundle{Family: "flow-anomaly-v1", ModelID: "ae-1"})
+	registerBundle(t, srv, dir, "seq", modeltest.Bundle{Family: "flow-sequence-v1", ModelID: "seq-1"})
+
+	for _, id := range []string{"clf-1", "ae-1", "seq-1"} {
+		if rr := do(t, h, "POST", "/api/v1/models/"+id+"/activate"); rr.Code != http.StatusOK {
+			t.Fatalf("activate %s = %d (%s)", id, rr.Code, rr.Body.String())
+		}
+	}
+
+	if got := srv.rt.Models(); len(got) != 1 || got[0].ID() != "clf-1" {
+		t.Fatalf("primary set = %v, want just clf-1", got)
+	}
+	if got := srv.rt.AnomalyModels(); len(got) != 1 || got[0].ID() != "ae-1" {
+		t.Fatalf("anomaly set = %v", got)
+	}
+	if got := srv.rt.SequenceModels(); len(got) != 1 || got[0].ID() != "seq-1" {
+		t.Fatalf("sequence set = %v", got)
+	}
+	for _, id := range []string{"clf-1", "ae-1", "seq-1"} {
+		if e, _ := srv.reg.Get(id); e.Status != registry.StatusActive {
+			t.Fatalf("%s not Active — a different role's activation demoted it: %s", id, e.Status)
+		}
+	}
+
+	rr := do(t, h, "GET", "/api/v1/models")
+	var list struct {
+		Runtime []struct{ ID, Role string } `json:"runtime"`
+	}
+	mustJSON(t, rr, &list)
+	roles := map[string]string{}
+	for _, m := range list.Runtime {
+		roles[m.ID] = m.Role
+	}
+	if roles["seq-1"] != "sequence" || roles["ae-1"] != "anomaly" || roles["clf-1"] != "primary" {
+		t.Fatalf("runtime roles = %+v", roles)
+	}
+
+	// Deactivating the sequence model leaves the other two roles untouched.
+	if rr := do(t, h, "POST", "/api/v1/models/seq-1/deactivate"); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate seq-1 = %d", rr.Code)
+	}
+	if len(srv.rt.SequenceModels()) != 0 {
+		t.Fatal("sequence model still live after deactivate")
+	}
+	if len(srv.rt.Models()) != 1 || len(srv.rt.AnomalyModels()) != 1 {
+		t.Fatal("primary/anomaly disturbed by sequence deactivate")
+	}
+}
+
 func TestModelLineageEndpoint(t *testing.T) {
 	srv, dir := modelServer(t)
 	registerBundle(t, srv, dir, "g", modeltest.Bundle{ModelID: "global", Seed: 1})

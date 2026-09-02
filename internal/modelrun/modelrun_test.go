@@ -98,4 +98,25 @@ func TestBuildLiveDispatchesOnFamily(t *testing.T) {
 	if !out.Available || out.Score < 0 || out.Score >= 1 {
 		t.Fatalf("ScoreAnomaly = %+v", out)
 	}
+
+	seq := load(t, filepath.Join(t.TempDir(), "seq"), modeltest.Bundle{Family: "flow-sequence-v1", ModelID: "seq-1"})
+	live, err = modelrun.BuildLive("seq-1", seq)
+	if err != nil {
+		t.Fatalf("BuildLive sequence: %v", err)
+	}
+	if string(live.Role) != "sequence" || live.Sequence == nil || live.Classifier != nil || live.Anomaly != nil {
+		t.Fatalf("sequence Live = %+v", live)
+	}
+	if live.Sequence.ID() != "seq-1" || live.Sequence.Family() != "flow-sequence-v1" {
+		t.Fatalf("sequence id/family = %q/%q", live.Sequence.ID(), live.Sequence.Family())
+	}
+	// It scores a window into a 7-class distribution that sums to ~1.
+	sc := live.Sequence.ScoreSequence(make([][48]float64, 4))
+	var sum float64
+	for _, p := range sc {
+		sum += p
+	}
+	if sum < 0.99 || sum > 1.01 {
+		t.Fatalf("ScoreSequence sum = %v", sum)
+	}
 }
