@@ -23,8 +23,10 @@ import (
 // classifications, which is the same bounded scan the filtered
 // /api/v1/classifications query does.
 //
-// There is no anomaly series. Anomaly scoring is Phase 7; the response says so
-// with anomaly_available:false rather than shipping a fabricated zero line.
+// The anomaly series (per-bucket mean/max reconstruction-error score and a
+// threshold-exceeded count) is populated when a flow-anomaly-v1 model scored
+// flows in the window; otherwise anomaly_available is false and the anomaly
+// fields are zero rather than a fabricated line (ADR 0037).
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 

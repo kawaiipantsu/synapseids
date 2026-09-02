@@ -446,7 +446,8 @@ func TestHTMLCarriesTheHonestyNotes(t *testing.T) {
 	for _, want := range []string{
 		// Phase 7 unavailability, stated not implied.
 		"NOT AVAILABLE IN THIS BUILD (Phase 7)",
-		"Behavioural baseline and anomaly scoring are not available in this build",
+		"Behavioural baseline comparison is not available in this build",
+		"No anomaly model scored this traffic",
 		// Partial view.
 		"PARTIAL VIEW",
 		"partial view — see caveats",
