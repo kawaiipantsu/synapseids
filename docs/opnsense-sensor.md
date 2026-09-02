@@ -3,8 +3,8 @@
 Turn an OPNsense firewall into a sensor — or **one per interface** — for a
 central SynapseIDS daemon: capture through FreeBSD's BPF devices, stream to
 `synapsed` over the authenticated SYNPOIP transport, and see the classifications
-in the SynapseIDS UI. Everything is configured from the **SynapseIDS**
-side-menu section, which expands to four pages:
+in the SynapseIDS UI. Everything is configured from **Services → SynapseIDS**,
+which expands to four pages:
 
 | page | what it holds |
 |------|---------------|
@@ -393,7 +393,7 @@ pkg add     dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
 # 2. upgrading? confirm the migration ran and kept the sensor you had.
 /usr/local/opnsense/mvc/script/run_migrations.php -v OPNsense/SynapseIDSSensor
 
-# 3. do the UI pages appear? the SynapseIDS side-menu section (Sensors / General / Logs / Diagnostics)
+# 3. do the UI pages appear? Services > SynapseIDS (Sensors / General / Logs / Diagnostics)
 #    add one instance per interface, save, then:
 
 # 4. did the repeating template really produce one file per instance?

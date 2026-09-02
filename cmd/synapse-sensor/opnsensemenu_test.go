@@ -19,18 +19,21 @@ var submenuPages = []string{"sensors", "general", "logs", "diagnostics"}
 func TestOPNsenseMenuIsASynapseIDSSubmenu(t *testing.T) {
 	menu := readScript(t, pluginApp+"/models/OPNsense/SynapseIDSSensor/Menu/Menu.xml")
 
-	if !strings.Contains(menu, "<SynapseIDS ") {
-		t.Fatal("Menu.xml no longer declares a top-level <SynapseIDS> section (issue #178)")
+	// The plugin lives under Services, like every other service — the submenu is
+	// the SynapseIDS node *inside* <Services>, not a new top-level section.
+	svcOpen := strings.Index(menu, "<Services>")
+	svcClose := strings.Index(menu, "</Services>")
+	if svcOpen < 0 || svcClose < svcOpen {
+		t.Fatal("Menu.xml no longer nests the plugin under <Services> (issue #178, follow-up)")
 	}
-	// The old single Services entry must be gone: two menu entries pointing at
-	// the same plugin is exactly the drift this restructure removes.
-	if strings.Contains(menu, "<Services>") {
-		t.Error("Menu.xml still adds a Services > entry alongside the SynapseIDS submenu")
+	services := menu[svcOpen:svcClose]
+	if !strings.Contains(services, "<SynapseIDS ") {
+		t.Fatal("Menu.xml has no <SynapseIDS> submenu node inside <Services>")
 	}
 	for _, page := range submenuPages {
 		want := `url="/ui/synapseidssensor/` + page + `"`
-		if !strings.Contains(menu, want) {
-			t.Errorf("Menu.xml has no child linking to %s", want)
+		if !strings.Contains(services, want) {
+			t.Errorf("the Services > SynapseIDS submenu has no child linking to %s", want)
 		}
 	}
 }

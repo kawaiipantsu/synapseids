@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OPNsense `SynapseIDS` submenu is back under `Services`** (issue #178
+  follow-up). 0.3.0 promoted it to its own top-level side-menu section; it now
+  nests inside `<Services>` like every other service plugin, keeping the
+  four-page submenu (Sensors / General / Logs / Diagnostics). Menu.xml change
+  only — controllers, views, routes and the ACL are untouched.
+
 ## [0.3.0] - 2026-09-02
 
 ### Changed
