@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in TPACKET_V3 mmap RX ring for AF_PACKET capture** (issue #163, EPIC
+  Phase 8, [ADR 0041](docs/adr/0041-afpacket-tpacket-v3-rx-ring.md)). A
+  `kind: "nic"` capture source can set `"ring": true` to read frames from a
+  32 MiB TPACKET_V3 block ring instead of one `recvfrom` per frame — for a NIC
+  where the per-packet syscall is a measured bottleneck. **Off by default:** the
+  Recvfrom path is byte-for-byte unchanged, and making the ring the default
+  stays gated on a profile (issue #127, PROJECT.md §22/§26). stdlib `syscall`
+  only (hand-packed `tpacket_req3`, 16/32-bit fields at fixed offsets → identical
+  on amd64/386/arm64/arm); drained by `epoll_wait` only when the ring is empty.
+  Also on `capture.LiveConfig` (rejected on FreeBSD, which has `buffer_len`).
+
 - **`flow-sequence-v1` — a temporal model family** (issue #62, EPIC Phase 7,
   [ADR 0040](docs/adr/0040-temporal-flow-sequence-model.md)). A third model
   family that scores the last **16** flow-features-v1 vectors of one

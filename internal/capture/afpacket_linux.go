@@ -38,6 +38,11 @@ type AFPacket struct {
 	buf   []byte
 	stopc chan struct{}
 
+	// ring is non-nil when the source was opened with Ring: true; the read
+	// loop then drains a TPACKET_V3 mmap ring instead of calling Recvfrom
+	// (issue #163, afpacket_ring_linux.go).
+	ring *afpRing
+
 	closed  atomic.Bool
 	started atomic.Bool
 
@@ -129,6 +134,18 @@ func NewAFPacket(cfg AFPacketConfig) (*AFPacket, error) {
 		}
 	}
 
+	// Opt-in TPACKET_V3 mmap ring. Set up after bind/promiscuous so the ring
+	// only ever receives frames matching the attached filter and the bound
+	// interface (issue #163).
+	if cfg.Ring {
+		ring, rerr := newAFPRing(fd)
+		if rerr != nil {
+			_ = syscall.Close(fd)
+			return nil, afpErr(cfg.Interface, "PACKET_RX_RING (ring buffer)", rerr)
+		}
+		a.ring = ring
+	}
+
 	// Drain any drop counter accumulated during setup so the first real sample
 	// starts from zero.
 	a.pollDrops()
@@ -208,7 +225,10 @@ func (a *AFPacket) start(ctx context.Context, errc chan error, emit func(time.Ti
 	go func() {
 		defer closeOut()
 		defer close(errc)
-		defer func() { _ = syscall.Close(a.fd) }()
+		defer func() {
+			a.ring.close() // nil-safe; unmaps the RX ring and closes its epoll fd
+			_ = syscall.Close(a.fd)
+		}()
 		a.readLoop(ctx, errc, emit)
 	}()
 }
@@ -217,6 +237,10 @@ func (a *AFPacket) start(ctx context.Context, errc chan error, emit func(time.Ti
 // stop, ctx is cancelled or Close is called. The slice passed to emit aliases
 // the shared receive buffer and is only valid for that call.
 func (a *AFPacket) readLoop(ctx context.Context, errc chan<- error, emit func(time.Time, []byte) bool) {
+	if a.ring != nil {
+		a.ringReadLoop(ctx, errc, emit)
+		return
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			errc <- err
@@ -279,7 +303,8 @@ func (a *AFPacket) Close() error {
 	}
 	close(a.stopc)
 	if !a.started.Load() {
-		// No read loop will ever run, so nobody else owns the fd.
+		// No read loop will ever run, so nobody else owns the fd or the ring.
+		a.ring.close()
 		return syscall.Close(a.fd)
 	}
 	// The read loop notices a.closed within afpReadTimeout and closes the fd on

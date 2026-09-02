@@ -24,6 +24,12 @@ type AFPacketConfig struct {
 	// everything. A full tcpdump-expression compiler is deliberately out of
 	// scope for Phase 3 and tracked separately.
 	Filter string
+
+	// Ring opts into a TPACKET_V3 mmap RX ring instead of one Recvfrom per
+	// frame (issue #163). It is off by default: capture is not optimised
+	// before a measurement shows the per-packet syscall is the bottleneck
+	// (PROJECT.md §22/§26, issue #127). Linux only; ignored off Linux.
+	Ring bool
 }
 
 // BuiltinFilters lists the cBPF filter presets AFPacketConfig.Filter accepts in

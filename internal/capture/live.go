@@ -74,6 +74,11 @@ type LiveConfig struct {
 	// value: AF_PACKET's ring is sized differently and is not this knob.
 	BufferLen int
 
+	// Ring opts the Linux AF_PACKET source into the TPACKET_V3 mmap RX ring
+	// (issue #163). Off by default (PROJECT.md §22/§26). FreeBSD rejects a
+	// true value: /dev/bpf has its own store buffer (BufferLen).
+	Ring bool
+
 	// Logf, when set, receives the open-time buffer report (requested vs
 	// granted, and the sysctl remedy when the kernel clamped it). FreeBSD only;
 	// nil discards it.

@@ -49,6 +49,7 @@ func Build(cs config.CaptureSource, logf func(string, ...any)) (capture.Source, 
 			Promiscuous: cs.Promiscuous,
 			Snaplen:     cs.Snaplen,
 			Filter:      cs.Filter,
+			Ring:        cs.Ring,
 		})
 		if err != nil {
 			return nil, "", err

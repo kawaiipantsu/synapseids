@@ -26,5 +26,6 @@ func NewLive(cfg LiveConfig) (LiveSource, error) {
 		Promiscuous: cfg.Promiscuous,
 		Snaplen:     cfg.Snaplen,
 		Filter:      cfg.Filter,
+		Ring:        cfg.Ring,
 	})
 }
