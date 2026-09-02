@@ -1178,6 +1178,75 @@ reconciled to `deactivated` on startup and must be re-activated explicitly
 When the daemon runs without a registry (embedded/test), `models` is `[]` and
 only `runtime` is populated.
 
+### GET /api/v1/models/comparison
+
+Side-by-side agreement of every model that scored the same flows (PROJECT.md
+§12, §19.7). The inference runtime records each model's individual output on
+every `Classification` (`result.models[]`), so this route is a read-side fold of
+the newest window of stored verdicts — no packet-path work, no new storage, the
+same on-demand scan `GET /api/v1/matrix` does for a filtered query.
+
+Query parameters are the shared class filters and time range (see
+[`GET /api/v1/classifications`](#query-parameters) and the `from` / `to` bounds):
+`class`, `model`, `min_confidence`, `disagreement`, `sensor`, `location`,
+`from`, `to`. `model=` narrows the window to rows that model scored; the
+comparison is then within that subset. A bad `from` / `to` / `min_confidence` /
+`class` is a `400`.
+
+`200`:
+
+```json
+{
+  "window": { "scanned": 4213, "matched": 4213, "truncated": false,
+              "from": null, "to": null },
+  "classes": ["normal","scan","dos_ddos","brute_force","botnet_c2","web_attack","suspicious"],
+  "flows_compared": 4000,
+  "single_model_rows": 213,
+  "disagreement_rate": 0.021,
+  "models": [
+    { "model_id": "flow-classifier-v1-cph-0002", "role": "primary", "rows": 4213,
+      "mean_confidence": 0.883,
+      "class_distribution": { "normal": 3800, "scan": 210, "brute_force": 203 } },
+    { "model_id": "heuristic-v1", "role": "experimental", "rows": 4213,
+      "mean_confidence": 0.71,
+      "class_distribution": { "normal": 3900, "scan": 150, "brute_force": 163 },
+      "unsupported_classes": ["web_attack"] }
+  ],
+  "pairs": [
+    { "a": "flow-classifier-v1-cph-0002", "b": "heuristic-v1",
+      "both_scored": 4000, "agree": 3860, "disagree": 140,
+      "agreement_rate": 0.965, "mean_abs_confidence_delta": 0.071,
+      "class_matrix": [[3780, 5, 0, 3, 0, 0, 2], /* ... 7×7 ... */] }
+  ],
+  "notes": [ /* what this view does and does not claim */ ]
+}
+```
+
+- `window.matched` — verdicts in scope after filters and time range;
+  `window.truncated` is `true` once the 5000-record scan window is full, meaning
+  older traffic is not covered.
+- `flows_compared` — rows carrying **≥ 2** model outputs; `single_model_rows`
+  cannot be compared (only one model scored them — the usual case until a second
+  model is loaded or run as a shadow).
+- `disagreement_rate` — matched rows whose ensemble `result.disagreement` was
+  set, over `matched` (the alert-driving models predicted more than one top
+  class; experimental and anomaly roles are excluded from that flag by the
+  runtime).
+- `models[]` — one entry per model id seen, primary role first: how many rows it
+  scored, its mean verdict confidence, its class distribution, and
+  `unsupported_classes` when the loaded model declares a coverage gap (#134).
+- `pairs[]` — one entry per unordered model-id pair that scored a common flow.
+  `agree` counts equal top class; `class_matrix[i][j]` counts flows where model
+  `a` said `classes[i]` and model `b` said `classes[j]` (rows = `a`, columns =
+  `b`, in the `classes` order). `mean_abs_confidence_delta` is the mean
+  `|score_a − score_b|` over the common flows.
+
+**What it does not do.** Accuracy / F1 / precision / recall need ground-truth
+labels, which live in the review store and the datasets, not on a live verdict —
+that comparison is an offline evaluation run against a labelled dataset or a
+replay, and is out of scope here. Per-model inference latency is not recorded
+per verdict; `GET /metrics` carries the aggregate scoring-latency histogram.
+
 ### GET /api/v1/models/{id}
 
 One registered model with its lineage. `200`:

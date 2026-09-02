@@ -204,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/reports/host/{ip}", s.handleHostReport)
 	mux.HandleFunc("GET /api/v1/reports/range", s.handleRangeReport)
 	mux.HandleFunc("GET /api/v1/models", s.handleModels)
+	mux.HandleFunc("GET /api/v1/models/comparison", s.handleModelComparison)
 	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
 	mux.HandleFunc("POST /api/v1/models/{id}/activate", s.handleModelActivate)
