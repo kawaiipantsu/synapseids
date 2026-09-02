@@ -85,15 +85,18 @@ daemon restart, for either role.
   `anomaly_exceeded`.
 - The downloadable report → `coverage.anomaly_available` and the timeline
   section.
+- **SPA:** the Flow Inspector anomaly section (score, error, threshold,
+  over-threshold badge, per-feature reconstruction-gap table), the timeline
+  caption, the Dashboard *Anomaly rate* card, the Hosts table **anomaly** column
+  and the Investigate host *Anomaly score* stat.
 
-Every one of these is an explicit `available: false` with zeroed fields when no
-`flow-anomaly-v1` model is active.
+Every one of these is an explicit `available: false` with zeroed fields (and, in
+the SPA, a labelled gap) when no `flow-anomaly-v1` model is active.
 
 ## Not yet built
 
 - The `synapse-trainer` `objective: "reconstruction"` that trains on NORMAL
-  traffic only and writes a `flow-anomaly-v1` bundle (the Go side is exercised
-  with `internal/modeltest` autoencoder bundles until then).
-- The SPA panels that plot the score (Flow Inspector, timeline, dashboard).
+  traffic only and writes a `flow-anomaly-v1` bundle — issue #166 (the Go side
+  is exercised with `internal/modeltest` autoencoder bundles until then).
 - `events.AnomalyDetected` and alert-policy integration for `exceeds` flows —
   the score is informational only for now.

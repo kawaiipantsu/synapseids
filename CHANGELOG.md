@@ -48,10 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     per-host reconstruction-score aggregates. All of it stays an explicit
     `available: false` with zeroed fields when no anomaly model is active — a
     labelled gap, never a fabricated number (§16).
+  - **SPA:** the Flow Inspector's anomaly section renders the score, the
+    reconstruction error, the calibrated threshold and an over-threshold badge,
+    plus a table of the largest per-feature reconstruction gaps; the timeline
+    caption, a new Dashboard *Anomaly rate* card, an **anomaly** column on the
+    Hosts table and an *Anomaly score* stat on the Investigate host view all
+    show real numbers when a `flow-anomaly-v1` model is active and a labelled
+    gap otherwise (issue #167).
   - Not yet in this release: the `synapse-trainer` `reconstruction` objective
-    that produces a `flow-anomaly-v1` bundle, and the SPA views that surface
-    the score — both tracked as follow-ups. The Go side is exercised with
-    `modeltest`-built autoencoder bundles.
+    that produces a `flow-anomaly-v1` bundle (issue #166). The Go side is
+    exercised with `modeltest`-built autoencoder bundles.
 
 - **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
   default config** (issue #60). Previously it held only binaries + man pages.

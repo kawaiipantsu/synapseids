@@ -11,7 +11,6 @@ import {
 import type { Classification, ClassSchema, FeatureSchema, FlowRecord, Review } from '../api/types'
 import type { FlowExplain, FlowSnapshots } from '../api/types'
 import { classColor } from '../lib/classes'
-import { IssueLink } from './IssueLink'
 import {
   endpoint,
   fmtBytes,
@@ -410,8 +409,8 @@ export function FlowInspector({ cls, onClose }: Props) {
           {/* ---- why this verdict (§19.3; issue #38) ---- */}
           <ExplanationPanel explain={explain} err={explainErr} />
 
-          {/* ---- anomaly score: issue #47, a labelled stub with no number ---- */}
-          <AnomalyStub explain={explain} />
+          {/* ---- anomaly score: real when a flow-anomaly-v1 model is active (ADR 0037) ---- */}
+          <AnomalyPanel explain={explain} />
         </div>
       </aside>
     </>
@@ -432,9 +431,8 @@ export function FlowInspector({ cls, onClose }: Props) {
 //
 // What these components must never do:
 //   * render a baseline column, or any "expected range". §19.3's example shows
-//     one; this build has no training baselines (issues #47 / #63) and inventing
-//     a range would turn an absent check into an apparent clean bill of health.
-//   * render an anomaly number. Issue #47 as well.
+//     one; this build has no training baselines (issue #63) and inventing a
+//     range would turn an absent check into an apparent clean bill of health.
 //   * render a per-feature contribution for a trained model. The API returns
 //     kind:'unavailable' there, and this panel says so in words instead of
 //     drawing bars from a proxy.
@@ -775,16 +773,81 @@ function ExplanationPanel({ explain, err }: { explain: FlowExplain | null; err: 
   )
 }
 
-/** Anomaly score (§19.3) — issue #47. A labelled gap, never a number. */
-function AnomalyStub({ explain }: { explain: FlowExplain | null }) {
+/**
+ * Anomaly score (§19.3, ADR 0037). Populated from the stored verdict when a
+ * flow-anomaly-v1 autoencoder scored the flow; a labelled gap otherwise. Never
+ * a fabricated number.
+ */
+function AnomalyPanel({ explain }: { explain: FlowExplain | null }) {
+  const a = explain?.anomaly
+  if (a == null || !a.available) {
+    return (
+      <UnavailableSect title="Anomaly score">
+        {a?.note ?? (
+          <>
+            No anomaly model scored this flow. Activate a <span className="mono">flow-anomaly-v1</span>{' '}
+            autoencoder bundle to score flows for novelty (PROJECT.md §13).
+          </>
+        )}
+      </UnavailableSect>
+    )
+  }
   return (
-    <UnavailableSect title="Anomaly score" tag={<IssueLink n={47} />}>
-      {explain?.anomaly.note ?? (
+    <div className="sect">
+      <h4>
+        Anomaly score{' '}
+        {a.exceeds ? <span className="tag warn">over threshold</span> : null}
+      </h4>
+      <dl className="fi-kv">
+        <dt>score</dt>
+        <dd>
+          <b>{fmtPct(a.score ?? 0)}</b> <span className="dim">(0–100%, bounded)</span>
+        </dd>
+        <dt>reconstruction error</dt>
+        <dd className="mono">{(a.recon_error ?? 0).toFixed(4)}</dd>
+        <dt>threshold</dt>
+        <dd className="mono">
+          {a.threshold ? a.threshold.toFixed(4) : '— (uncalibrated)'}
+        </dd>
+        {a.model_id ? (
+          <>
+            <dt>model</dt>
+            <dd className="mono" title={a.model_id}>
+              {a.model_id}
+            </dd>
+          </>
+        ) : null}
+      </dl>
+      {a.top_deltas && a.top_deltas.length > 0 ? (
         <>
-          Not available in this build. Anomaly scoring needs the autoencoder tracked by{' '}
-          <IssueLink n={47} /> (PROJECT.md §13).
+          <p className="dim fi-claim">
+            Largest per-feature reconstruction gaps (normalized space) — where the flow looked
+            least like the model's training traffic.
+          </p>
+          <table className="fi-table">
+            <thead>
+              <tr>
+                <th>feature</th>
+                <th className="num">input</th>
+                <th className="num">reconstructed</th>
+                <th className="num">Δ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {a.top_deltas.map((d) => (
+                <tr key={d.index}>
+                  <td className="mono">{d.name}</td>
+                  <td className="num mono">{d.input.toFixed(3)}</td>
+                  <td className="num mono">{d.output.toFixed(3)}</td>
+                  <td className="num mono">{d.delta.toFixed(3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
+      ) : (
+        <p className="dim fi-claim">{a.note}</p>
       )}
-    </UnavailableSect>
+    </div>
   )
 }

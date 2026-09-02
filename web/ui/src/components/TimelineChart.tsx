@@ -3,7 +3,6 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import type { TimelineBucket } from '../api/types'
 import { CLASS_NAMES, classColor } from '../lib/classes'
-import { IssueLink } from './IssueLink'
 
 // Classification timeline (PROJECT.md §19.6, issue #41): stacked per-class
 // volume over time with a disagreement overlay. Dragging across the plot selects
@@ -230,9 +229,41 @@ export function TimelineChart({
           <span className="dim">drag to filter by time range</span>
         )}
       </div>
+      <AnomalyCaption buckets={buckets} />
+    </div>
+  )
+}
+
+/**
+ * A one-line summary of the anomaly-score series folded into the timeline
+ * buckets (ADR 0037). Not drawn on the uPlot canvas — a caption of the real
+ * numbers when a flow-anomaly-v1 model scored the window, a labelled gap
+ * otherwise.
+ */
+function AnomalyCaption({ buckets }: { buckets: TimelineBucket[] }) {
+  let n = 0
+  let weighted = 0
+  let max = 0
+  let exceeded = 0
+  for (const b of buckets) {
+    n += b.anomaly_n
+    weighted += b.anomaly_mean * b.anomaly_n
+    if (b.anomaly_max > max) max = b.anomaly_max
+    exceeded += b.anomaly_exceeds
+  }
+  if (n === 0) {
+    return (
       <div className="tl-stub">
-        anomaly score series — <IssueLink n={47} /> (<code>anomaly_available: false</code>)
+        no anomaly-score series — activate a <code>flow-anomaly-v1</code> model to score flows for
+        novelty
       </div>
+    )
+  }
+  return (
+    <div className="tl-stub">
+      anomaly score — {n.toLocaleString()} flows scored, mean {(weighted / n).toFixed(2)}, peak{' '}
+      {max.toFixed(2)}
+      {exceeded > 0 ? `, ${exceeded.toLocaleString()} over threshold` : ''}
     </div>
   )
 }
