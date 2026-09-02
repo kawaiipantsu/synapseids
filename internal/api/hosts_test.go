@@ -153,7 +153,7 @@ func TestHostBadAddressAndUnknown(t *testing.T) {
 	h := investigateServer(t)
 
 	for _, bad := range []string{"nope", "10.0.0.256", "example.com", "10.0.0.1%2Ffoo", "%3Cscript%3E"} {
-		for _, suffix := range []string{"", "/flows", "/classifications"} {
+		for _, suffix := range []string{"", "/flows", "/classifications", "/similar"} {
 			rr := get(t, h, "/api/v1/hosts/"+bad+suffix)
 			if rr.Code != http.StatusBadRequest {
 				t.Errorf("GET /api/v1/hosts/%s%s = %d, want 400", bad, suffix, rr.Code)
@@ -168,6 +168,80 @@ func TestHostBadAddressAndUnknown(t *testing.T) {
 	// sub-collections.
 	if rr := get(t, h, "/api/v1/hosts/203.0.113.7/flows"); rr.Code != http.StatusOK {
 		t.Errorf("unknown host flows = %d, want 200 with an empty list", rr.Code)
+	}
+}
+
+func TestHostSimilar(t *testing.T) {
+	h := investigateServer(t)
+
+	type simResp struct {
+		IP          string `json:"ip"`
+		Fingerprint struct {
+			IP        string `json:"ip"`
+			FlowCount uint64 `json:"flow_count"`
+			Vector    []float64
+			Dims      []struct {
+				Name  string
+				Value float64
+			}
+		}
+		Dims     []string
+		MinFlows int `json:"min_flows"`
+		Similar  []struct {
+			IP        string
+			Cosine    float64
+			FlowCount uint64 `json:"flow_count"`
+		}
+		Method string
+	}
+
+	rr := get(t, h, "/api/v1/hosts/10.0.0.5/similar?min_flows=1")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+	got := decode[simResp](t, rr)
+	if got.Fingerprint.IP != "10.0.0.5" || len(got.Fingerprint.Vector) == 0 {
+		t.Fatalf("fingerprint = %+v", got.Fingerprint)
+	}
+	if len(got.Fingerprint.Vector) != len(got.Dims) || len(got.Fingerprint.Dims) != len(got.Dims) {
+		t.Fatalf("vector/dims length mismatch: %d/%d/%d", len(got.Fingerprint.Vector), len(got.Fingerprint.Dims), len(got.Dims))
+	}
+	// The other two tracked hosts (10.0.0.6 = 1 flow, 10.0.0.9 = 5 flows) are
+	// neighbours with min_flows=1; the query host is never among them; the list
+	// is cosine-descending.
+	seen := map[string]bool{}
+	for i, s := range got.Similar {
+		if s.IP == "10.0.0.5" {
+			t.Fatalf("query host listed as its own neighbour: %+v", got.Similar)
+		}
+		if s.Cosine < -1 || s.Cosine > 1 {
+			t.Fatalf("cosine out of range: %v", s.Cosine)
+		}
+		if i > 0 && s.Cosine > got.Similar[i-1].Cosine {
+			t.Fatalf("neighbours not cosine-descending: %+v", got.Similar)
+		}
+		seen[s.IP] = true
+	}
+	if !seen["10.0.0.6"] || !seen["10.0.0.9"] {
+		t.Fatalf("expected 10.0.0.6 and 10.0.0.9 among neighbours: %+v", got.Similar)
+	}
+	if got.Method == "" {
+		t.Error("response must carry the method disclaimer (not a learned embedding)")
+	}
+
+	// The default min_flows (5) filters out the single-flow 10.0.0.6 but keeps
+	// the 5-flow 10.0.0.9.
+	got2 := decode[simResp](t, get(t, h, "/api/v1/hosts/10.0.0.5/similar"))
+	if len(got2.Similar) != 1 || got2.Similar[0].IP != "10.0.0.9" {
+		t.Fatalf("default min_flows: want just 10.0.0.9, got %+v", got2.Similar)
+	}
+
+	// Bad address → 400; unknown host → 404.
+	if rr := get(t, h, "/api/v1/hosts/nope/similar"); rr.Code != http.StatusBadRequest {
+		t.Errorf("bad addr = %d, want 400", rr.Code)
+	}
+	if rr := get(t, h, "/api/v1/hosts/203.0.113.7/similar"); rr.Code != http.StatusNotFound {
+		t.Errorf("unknown host = %d, want 404", rr.Code)
 	}
 }
 
@@ -296,6 +370,9 @@ func TestHostRoutesWithoutIndex(t *testing.T) {
 	}
 	if rr := get(t, h, "/api/v1/hosts/10.0.0.1"); rr.Code != http.StatusNotFound {
 		t.Errorf("host without an index = %d, want 404", rr.Code)
+	}
+	if rr := get(t, h, "/api/v1/hosts/10.0.0.1/similar"); rr.Code != http.StatusNotFound {
+		t.Errorf("similar without an index = %d, want 404", rr.Code)
 	}
 	if rr := get(t, h, "/api/v1/timeline"); rr.Code != http.StatusOK {
 		t.Errorf("timeline without an index = %d, want 200", rr.Code)

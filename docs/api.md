@@ -845,6 +845,46 @@ profile deliberately does not duplicate the 48-value feature vector.
 `10.0.0.1` address the same profile. An unobserved but well-formed address is
 `404 host not found`.
 
+### GET /api/v1/hosts/{ip}/similar
+
+The host's **behavioural fingerprint** and the other observed hosts whose
+fingerprint is cosine-nearest to it — a lateral-movement / botnet-peer lead, not
+a verdict (issue #63, [ADR 0039](adr/0039-per-host-behavioural-fingerprint.md)).
+
+```json
+{
+  "ip": "10.10.10.22",
+  "fingerprint": {
+    "ip": "10.10.10.22",
+    "flow_count": 1124,
+    "vector": [0.61, 0.98, …],
+    "dims": [ { "name": "flow_volume", "value": 0.61 }, { "name": "initiator_bias", "value": 0.98 }, … ]
+  },
+  "dims": ["flow_volume", "initiator_bias", "upload_bias", …],
+  "min_flows": 5,
+  "similar": [
+    { "ip": "10.10.10.23", "cosine": 0.981, "flow_count": 940 },
+    { "ip": "10.10.10.24", "cosine": 0.902, "flow_count": 512 }
+  ],
+  "method": "hand-crafted behavioural fingerprint (bounded per-host aggregates), cosine similarity. Not a learned embedding and not a verdict (issue #63, ADR 0039)."
+}
+```
+
+The fingerprint is a fixed, ordered vector of scale-free ratios — flow
+direction, volume asymmetry, peer/port fan-out and Shannon entropy, protocol
+mix, the seven `traffic-classes-v1` shares, and the disagreement / anomaly
+rates. It is **hand-crafted, not trained**; a learned embedding is a future
+upgrade behind this same shape. `dims` (top level) is the frozen name list; a
+new dimension is a `fingerprint-v2`, not an edit.
+
+| Param | Meaning |
+|---|---|
+| `limit` | Neighbours to return, `1`–`100` (default `10`). |
+| `min_flows` | A candidate host needs at least this many terminal flows to be compared (default `5`) — below that a fingerprint is mostly noise. |
+
+`{ip}` validation is the same as `GET /api/v1/hosts/{ip}`: `400` for a
+non-literal address, `404` when the host has never been observed.
+
 ### GET /api/v1/hosts/{ip}/flows
 
 That host's flow records, newest first, where it is either endpoint. Accepts the

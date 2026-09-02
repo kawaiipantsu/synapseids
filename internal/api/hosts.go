@@ -63,6 +63,42 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// handleHostSimilar serves GET /api/v1/hosts/{ip}/similar (issue #63, ADR 0039):
+// the queried host's behavioural fingerprint plus the tracked hosts whose
+// fingerprint is cosine-nearest to it. It is a lateral-movement / botnet-peer
+// lead, not a verdict — the fingerprint is a hand-crafted summary of the bounded
+// per-host aggregates, not a learned embedding, and the response says so.
+//
+// Query: limit (1..100, default 10), min_flows (candidate floor, default 5).
+func (s *Server) handleHostSimilar(w http.ResponseWriter, r *http.Request) {
+	ip, ok := hostPathValue(w, r)
+	if !ok {
+		return
+	}
+	if s.insight == nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	limit := clampInt(atoiOr(q.Get("limit"), 10), 1, 100)
+	minFlows := clampInt(atoiOr(q.Get("min_flows"), insight.DefaultSimilarMinFlows), 1, 1_000_000)
+
+	fp, neighbours, found := s.insight.SimilarHosts(ip, limit, minFlows)
+	if !found {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":          ip,
+		"fingerprint": fp,
+		"dims":        insight.FingerprintDims(),
+		"min_flows":   minFlows,
+		"similar":     neighbours,
+		"method": "hand-crafted behavioural fingerprint (bounded per-host aggregates), " +
+			"cosine similarity. Not a learned embedding and not a verdict (issue #63, ADR 0039).",
+	})
+}
+
 // handleHostFlows serves GET /api/v1/hosts/{ip}/flows. It accepts the same
 // filter parameters as GET /api/v1/classifications plus from/to, so an operator
 // does not have to learn a second dialect. The classification predicates (class,
