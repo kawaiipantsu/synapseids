@@ -8,6 +8,7 @@ import (
 
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/events"
+	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
@@ -39,6 +40,54 @@ func runFixture(t *testing.T, name string) (pipeline.Stats, storage.Store) {
 		t.Fatalf("pipeline.Run(%s): %v", name, err)
 	}
 	return st, store
+}
+
+// fixedAnomaly is a stand-in AnomalyScorer that returns the same verdict for
+// every flow, so the pipeline → storage carry of Result.Anomaly is what is
+// under test.
+type fixedAnomaly struct{}
+
+func (fixedAnomaly) ID() string           { return "ae-test" }
+func (fixedAnomaly) Family() string       { return "flow-anomaly-v1" }
+func (fixedAnomaly) Role() inference.Role { return inference.RoleAnomaly }
+func (fixedAnomaly) ScoreAnomaly(features.Vector) inference.AnomalyOutput {
+	return inference.AnomalyOutput{
+		ModelID: "ae-test", Available: true,
+		ReconError: 0.5, Score: 0.6, Threshold: 0.4, Exceeds: true,
+	}
+}
+
+func TestPipelineRecordsAnomalyWhenModelActive(t *testing.T) {
+	pf, err := capture.OpenPCAPFile(fixture("portscan.pcap"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	src := capture.NewReplay(pf, capture.SpeedMax)
+	store := storage.NewMem(1000, 1000)
+	rt := inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary))
+	rt.SetAnomalyModels(fixedAnomaly{})
+
+	if _, err := pipeline.Run(context.Background(), src, rt, events.New(), store, pipeline.Options{
+		Flow:   flow.Options{IdleTimeout: 30 * time.Second, MaxLifetime: 5 * time.Minute},
+		Sensor: "test",
+	}); err != nil {
+		t.Fatalf("pipeline.Run: %v", err)
+	}
+
+	cls := store.RecentClassifications(1000)
+	if len(cls) == 0 {
+		t.Fatal("no classifications stored")
+	}
+	for _, c := range cls {
+		if c.Result.Anomaly == nil || !c.Result.Anomaly.Available ||
+			c.Result.Anomaly.ModelID != "ae-test" || c.Result.Anomaly.Score != 0.6 || !c.Result.Anomaly.Exceeds {
+			t.Fatalf("flow %d: anomaly not carried to storage: %+v", c.FlowID, c.Result.Anomaly)
+		}
+		// The anomaly model must not have altered the supervised verdict.
+		if c.Result.Class == "" {
+			t.Fatalf("flow %d: supervised class went missing", c.FlowID)
+		}
+	}
 }
 
 func TestPortScanEndToEnd(t *testing.T) {
