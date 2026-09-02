@@ -1,6 +1,7 @@
 import pytest
 
 from synapse_trainer.architecture import (
+    ANOMALY_FAMILY,
     Architecture,
     ArchitectureError,
     HiddenLayer,
@@ -31,6 +32,47 @@ def test_locked_input_output():
         Architecture(hidden=[HiddenLayer(8)], input_size=56)
     with pytest.raises(ArchitectureError):
         Architecture(hidden=[HiddenLayer(8)], output_size=5)
+
+
+def _ae(*widths: int) -> Architecture:
+    return Architecture(
+        hidden=[HiddenLayer(w) for w in widths],
+        output_size=48,
+        family=ANOMALY_FAMILY,
+    )
+
+
+def test_anomaly_family_locks_output_at_48():
+    # The classifier family rejects a 48-wide output; the anomaly family requires it.
+    with pytest.raises(ArchitectureError):
+        Architecture(hidden=[HiddenLayer(16)], output_size=48)
+    for bad in (7, 47, 49):
+        with pytest.raises(ArchitectureError):
+            Architecture(hidden=[HiddenLayer(16)], output_size=bad, family=ANOMALY_FAMILY)
+    with pytest.raises(ArchitectureError):
+        Architecture(hidden=[HiddenLayer(16)], output_size=48, family="flow-anomaly-v9")
+
+
+def test_autoencoder_parameter_math_48_32_16_32_48_by_hand():
+    # These are the SAME hand-computed numbers asserted by the Go mirror
+    # internal/schema/architecture_test.go TestArchitectureParameterMath_Autoencoder_48_32_16_32_48.
+    # Dense 48->32 : 48*32 + 32 = 1568
+    # Dense 32->16 : 32*16 + 16 =  528
+    # Dense 16->32 : 16*32 + 32 =  544
+    # Dense 32->48 : 32*48 + 48 = 1584
+    arch = _ae(32, 16, 32)
+    assert arch.parameter_count() == 1568 + 528 + 544 + 1584 == 4224
+    assert arch.rough_flops() == 2 * (48 * 32 + 32 * 16 + 16 * 32 + 32 * 48) == 8192
+    assert arch.widths() == [48, 32, 16, 32, 48]
+    assert arch.to_json()["output_size"] == 48
+    assert "family" not in arch.to_json()  # family rides at the metadata top level
+
+
+def test_default_architecture_per_family():
+    assert default_architecture().output_size == 7
+    ae = default_architecture(ANOMALY_FAMILY)
+    assert ae.family == ANOMALY_FAMILY
+    assert ae.widths() == [48, 32, 16, 32, 48]
 
 
 def test_hidden_layer_validation():

@@ -19,6 +19,15 @@ def test_sizes_match_the_frozen_json():
     assert schema.OUTPUT_SCHEMA == "traffic-classes-v1"
 
 
+def test_reconstruction_schema_mirrors_the_feature_vector():
+    root = schema.find_schema_dir()
+    recon = json.loads((root / "outputs" / "reconstruction-v1.json").read_text())
+    assert schema.RECON_SCHEMA == "reconstruction-v1"
+    assert schema.RECON_SIZE == 48 == recon["output_size"]
+    names = [c["name"] for c in sorted(recon["classes"], key=lambda c: c["index"])]
+    assert names == schema.FEATURE_NAMES
+
+
 def test_feature_names_are_in_frozen_index_order():
     root = schema.find_schema_dir()
     feats = json.loads((root / "features" / "flow-features-v1.json").read_text())

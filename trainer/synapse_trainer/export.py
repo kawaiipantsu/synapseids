@@ -30,14 +30,22 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__ as _TRAINER_VERSION
-from .architecture import Architecture
-from .schema import FEATURE_SCHEMA, INPUT_SIZE, OUTPUT_SCHEMA, OUTPUT_SIZE
+from .architecture import ANOMALY_FAMILY, CLASSIFIER_FAMILY, Architecture
+from .schema import (
+    FEATURE_SCHEMA,
+    INPUT_SIZE,
+    OUTPUT_SCHEMA,
+    OUTPUT_SIZE,
+    RECON_SCHEMA,
+    RECON_SIZE,
+)
 
-FAMILY = "flow-classifier-v1"
+FAMILY = CLASSIFIER_FAMILY
 MODEL_VERSION = "1"
 ONNX_OPSET = 17
 ONNX_INPUT_NAME = "features"
 ONNX_OUTPUT_NAME = "scores"
+ONNX_RECON_OUTPUT_NAME = "reconstruction"
 
 BUNDLE_FILES = (
     "model.onnx",
@@ -47,7 +55,16 @@ BUNDLE_FILES = (
     "training-recipe.json",
 )
 
-# Order matters: this is the key order the Go bundle-gate diffs against.
+# The per-family output contract. flow-classifier-v1 emits a 7-class softmax;
+# flow-anomaly-v1 emits the 48-value reconstruction (no softmax) (ADR 0037).
+_FAMILY_OUTPUT = {
+    CLASSIFIER_FAMILY: (OUTPUT_SCHEMA, OUTPUT_SIZE, ONNX_OUTPUT_NAME),
+    ANOMALY_FAMILY: (RECON_SCHEMA, RECON_SIZE, ONNX_RECON_OUTPUT_NAME),
+}
+
+# Order matters: this is the key order the Go bundle-gate diffs against. The
+# flow-anomaly-v1 bundle appends one key, "anomaly" (the reconstruction-error
+# calibration), which is additive and not part of the frozen contract.
 METADATA_KEYS = (
     "model_id",
     "name",
@@ -64,6 +81,13 @@ METADATA_KEYS = (
     "parameter_count",
     "model_hash",
 )
+
+
+def metadata_keys(family: str = CLASSIFIER_FAMILY) -> tuple[str, ...]:
+    """The metadata.json key order for a family."""
+    if family == ANOMALY_FAMILY:
+        return (*METADATA_KEYS, "anomaly")
+    return METADATA_KEYS
 
 
 class ExportError(RuntimeError):
@@ -88,9 +112,14 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def make_model_id(name_hint: str | None = None, when: datetime | None = None) -> str:
+def make_model_id(
+    name_hint: str | None = None,
+    when: datetime | None = None,
+    *,
+    family: str = FAMILY,
+) -> str:
     when = when or _utc_now()
-    return f"{FAMILY}-{when.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
+    return f"{family}-{when.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
 
 
 def rfc3339_utc(when: datetime | None = None) -> str:
@@ -100,6 +129,18 @@ def rfc3339_utc(when: datetime | None = None) -> str:
 # --------------------------------------------------------------------------
 # JSON builders (torch-free)
 # --------------------------------------------------------------------------
+
+
+def anomaly_block(metrics: dict[str, Any]) -> dict[str, Any]:
+    """The additive ``metadata.json`` ``"anomaly"`` calibration block, built from
+    a :func:`train.reconstruction_metrics` dict."""
+    return {
+        "space": "normalized",
+        "error_percentiles": {
+            k: float(v) for k, v in (metrics.get("recon_error_percentiles") or {}).items()
+        },
+        "threshold": float(metrics.get("suggested_threshold", 0.0)),
+    }
 
 
 def build_metadata(
@@ -113,20 +154,27 @@ def build_metadata(
     created_at: str | None = None,
     model_id: str | None = None,
     version: str = MODEL_VERSION,
+    anomaly: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The exact ``metadata.json`` object (key order == :data:`METADATA_KEYS`)."""
+    """The exact ``metadata.json`` object (key order == :func:`metadata_keys`)."""
     when = _utc_now()
     if not model_hash.startswith("sha256:"):
         raise ExportError(f"model_hash must be 'sha256:<hex>', got {model_hash!r}")
+    family = arch.family
+    if family not in _FAMILY_OUTPUT:
+        raise ExportError(f"unknown model family {family!r}")
+    out_schema, out_size, _ = _FAMILY_OUTPUT[family]
+    if family == ANOMALY_FAMILY and anomaly is None:
+        raise ExportError("a flow-anomaly-v1 bundle needs an 'anomaly' calibration block")
     meta = {
-        "model_id": model_id or make_model_id(name, when),
+        "model_id": model_id or make_model_id(name, when, family=family),
         "name": str(name),
         "version": str(version),
-        "family": FAMILY,
+        "family": family,
         "feature_schema": FEATURE_SCHEMA,
         "input_size": INPUT_SIZE,
-        "output_schema": OUTPUT_SCHEMA,
-        "output_size": OUTPUT_SIZE,
+        "output_schema": out_schema,
+        "output_size": out_size,
         "architecture": arch.to_json(),
         "training_dataset_ids": list(training_dataset_ids),
         "created_at": created_at or rfc3339_utc(when),
@@ -136,12 +184,52 @@ def build_metadata(
         ),
         "model_hash": model_hash,
     }
+    if family == ANOMALY_FAMILY:
+        meta["anomaly"] = anomaly
     # guarantee canonical key order
-    return {k: meta[k] for k in METADATA_KEYS}
+    return {k: meta[k] for k in metadata_keys(family)}
+
+
+def _build_reconstruction_metrics_json(metrics: dict[str, Any]) -> dict[str, Any]:
+    """The ``metrics.json`` contract for a reconstruction (autoencoder) run."""
+
+    def _sep(d: Any) -> dict[str, Any] | None:
+        if not isinstance(d, dict):
+            return None
+        return {
+            "rows": int(d.get("rows", 0)),
+            "normal_rows": int(d.get("normal_rows", 0)),
+            "attack_rows": int(d.get("attack_rows", 0)),
+            "mean_error": _opt_float(d.get("mean_error")),
+            "roc_auc": _opt_float(d.get("roc_auc")),
+            "tpr_at_threshold": _opt_float(d.get("tpr_at_threshold")),
+            "fpr_at_threshold": _opt_float(d.get("fpr_at_threshold")),
+        }
+
+    out: dict[str, Any] = {
+        "objective": "reconstruction",
+        "train_loss": _opt_float(metrics.get("train_loss")),
+        "val_loss": _opt_float(metrics.get("val_loss")),
+        "recon_error_percentiles": {
+            k: float(v) for k, v in (metrics.get("recon_error_percentiles") or {}).items()
+        },
+        "suggested_threshold": float(metrics.get("suggested_threshold", 0.0)),
+        "threshold_percentile": str(metrics.get("threshold_percentile", "p99")),
+        "val": _sep(metrics.get("val")),
+    }
+    test = metrics.get("test")
+    out["test"] = (
+        {"loss": _opt_float(test.get("loss")), **(_sep(test) or {})}
+        if isinstance(test, dict)
+        else None
+    )
+    return out
 
 
 def build_metrics_json(metrics: dict[str, Any]) -> dict[str, Any]:
     """Normalise a training metrics dict into the ``metrics.json`` contract."""
+    if metrics.get("objective") == "reconstruction":
+        return _build_reconstruction_metrics_json(metrics)
     per_class = metrics.get("per_class", [])
     out: dict[str, Any] = {
         "accuracy": float(metrics.get("accuracy", 0.0)),
@@ -226,19 +314,24 @@ def write_bundle_json(
     return {k: str(v) for k, v in paths.items()}
 
 
-def validate_metadata(meta: dict[str, Any]) -> None:
+def validate_metadata(meta: dict[str, Any], *, family: str | None = None) -> None:
     """Local mirror of what the Go bundle-gate checks — fail early, on our side."""
-    for key in METADATA_KEYS:
+    fam = family or meta.get("family") or FAMILY
+    if fam not in _FAMILY_OUTPUT:
+        raise ExportError(f"metadata.json family={fam!r} is not a known model family")
+    keys = metadata_keys(fam)
+    for key in keys:
         if key not in meta:
             raise ExportError(f"metadata.json missing required key: {key}")
-    if list(meta.keys()) != list(METADATA_KEYS):
+    if list(meta.keys()) != list(keys):
         raise ExportError(f"metadata.json key order drift: {list(meta.keys())}")
+    out_schema, out_size, _ = _FAMILY_OUTPUT[fam]
     checks = {
-        "family": FAMILY,
+        "family": fam,
         "feature_schema": FEATURE_SCHEMA,
         "input_size": INPUT_SIZE,
-        "output_schema": OUTPUT_SCHEMA,
-        "output_size": OUTPUT_SIZE,
+        "output_schema": out_schema,
+        "output_size": out_size,
         "version": MODEL_VERSION,
     }
     for k, want in checks.items():
@@ -251,8 +344,12 @@ def validate_metadata(meta: dict[str, Any]) -> None:
     if not isinstance(meta["training_dataset_ids"], list) or not meta["training_dataset_ids"]:
         raise ExportError("metadata.json training_dataset_ids must be a non-empty list")
     arch = meta["architecture"]
-    if arch.get("input_size") != INPUT_SIZE or arch.get("output_size") != OUTPUT_SIZE:
+    if arch.get("input_size") != INPUT_SIZE or arch.get("output_size") != out_size:
         raise ExportError("metadata.json architecture input/output size mismatch")
+    if fam == ANOMALY_FAMILY:
+        a = meta.get("anomaly")
+        if not isinstance(a, dict) or "error_percentiles" not in a or "threshold" not in a:
+            raise ExportError("metadata.json 'anomaly' block missing error_percentiles/threshold")
 
 
 # --------------------------------------------------------------------------
@@ -260,8 +357,14 @@ def validate_metadata(meta: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------
 
 
-def export_onnx(model: Any, path: str | Path) -> Path:
-    """Write ``model`` (an ``nn.Module`` emitting logits) to ONNX with softmax."""
+def export_onnx(model: Any, path: str | Path, *, family: str = FAMILY) -> Path:
+    """Write ``model`` to ONNX (opset 17, fixed batch 1).
+
+    ``flow-classifier-v1``: an ``nn.Module`` emitting logits, wrapped in a
+    softmax, output ``"scores"`` ``[1, 7]``.
+    ``flow-anomaly-v1``: the reconstruction net as-is (no softmax), output
+    ``"reconstruction"`` ``[1, 48]`` (ADR 0037).
+    """
     try:
         import torch
         from torch import nn
@@ -269,6 +372,10 @@ def export_onnx(model: Any, path: str | Path) -> Path:
         raise ExportError(
             "PyTorch is required to export ONNX; pip install -r trainer/requirements.txt"
         ) from exc
+
+    if family not in _FAMILY_OUTPUT:
+        raise ExportError(f"unknown model family {family!r}")
+    _, _, out_name = _FAMILY_OUTPUT[family]
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -282,16 +389,16 @@ def export_onnx(model: Any, path: str | Path) -> Path:
         def forward(self, x):
             return self.softmax(self.inner(x))
 
-    wrapped = _WithSoftmax(model)
-    wrapped.eval()
+    export_model = model if family == ANOMALY_FAMILY else _WithSoftmax(model)
+    export_model.eval()
     dummy = torch.zeros(1, INPUT_SIZE, dtype=torch.float32)
     torch.onnx.export(
-        wrapped,
+        export_model,
         dummy,
         str(path),
         opset_version=ONNX_OPSET,
         input_names=[ONNX_INPUT_NAME],
-        output_names=[ONNX_OUTPUT_NAME],
+        output_names=[out_name],
         dynamic_axes=None,  # fixed batch = 1
         do_constant_folding=True,
     )
@@ -315,14 +422,16 @@ def export_bundle(
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    family = arch.family
     onnx_path = out / "model.onnx"
-    export_onnx(model, onnx_path)
+    export_onnx(model, onnx_path, family=family)
     model_hash = sha256_file(onnx_path)  # hash the bytes actually written
 
     resolved_recipe = build_recipe_json(recipe)
     model_name = name or resolved_recipe.get("name") or "flow-classifier"
     ids = list(dataset_ids) or [d["id"] for d in resolved_recipe.get("datasets", [])]
 
+    anomaly = anomaly_block(metrics) if family == ANOMALY_FAMILY else None
     metadata = build_metadata(
         name=model_name,
         arch=arch,
@@ -331,8 +440,9 @@ def export_bundle(
         parameter_count=arch.parameter_count(),
         trainer_version=trainer_version,
         created_at=created_at,
+        anomaly=anomaly,
     )
-    validate_metadata(metadata)
+    validate_metadata(metadata, family=family)
 
     files = write_bundle_json(
         out,

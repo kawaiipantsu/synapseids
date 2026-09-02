@@ -1,0 +1,24 @@
+{
+  "name": "flow-anomaly-baseline",
+  "objective": "reconstruction",
+  "datasets": [
+    { "id": "thugs/lab-attacks-2026-08", "weight": 0.3 },
+    { "id": "hq-copenhagen/baseline-2026-08", "weight": 0.7 }
+  ],
+  "architecture": {
+    "hidden": [
+      { "width": 32, "activation": "relu" },
+      { "width": 16, "activation": "relu" },
+      { "width": 32, "activation": "relu" }
+    ]
+  },
+  "normalizer": "standard",
+  "optimizer": "adam",
+  "lr": 0.001,
+  "batch_size": 256,
+  "epochs": 50,
+  "early_stopping": { "patience": 8, "metric": "val_loss" },
+  "scheduler": "cosine",
+  "seed": 1337,
+  "split": { "train": 0.7, "val": 0.15, "test": 0.15 }
+}

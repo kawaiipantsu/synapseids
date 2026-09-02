@@ -40,6 +40,8 @@ def _cmd_inspect_arch(args: argparse.Namespace) -> int:
     arch = recipe.architecture
     print(f"recipe:            {args.recipe}")
     print(f"name:              {recipe.name}")
+    print(f"objective:         {recipe.objective}")
+    print(f"family:            {arch.family}")
     print(f"widths:            {' -> '.join(map(str, arch.widths()))}")
     print()
     print(arch.summary())
@@ -51,12 +53,19 @@ def _cmd_inspect_arch(args: argparse.Namespace) -> int:
 
 
 def _build_mixture(args: argparse.Namespace):
-    """Resolve the recipe's datasets into one weighted mixture (torch-free)."""
+    """Resolve the recipe's datasets into one weighted mixture (torch-free).
+
+    A ``reconstruction`` recipe trains on NORMAL rows only, so the train
+    partition is filtered to the ``normal`` class id after the per-dataset split
+    (validation and test keep every class — ADR 0037).
+    """
     from .mixture import build_mixture
     from .recipe import load as load_recipe
+    from .schema import class_id
 
     recipe = load_recipe(args.recipe)
-    return recipe, build_mixture(recipe, args.data)
+    tlf = {class_id("normal")} if recipe.objective == "reconstruction" else None
+    return recipe, build_mixture(recipe, args.data, train_label_filter=tlf)
 
 
 def _cmd_inspect_recipe(args: argparse.Namespace) -> int:
@@ -166,8 +175,16 @@ def _cmd_train(args: argparse.Namespace) -> int:
     print(f"model_id:         {meta['model_id']}")
     print(f"model_hash:       {meta['model_hash']}")
     print(f"parameter_count:  {meta['parameter_count']:,}")
-    print(f"accuracy:         {metrics.get('accuracy', 0.0):.4f}")
-    print(f"macro_f1:         {metrics.get('macro_f1', 0.0):.4f}")
+    if recipe.objective == "reconstruction":
+        pct = metrics.get("recon_error_percentiles", {})
+        print(f"threshold (p99):  {metrics.get('suggested_threshold', 0.0):.6f}")
+        print(f"recon error p50:  {pct.get('p50', 0.0):.6f}")
+        auc = (metrics.get("val") or {}).get("roc_auc")
+        if auc is not None:
+            print(f"val ROC-AUC:      {auc:.4f}  (reconstruction error vs attack label)")
+    else:
+        print(f"accuracy:         {metrics.get('accuracy', 0.0):.4f}")
+        print(f"macro_f1:         {metrics.get('macro_f1', 0.0):.4f}")
     return 0
 
 
