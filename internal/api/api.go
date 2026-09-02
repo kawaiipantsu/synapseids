@@ -197,6 +197,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/detections/{id}", s.handleDetection)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
+	mux.HandleFunc("GET /api/v1/hosts/{ip}/similar", s.handleHostSimilar)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/classifications", s.handleHostClassifications)
 	mux.HandleFunc("GET /api/v1/timeline", s.handleTimeline)
@@ -769,6 +770,26 @@ func limitParam(r *http.Request, max int) int {
 	}
 	if n > max {
 		return max
+	}
+	return n
+}
+
+// atoiOr parses s as an int, returning def on any failure.
+func atoiOr(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// clampInt bounds n to [lo, hi].
+func clampInt(n, lo, hi int) int {
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
 	}
 	return n
 }

@@ -29,6 +29,7 @@
 package insight
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -615,6 +616,34 @@ func (c *counter[K]) prune() uint64 {
 type kv[K comparable] struct {
 	key K
 	n   uint64
+}
+
+// distinct is the number of distinct keys currently tracked (after any pruning).
+func (c *counter[K]) distinct() int { return len(c.m) }
+
+// entropyNorm is the Shannon entropy of the count distribution, normalised to
+// [0,1] by dividing by log(distinct keys): 0 for a single dominant key, →1 when
+// every tracked key has an equal share (a scanner's flat port spread). Zero when
+// fewer than two keys are tracked.
+func (c *counter[K]) entropyNorm() float64 {
+	if len(c.m) < 2 {
+		return 0
+	}
+	var total float64
+	for _, n := range c.m {
+		total += float64(n)
+	}
+	if total <= 0 {
+		return 0
+	}
+	var h float64
+	for _, n := range c.m {
+		p := float64(n) / total
+		if p > 0 {
+			h -= p * math.Log(p)
+		}
+	}
+	return h / math.Log(float64(len(c.m)))
 }
 
 // top returns the n highest-count keys, count descending. Ties are broken by a
