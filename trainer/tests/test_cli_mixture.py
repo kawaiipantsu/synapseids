@@ -124,3 +124,30 @@ def test_inspect_commands_are_registered(cmd):
 
     sub = build_parser()._subparsers._group_actions[0].choices  # type: ignore[attr-defined]
     assert cmd in sub
+
+
+def test_inspect_arch_and_dry_run_for_a_reconstruction_recipe(tmp_path, capsys):
+    write_dataset(tmp_path / "a.csv", n=200, seed=90)
+    write_dataset(tmp_path / "b.csv", n=200, seed=91)
+    r = _recipe(
+        tmp_path,
+        [{"id": "a", "weight": 0.5}, {"id": "b", "weight": 0.5}],
+        objective="reconstruction",
+    )
+
+    assert main(["inspect-arch", "--recipe", str(r)]) == 0
+    out = capsys.readouterr().out
+    assert "objective:         reconstruction" in out
+    assert "family:            flow-anomaly-v1" in out
+    assert "48 -> 32 -> 16 -> 32 -> 48" in out
+
+    out_dir = tmp_path / "bundle"
+    assert main(
+        ["train", "--recipe", str(r), "--data", str(tmp_path), "--out", str(out_dir), "--dry-run"]
+    ) == 0
+    plan = capsys.readouterr().out
+    # the NORMAL-only train pool shows up in the plan; val/test keep the rest
+    normal = schema.CLASS_NAMES[schema.class_id("normal")]
+    assert "dry run: no model trained" in plan
+    assert normal in plan
+    assert not out_dir.exists()

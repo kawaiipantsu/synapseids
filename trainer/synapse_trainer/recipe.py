@@ -27,7 +27,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .architecture import Architecture, HiddenLayer, default_architecture
+from .architecture import (
+    ANOMALY_FAMILY,
+    CLASSIFIER_FAMILY,
+    FAMILY_OUTPUT,
+    Architecture,
+    HiddenLayer,
+    default_architecture,
+)
+
+# "classification" trains the flow-classifier-v1 supervised MLP; "reconstruction"
+# trains the flow-anomaly-v1 autoencoder on NORMAL traffic only (ADR 0037).
+OBJECTIVES = frozenset({"classification", "reconstruction"})
+_OBJECTIVE_FAMILY = {
+    "classification": CLASSIFIER_FAMILY,
+    "reconstruction": ANOMALY_FAMILY,
+}
 
 OPTIMIZERS = frozenset({"adam", "adamw", "sgd", "rmsprop"})
 SCHEDULERS = frozenset({"none", "cosine", "step", "plateau"})
@@ -103,6 +118,7 @@ class Recipe:
     datasets: list[DatasetRef]
     architecture: Architecture = field(default_factory=default_architecture)
     name: str = "flow-classifier"
+    objective: str = "classification"
     optimizer: str = DEFAULTS["optimizer"]
     lr: float = DEFAULTS["lr"]
     batch_size: int = DEFAULTS["batch_size"]
@@ -134,6 +150,27 @@ class Recipe:
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise RecipeError(f"duplicate dataset id(s) in recipe: {dupes}")
+
+        self.objective = str(self.objective or "classification").lower()
+        if self.objective not in OBJECTIVES:
+            raise RecipeError(f"objective {self.objective!r} not one of {sorted(OBJECTIVES)}")
+        want_family = _OBJECTIVE_FAMILY[self.objective]
+        if self.architecture.family != want_family:
+            raise RecipeError(
+                f"objective {self.objective!r} needs a {want_family!r} architecture, "
+                f"got {self.architecture.family!r}"
+            )
+        if self.objective == "reconstruction":
+            if self.class_weighting not in (None, "", "none"):
+                raise RecipeError(
+                    "class_weighting has no meaning for objective 'reconstruction' (there are "
+                    "no class labels in the loss); set it to 'none' or omit it"
+                )
+            if self.early_stopping.metric != "val_loss":
+                raise RecipeError(
+                    "objective 'reconstruction' only supports early_stopping.metric "
+                    f"'val_loss' (the MSE); got {self.early_stopping.metric!r}"
+                )
 
         self.optimizer = str(self.optimizer).lower()
         if self.optimizer not in OPTIMIZERS:
@@ -183,6 +220,7 @@ class Recipe:
         """The fully-resolved recipe (defaults materialised)."""
         return {
             "name": self.name,
+            "objective": self.objective,
             "datasets": [d.to_json() for d in self.datasets],
             "architecture": self.architecture.to_json(),
             "normalizer": self.normalizer,
@@ -201,7 +239,8 @@ class Recipe:
         return json.dumps(self.to_json(), indent=indent)
 
 
-def _architecture_from(raw: dict[str, Any]) -> Architecture:
+def _architecture_from(raw: dict[str, Any], objective: str = "classification") -> Architecture:
+    family = _OBJECTIVE_FAMILY.get(objective, CLASSIFIER_FAMILY)
     arch = raw.get("architecture")
     hidden = None
     if isinstance(arch, dict) and "hidden" in arch:
@@ -209,8 +248,12 @@ def _architecture_from(raw: dict[str, Any]) -> Architecture:
     elif "hidden" in raw:
         hidden = raw["hidden"]
     if hidden is None:
-        return default_architecture()
-    return Architecture(hidden=[HiddenLayer.from_json(h) for h in hidden])
+        return default_architecture(family)
+    return Architecture(
+        hidden=[HiddenLayer.from_json(h) for h in hidden],
+        output_size=FAMILY_OUTPUT[family],
+        family=family,
+    )
 
 
 def from_dict(raw: dict[str, Any]) -> Recipe:
@@ -246,16 +289,22 @@ def from_dict(raw: dict[str, Any]) -> Recipe:
     split = dict(DEFAULTS["split"])
     split.update(raw.get("split", {}))
 
+    objective = str(raw.get("objective", "classification") or "classification").lower()
+    # A reconstruction recipe has no class labels in the loss, so the default
+    # "balanced" class weighting is inert — treat an unset value as "none".
+    default_cw = "none" if objective == "reconstruction" else DEFAULTS["class_weighting"]
+
     return Recipe(
         datasets=datasets,
-        architecture=_architecture_from(raw),
+        architecture=_architecture_from(raw, objective),
         name=str(raw.get("name", "flow-classifier")),
+        objective=objective,
         optimizer=raw.get("optimizer", DEFAULTS["optimizer"]),
         lr=raw.get("lr", DEFAULTS["lr"]),
         batch_size=raw.get("batch_size", DEFAULTS["batch_size"]),
         epochs=raw.get("epochs", DEFAULTS["epochs"]),
         early_stopping=early,
-        class_weighting=raw.get("class_weighting", DEFAULTS["class_weighting"]),
+        class_weighting=raw.get("class_weighting", default_cw),
         scheduler=raw.get("scheduler", DEFAULTS["scheduler"]),
         normalizer=raw.get("normalizer", DEFAULTS["normalizer"]),
         seed=raw.get("seed", DEFAULTS["seed"]),

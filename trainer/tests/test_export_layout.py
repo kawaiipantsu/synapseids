@@ -254,3 +254,136 @@ def test_export_bundle_with_torch(tmp_path):
         assert abs(float(y.sum()) - 1.0) < 1e-4
     except Exception:
         pytest.skip("onnxruntime not available to check softmax output")
+
+
+def test_export_anomaly_bundle_with_torch(tmp_path):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("onnx")
+    import onnx
+
+    from synapse_trainer.train import build_model
+
+    arch = _ae_arch()
+    model = build_model(arch)
+    model.eval()
+
+    normalizer = Normalizer("standard").fit(
+        np.random.default_rng(4).normal(size=(64, INPUT_SIZE))
+    )
+    rc = R.from_dict(
+        {
+            "name": "torch-ae",
+            "objective": "reconstruction",
+            "datasets": [{"id": "ds/normal", "weight": 1.0}],
+            "epochs": 1,
+        }
+    )
+    metrics = _fake_reconstruction_metrics()
+
+    out = tmp_path / "aebundle"
+    X.export_bundle(model, arch, normalizer, metrics, rc,
+                    dataset_ids=rc.dataset_ids, out_dir=out, name="torch-ae")
+
+    for fname in X.BUNDLE_FILES:
+        assert (out / fname).is_file(), f"missing {fname}"
+
+    meta = json.loads((out / "metadata.json").read_text())
+    assert list(meta.keys()) == list(X.metadata_keys("flow-anomaly-v1"))
+    assert meta["output_schema"] == "reconstruction-v1" and meta["output_size"] == 48
+    assert meta["anomaly"]["threshold"] > 0
+    X.validate_metadata(meta)
+
+    m = onnx.load(str(out / "model.onnx"))
+    onnx.checker.check_model(m)
+    assert {op.domain: op.version for op in m.opset_import}.get("", 0) == 17
+    ins, outs = m.graph.input, m.graph.output
+    assert ins[0].name == "features" and outs[0].name == "reconstruction"
+
+    def _dims(vi):
+        return [d.dim_value for d in vi.type.tensor_type.shape.dim]
+
+    assert _dims(ins[0]) == [1, 48] and _dims(outs[0]) == [1, 48]
+    # no softmax: the graph has no Softmax node
+    assert not any(n.op_type == "Softmax" for n in m.graph.node)
+
+    mj = json.loads((out / "metrics.json").read_text())
+    assert mj["objective"] == "reconstruction"
+
+
+# ---------------------------------------------------------------------------
+# flow-anomaly-v1 bundle layout (ADR 0037) — torch-free
+# ---------------------------------------------------------------------------
+
+
+def _fake_reconstruction_metrics():
+    rng = np.random.default_rng(3)
+    recon = np.concatenate([np.abs(rng.normal(0.1, 0.01, 300)), np.full(40, 1.0)])
+    from synapse_trainer.schema import class_id
+    from synapse_trainer.train import reconstruction_metrics
+
+    y = np.concatenate([np.full(300, class_id("normal")), np.full(40, class_id("scan"))])
+    return reconstruction_metrics(recon, y, normal_id=class_id("normal"),
+                                  train_loss=0.02, val_loss=0.025, test_loss=0.03,
+                                  recon_test=recon[:60], y_test=y[:60])
+
+
+def _ae_arch():
+    return Architecture(
+        hidden=[HiddenLayer(32), HiddenLayer(16), HiddenLayer(32)],
+        output_size=48,
+        family="flow-anomaly-v1",
+    )
+
+
+def test_anomaly_bundle_metadata_layout_without_torch(tmp_path):
+    arch = _ae_arch()
+    metrics = _fake_reconstruction_metrics()
+    anomaly = X.anomaly_block(metrics)
+
+    meta = X.build_metadata(
+        name="unit-ae",
+        arch=arch,
+        training_dataset_ids=["ds/normal"],
+        model_hash="sha256:" + "a" * 64,
+        anomaly=anomaly,
+    )
+
+    # the anomaly family appends exactly one key, "anomaly", after the frozen 14
+    assert list(meta.keys()) == list(X.METADATA_KEYS) + ["anomaly"]
+    assert list(meta.keys()) == list(X.metadata_keys("flow-anomaly-v1"))
+    assert meta["family"] == "flow-anomaly-v1"
+    assert meta["output_schema"] == "reconstruction-v1"
+    assert meta["output_size"] == 48
+    assert meta["architecture"]["output_size"] == 48
+    assert meta["model_id"].startswith("flow-anomaly-v1-")
+    assert meta["anomaly"]["space"] == "normalized"
+    assert meta["anomaly"]["threshold"] > 0
+    assert set(meta["anomaly"]["error_percentiles"]) == {"p50", "p90", "p95", "p99", "max"}
+
+    X.validate_metadata(meta)  # infers family from meta["family"]
+    X.validate_metadata(meta, family="flow-anomaly-v1")
+
+    # building an anomaly bundle without the calibration block is rejected
+    with pytest.raises(X.ExportError):
+        X.build_metadata(
+            name="x", arch=arch, training_dataset_ids=["d"],
+            model_hash="sha256:" + "0" * 64,
+        )
+    # a classifier bundle validated as the anomaly family is rejected
+    clf = X.build_metadata(
+        name="c", arch=Architecture(hidden=[HiddenLayer(16)]),
+        training_dataset_ids=["d"], model_hash="sha256:" + "0" * 64,
+    )
+    with pytest.raises(X.ExportError):
+        X.validate_metadata(clf, family="flow-anomaly-v1")
+
+
+def test_anomaly_metrics_json_shape_without_torch():
+    mj = X.build_metrics_json(_fake_reconstruction_metrics())
+    assert mj["objective"] == "reconstruction"
+    assert "accuracy" not in mj and "confusion" not in mj
+    assert set(mj["recon_error_percentiles"]) == {"p50", "p90", "p95", "p99", "max"}
+    assert mj["suggested_threshold"] == mj["recon_error_percentiles"]["p99"]
+    assert mj["val"]["attack_rows"] == 40
+    assert mj["val"]["roc_auc"] is not None
+    assert mj["test"] is not None and "loss" in mj["test"]

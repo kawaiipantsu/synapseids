@@ -1,10 +1,11 @@
-"""Configurable hidden architecture for the ``flow-classifier-v1`` family.
+"""Configurable hidden architecture for a locked-edge MLP family.
 
-The input (48) and output (7) layers are **locked** for every model in the
-family (PROJECT.md §10, §28.6).  Only the hidden stack is editable.  This module
-is the compute half of the Architecture Builder (issue #22): parameter count,
-fp32 size and a rough FLOP estimate, with no torch dependency so the daemon-less
-``inspect-arch`` CLI and the UI can both call it.
+The input layer is always 48.  The output layer is locked per family (PROJECT.md
+§10, §28.6, ADR 0037): 7 for ``flow-classifier-v1`` (the supervised classifier),
+48 for ``flow-anomaly-v1`` (the reconstruction autoencoder).  Only the hidden
+stack is editable.  This module is the compute half of the Architecture Builder
+(issue #22): parameter count, fp32 size and a rough FLOP estimate, with no torch
+dependency so the daemon-less ``inspect-arch`` CLI and the UI can both call it.
 
 Parameter-count model (matches a plain PyTorch MLP built by :mod:`train`):
 
@@ -28,6 +29,16 @@ from .schema import INPUT_SIZE, OUTPUT_SIZE
 
 LOCKED_INPUT = INPUT_SIZE
 LOCKED_OUTPUT = OUTPUT_SIZE
+
+CLASSIFIER_FAMILY = "flow-classifier-v1"
+ANOMALY_FAMILY = "flow-anomaly-v1"
+
+# The locked output width per model family. flow-anomaly-v1 reconstructs the
+# 48-value feature vector, so its output equals the input (ADR 0037).
+FAMILY_OUTPUT: dict[str, int] = {
+    CLASSIFIER_FAMILY: OUTPUT_SIZE,
+    ANOMALY_FAMILY: INPUT_SIZE,
+}
 
 ACTIVATIONS = frozenset(
     {"relu", "leaky_relu", "gelu", "elu", "selu", "tanh", "sigmoid", "identity"}
@@ -87,20 +98,33 @@ class HiddenLayer:
 
 @dataclass
 class Architecture:
-    """A locked 48-in / 7-out MLP with a configurable hidden stack."""
+    """A locked-edge MLP (48 in, family-locked out) with a configurable hidden stack.
+
+    ``family`` selects the locked output width (see :data:`FAMILY_OUTPUT`); it
+    defaults to ``flow-classifier-v1`` and is intentionally *not* emitted by
+    :meth:`to_json` — the metadata bundle carries ``family`` at the top level and
+    the Go ``schema.Architecture`` has no such field.
+    """
 
     hidden: list[HiddenLayer] = field(default_factory=list)
     input_size: int = LOCKED_INPUT
     output_size: int = LOCKED_OUTPUT
+    family: str = CLASSIFIER_FAMILY
 
     def __post_init__(self) -> None:
+        self.family = str(self.family or CLASSIFIER_FAMILY)
+        if self.family not in FAMILY_OUTPUT:
+            raise ArchitectureError(
+                f"unknown model family {self.family!r}; expected one of {sorted(FAMILY_OUTPUT)}"
+            )
+        locked_output = FAMILY_OUTPUT[self.family]
         if self.input_size != LOCKED_INPUT:
             raise ArchitectureError(
-                f"input_size is locked at {LOCKED_INPUT} for flow-classifier-v1, got {self.input_size}"
+                f"input_size is locked at {LOCKED_INPUT} for {self.family}, got {self.input_size}"
             )
-        if self.output_size != LOCKED_OUTPUT:
+        if self.output_size != locked_output:
             raise ArchitectureError(
-                f"output_size is locked at {LOCKED_OUTPUT} for flow-classifier-v1, got {self.output_size}"
+                f"output_size is locked at {locked_output} for {self.family}, got {self.output_size}"
             )
         self.hidden = [
             h if isinstance(h, HiddenLayer) else HiddenLayer.from_json(h) for h in self.hidden
@@ -162,11 +186,15 @@ class Architecture:
     to_metadata_dict = to_json
 
     @classmethod
-    def from_json(cls, d: dict[str, Any]) -> "Architecture":
+    def from_json(
+        cls, d: dict[str, Any], *, family: str = CLASSIFIER_FAMILY
+    ) -> "Architecture":
+        fam = str(d.get("family") or family or CLASSIFIER_FAMILY)
         return cls(
             hidden=[HiddenLayer.from_json(h) for h in d.get("hidden", [])],
             input_size=int(d.get("input_size", LOCKED_INPUT)),
-            output_size=int(d.get("output_size", LOCKED_OUTPUT)),
+            output_size=int(d.get("output_size", FAMILY_OUTPUT.get(fam, LOCKED_OUTPUT))),
+            family=fam,
         )
 
     def summary(self) -> str:
@@ -184,8 +212,22 @@ class Architecture:
         return "\n    |\n".join(rows)
 
 
-def default_architecture() -> Architecture:
-    """A small, sane starting net: 48 -> 64 -> 32 -> 7."""
+def default_architecture(family: str = CLASSIFIER_FAMILY) -> Architecture:
+    """A small, sane starting net for a family.
+
+    ``flow-classifier-v1``: ``48 -> 64 -> 32 -> 7``.
+    ``flow-anomaly-v1``: a symmetric ``48 -> 32 -> 16 -> 32 -> 48`` autoencoder.
+    """
+    if family == ANOMALY_FAMILY:
+        return Architecture(
+            hidden=[
+                HiddenLayer(32, "relu"),
+                HiddenLayer(16, "relu"),
+                HiddenLayer(32, "relu"),
+            ],
+            output_size=FAMILY_OUTPUT[ANOMALY_FAMILY],
+            family=ANOMALY_FAMILY,
+        )
     return Architecture(
         hidden=[
             HiddenLayer(64, "relu", dropout=0.3, batchnorm=True),
