@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The SPA build moved to Vite 8** (issue #147). Vite 8 dropped the object form
+  of `build.rollupOptions.output.manualChunks`, which the config used to keep
+  React in its own cacheable chunk — rewritten to the function form, chunk
+  preserved. `@vitejs/plugin-react` → `^6`. The Node floor rises to
+  `^20.19 || >=22.12` (Vite 8's requirement), stated in a new `web/ui/README.md`
+  and `package.json` `engines`. A new **`SPA build`** CI job runs `vite build`
+  (the Go pipeline stays Node-free) and fails if the committed `web/dist` is
+  stale or a rebuild is non-deterministic — so a future toolchain bump cannot
+  pass review untested. `web/dist` asset hashes changed with the new bundler.
+
 ### Added
 
 - **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
