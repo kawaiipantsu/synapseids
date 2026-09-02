@@ -280,6 +280,38 @@ export interface HostProfile {
   anomaly_exceeded: number
 }
 
+/** internal/insight.FingerprintValue — one named dimension of a host fingerprint. */
+export interface FingerprintValue {
+  name: string
+  value: number
+}
+
+/** internal/insight.Fingerprint — a host's hand-crafted behavioural summary. */
+export interface HostFingerprint {
+  ip: string
+  flow_count: number
+  dims: FingerprintValue[]
+  vector: number[]
+}
+
+/** internal/insight.Similarity — one cosine-nearest neighbour. */
+export interface HostSimilarity {
+  ip: string
+  cosine: number
+  flow_count: number
+}
+
+/** GET /api/v1/hosts/{ip}/similar (issue #63, ADR 0039). */
+export interface HostSimilarResult {
+  ip: string
+  fingerprint: HostFingerprint
+  dims: string[]
+  min_flows: number
+  similar: HostSimilarity[]
+  /** "not a learned embedding and not a verdict" disclaimer. */
+  method: string
+}
+
 export interface TimelineBucket {
   ts: string
   total: number

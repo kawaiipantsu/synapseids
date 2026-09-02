@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-host behavioural fingerprint + similarity search** (issue #63, EPIC
+  Phase 7, [ADR 0039](docs/adr/0039-per-host-behavioural-fingerprint.md)).
+  `GET /api/v1/hosts/{ip}/similar` returns a host's behavioural fingerprint — a
+  fixed 22-dim vector of scale-free ratios (flow direction, volume asymmetry,
+  peer/port fan-out and Shannon entropy, protocol mix, the seven
+  `traffic-classes-v1` shares, disagreement / anomaly rates), all from the
+  bounded per-host aggregates `internal/insight` already keeps — plus the other
+  observed hosts whose fingerprint is cosine-nearest, with a `min_flows`
+  candidate floor (default 5). It is a lateral-movement / botnet-peer **lead,
+  not a verdict**, and **hand-crafted, not trained** — the response says so and
+  a learned embedding is a future upgrade behind the same shape. A "Similar
+  hosts" panel on the Investigate host view renders it with click-through.
+  `counter` gained `distinct()` and `entropyNorm()`.
+
 - **Anomaly autoencoder model family** (issue #47, EPIC Phase 7, [ADR
   0037](docs/adr/0037-anomaly-autoencoder-model.md)). A second model family,
   `flow-anomaly-v1`: a 48-in / 48-out autoencoder whose per-flow reconstruction

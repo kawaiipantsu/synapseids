@@ -16,6 +16,7 @@ import type {
   FeatureSchema,
   FlowRecord,
   HostProfile,
+  HostSimilarResult,
   TimelineSeries,
   TrainingList,
   TrainingRun,
@@ -289,6 +290,19 @@ export function getHost(ip: string): Promise<HostProfile> {
 
 export function getHostFlows(ip: string, f: ClassFilterParams = {}): Promise<FlowRecord[]> {
   return getJSON<FlowRecord[]>('/api/v1/hosts/' + encodeURIComponent(ip) + '/flows' + filterQuery(f))
+}
+
+export function getHostSimilar(
+  ip: string,
+  p: { limit?: number; min_flows?: number } = {},
+): Promise<HostSimilarResult> {
+  const q = new URLSearchParams()
+  if (p.limit != null) q.set('limit', String(p.limit))
+  if (p.min_flows != null) q.set('min_flows', String(p.min_flows))
+  const s = q.toString()
+  return getJSON<HostSimilarResult>(
+    '/api/v1/hosts/' + encodeURIComponent(ip) + '/similar' + (s ? '?' + s : ''),
+  )
 }
 
 export function getHostClassifications(

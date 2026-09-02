@@ -4,12 +4,19 @@ import {
   getHostClassifications,
   getHostFlows,
   getHosts,
+  getHostSimilar,
   getTimeline,
   hostReportURL,
   type BucketWidth,
 } from '../api/client'
 import { useStream } from '../api/stream'
-import type { Classification, FlowRecord, HostProfile, TimelineSeries } from '../api/types'
+import type {
+  Classification,
+  FlowRecord,
+  HostProfile,
+  HostSimilarResult,
+  TimelineSeries,
+} from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
 import { IssueLink } from '../components/IssueLink'
 import { TimelineChart, type Range } from '../components/TimelineChart'
@@ -36,6 +43,88 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
       <h3>{label}</h3>
       <div className="big">{value}</div>
       {sub ? <div className="foot">{sub}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * Similar hosts (§30, issue #63, ADR 0039). A cosine match over a hand-crafted
+ * behavioural fingerprint — a pivot lead, not a verdict. Self-fetches so it does
+ * not widen the host view's main load.
+ */
+function SimilarHostsPanel({ host }: { host: string }) {
+  const [data, setData] = useState<HostSimilarResult | null>(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    let live = true
+    setData(null)
+    setErr('')
+    getHostSimilar(host, { limit: 8 })
+      .then((d) => live && setData(d))
+      .catch((e: unknown) => live && setErr(e instanceof Error ? e.message : String(e)))
+    return () => {
+      live = false
+    }
+  }, [host])
+
+  if (err) return null // the host view already surfaces load errors; stay quiet here
+  if (data == null) {
+    return (
+      <div className="sect">
+        <h3>Similar hosts</h3>
+        <div className="foot">loading…</div>
+      </div>
+    )
+  }
+
+  // Top behavioural dimensions of this host, for a one-line "why".
+  const topDims = [...data.fingerprint.dims]
+    .filter((d) => d.name !== 'flow_volume')
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 4)
+
+  return (
+    <div className="sect">
+      <h3>Similar hosts</h3>
+      <p className="foot">
+        {data.method}{' '}
+        {data.fingerprint.flow_count < 20 ? (
+          <b>Thin fingerprint ({fmtInt(data.fingerprint.flow_count)} flows) — treat with caution.</b>
+        ) : null}
+      </p>
+      <p className="foot mono">
+        fingerprint:{' '}
+        {topDims.map((d) => `${d.name}=${d.value.toFixed(2)}`).join('  ·  ')}
+      </p>
+      {data.similar.length === 0 ? (
+        <div className="foot">
+          no other host has ≥ {data.min_flows} flows to compare against.
+        </div>
+      ) : (
+        <table className="flow comfortable">
+          <thead>
+            <tr>
+              <th>address</th>
+              <th className="num">cosine</th>
+              <th className="num">flows</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.similar.map((s) => (
+              <tr
+                key={s.ip}
+                onClick={() => navigateWith('/investigate', { host: s.ip })}
+                style={{ cursor: 'pointer' }}
+              >
+                <td className="mono">{s.ip}</td>
+                <td className="num">{s.cosine.toFixed(3)}</td>
+                <td className="num">{fmtInt(s.flow_count)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }
@@ -485,15 +574,17 @@ export function Investigate() {
             </div>
           </div>
 
+          <SimilarHostsPanel host={host} />
+
           <div className="sect stub">
             <span className="tag">
               <IssueLink n={63} />
             </span>{' '}
-            The per-host <b>anomaly score</b> above is real once a <code>flow-anomaly-v1</code> model
-            is active (ADR 0037); the Flow Inspector shows the per-flow reconstruction gaps. A
-            behavioural baseline and unusual-feature callouts (§19.4) still need per-host embeddings
-            (<IssueLink n={63} />), so <code>baseline_available: false</code> and nothing here
-            invents a range to compare against.
+            "Similar hosts" is a cosine match over a <b>hand-crafted</b> behavioural fingerprint
+            (ADR 0039) — a lateral-movement lead, not a verdict. A <i>learned</i> per-host embedding
+            and a behavioural baseline (§19.4) are still <IssueLink n={63} />, so{' '}
+            <code>baseline_available: false</code> and nothing here invents a range to compare
+            against.
           </div>
           <div className="sect stub">
             <span className="tag">
