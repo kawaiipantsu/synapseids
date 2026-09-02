@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 
-import { getDetections, getModels } from '../api/client'
+import { getDetections, getModels, getTimeline } from '../api/client'
 import { useStream, type Ingest } from '../api/stream'
-import type { Detection, ModelList, SensorTopology } from '../api/types'
+import type { Detection, ModelList, SensorTopology, TimelineSeries } from '../api/types'
 import { IssueLink, IssueLinks } from '../components/IssueLink'
 import { Sparkline } from '../components/Sparkline'
 import { classColor, severityColor } from '../lib/classes'
@@ -356,6 +356,67 @@ function RecentDetectionsCard() {
   )
 }
 
+/**
+ * Anomaly rate over the retained 1-minute timeline (ADR 0037). A real number
+ * when a flow-anomaly-v1 model scored the window; a labelled gap otherwise —
+ * never a fabricated zero (PROJECT.md §16).
+ */
+function AnomalyRateCard() {
+  const [series, setSeries] = useState<TimelineSeries | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const load = () =>
+      getTimeline({ bucket: '1m' })
+        .then((s) => live && (setSeries(s), setError(null)))
+        .catch((e) => live && setError(String(e)))
+    load()
+    const id = window.setInterval(load, SLOW_POLL_MS)
+    return () => {
+      live = false
+      window.clearInterval(id)
+    }
+  }, [])
+
+  if (error) return <Gap title="Anomaly rate" issues={[167]} note={`timeline query failed: ${error}`} />
+  if (series == null)
+    return (
+      <div className="card">
+        <h3>Anomaly rate</h3>
+        <div className="foot">loading…</div>
+      </div>
+    )
+  if (!series.anomaly_available)
+    return (
+      <Gap
+        title="Anomaly rate"
+        issues={[167]}
+        note="no flow-anomaly-v1 model is active — activate one to score flows for novelty (§13)"
+      />
+    )
+
+  let scored = 0
+  let exceeded = 0
+  let peak = 0
+  for (const b of series.buckets) {
+    scored += b.anomaly_n
+    exceeded += b.anomaly_exceeds
+    if (b.anomaly_max > peak) peak = b.anomaly_max
+  }
+  const pct = scored > 0 ? (exceeded / scored) * 100 : 0
+  return (
+    <div className="card">
+      <h3>Anomaly rate · retained window</h3>
+      <div className="big">{fmtPct(pct / 100, 1)}</div>
+      <div className="note">
+        {fmtInt(exceeded)} / {fmtInt(scored)} scored flows over threshold · peak score{' '}
+        {peak.toFixed(2)}
+      </div>
+    </div>
+  )
+}
+
 export function Dashboard() {
   const { status, rollup, ingest, connected } = useStream()
   const registry = useModelRegistry()
@@ -520,13 +581,10 @@ export function Dashboard() {
         <RecentDetectionsCard />
         <SensorHealthCard topology={ingest.topology} error={ingest.error} />
 
-        {/* Still genuinely unbuilt. Both cite open issues, and neither shows a
-            number — PROJECT.md §16 makes the labelled gap the correct render. */}
-        <Gap
-          title="Anomaly rate"
-          issues={[47]}
-          note="needs the anomaly autoencoder; nothing scores a flow for novelty yet (§13)"
-        />
+        <AnomalyRateCard />
+
+        {/* Still genuinely unbuilt. Cites an open issue, and shows no number —
+            PROJECT.md §16 makes the labelled gap the correct render. */}
         <Gap
           title="Inference latency p50/p95/p99"
           issues={[55]}

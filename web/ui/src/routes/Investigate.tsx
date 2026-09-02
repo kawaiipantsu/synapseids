@@ -11,7 +11,7 @@ import {
 import { useStream } from '../api/stream'
 import type { Classification, FlowRecord, HostProfile, TimelineSeries } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
-import { IssueLink, IssueLinks } from '../components/IssueLink'
+import { IssueLink } from '../components/IssueLink'
 import { TimelineChart, type Range } from '../components/TimelineChart'
 import { CLASS_NAMES, classColor } from '../lib/classes'
 import { fmtAgo, fmtBytes, fmtDateTime, fmtDuration, fmtInt, fmtPct } from '../lib/format'
@@ -307,6 +307,15 @@ export function Investigate() {
             />
             <Stat label="First seen" value={fmtAgo(profile.first_seen)} sub={fmtDateTime(profile.first_seen)} />
             <Stat label="Last seen" value={fmtAgo(profile.last_seen)} sub={fmtDateTime(profile.last_seen)} />
+            {profile.anomaly_available ? (
+              <Stat
+                label="Anomaly score"
+                value={`peak ${profile.anomaly_max.toFixed(2)}`}
+                sub={`mean ${profile.anomaly_mean.toFixed(2)} over ${fmtInt(
+                  profile.anomaly_flows,
+                )} flows · ${fmtInt(profile.anomaly_exceeded)} over threshold`}
+              />
+            ) : null}
           </div>
 
           <div className="sect">
@@ -478,13 +487,13 @@ export function Investigate() {
 
           <div className="sect stub">
             <span className="tag">
-              <IssueLinks issues={[47, 63]} />
+              <IssueLink n={63} />
             </span>{' '}
-            Behavioural baseline, anomaly history and unusual-feature callouts (§19.4) need the
-            anomaly model (<IssueLink n={47} />) and per-host baselines (<IssueLink n={63} />), plus
-            drift (<IssueLink n={49} />). The API reports <code>baseline_available: false</code> and{' '}
-            <code>anomaly_available: false</code>; nothing here invents a baseline to compare
-            against.
+            The per-host <b>anomaly score</b> above is real once a <code>flow-anomaly-v1</code> model
+            is active (ADR 0037); the Flow Inspector shows the per-flow reconstruction gaps. A
+            behavioural baseline and unusual-feature callouts (§19.4) still need per-host embeddings
+            (<IssueLink n={63} />), so <code>baseline_available: false</code> and nothing here
+            invents a range to compare against.
           </div>
           <div className="sect stub">
             <span className="tag">

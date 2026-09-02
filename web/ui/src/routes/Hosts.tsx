@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getHosts, hostReportURL } from '../api/client'
 import type { HostProfile } from '../api/types'
 import { useStream } from '../api/stream'
-import { IssueLink, IssueLinks } from '../components/IssueLink'
+import { IssueLink } from '../components/IssueLink'
 import { classColor } from '../lib/classes'
 import { fmtAgo, fmtBytes, fmtInt } from '../lib/format'
 import { navigateWith } from '../lib/hashRouter'
@@ -198,6 +198,7 @@ export function Hosts() {
               <th>top ports</th>
               <th>class mix</th>
               <th className="num">disagree</th>
+              <th className="num">anomaly</th>
               <th>report</th>
             </tr>
           </thead>
@@ -225,6 +226,29 @@ export function Hosts() {
                   <ClassMix host={h} />
                 </td>
                 <td className="num">{h.disagreements > 0 ? fmtInt(h.disagreements) : '—'}</td>
+                <td
+                  className="num"
+                  title={
+                    h.anomaly_available
+                      ? `${fmtInt(h.anomaly_flows)} flows scored · mean ${h.anomaly_mean.toFixed(
+                          2,
+                        )} · ${fmtInt(h.anomaly_exceeded)} over threshold`
+                      : 'no anomaly model active'
+                  }
+                >
+                  {h.anomaly_available ? (
+                    <>
+                      {h.anomaly_max.toFixed(2)}
+                      {h.anomaly_exceeded > 0 ? (
+                        <span className="badge-dis" title="flows over the model's threshold">
+                          {fmtInt(h.anomaly_exceeded)}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    '—'
+                  )}
+                </td>
                 <td>
                   <ReportCell ip={h.ip} />
                 </td>
@@ -241,12 +265,12 @@ export function Hosts() {
 
       <div className="sect stub">
         <span className="tag">
-          <IssueLinks issues={[47, 63]} />
+          <IssueLink n={63} />
         </span>{' '}
-        Behavioural baseline and anomaly trend (§19.5) are not computed: the anomaly model is{' '}
-        <IssueLink n={47} /> and per-host baselines/embeddings are <IssueLink n={63} />. The API
-        reports <code>baseline_available: false</code> and <code>anomaly_available: false</code>{' '}
-        rather than showing an invented number.
+        The <b>anomaly</b> column is the per-host reconstruction score once a{' '}
+        <code>flow-anomaly-v1</code> model is active (ADR 0037); it reads <code>—</code> otherwise.
+        A behavioural baseline / per-host embedding (§19.5) is still <IssueLink n={63} />, so the
+        API reports <code>baseline_available: false</code> rather than an invented range.
       </div>
     </div>
   )

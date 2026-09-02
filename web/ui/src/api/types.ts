@@ -267,10 +267,17 @@ export interface HostProfile {
   disagreements: number
   /** Detail view only. */
   recent_flows?: HostFlowRef[]
-  /** Always false in this build — behavioural baselines are issues #47 / #63. */
+  /** Always false in this build — behavioural baselines are issue #63. */
   baseline_available: boolean
-  /** Always false in this build — anomaly scoring is issue #47. */
+  /** True when a flow-anomaly-v1 model scored any of this host's flows (ADR 0037). */
   anomaly_available: boolean
+  /** How many of this host's classified records an anomaly model scored. */
+  anomaly_flows: number
+  /** Mean / max bounded 0..1 reconstruction score over those records. */
+  anomaly_mean: number
+  anomaly_max: number
+  /** How many crossed the model's calibrated threshold. */
+  anomaly_exceeded: number
 }
 
 export interface TimelineBucket {
@@ -278,12 +285,19 @@ export interface TimelineBucket {
   total: number
   by_class: Record<string, number>
   disagreements: number
+  /** Flows in the bucket an anomaly model scored (0 when none was active). */
+  anomaly_n: number
+  /** Mean / max bounded 0..1 reconstruction score over those flows. */
+  anomaly_mean: number
+  anomaly_max: number
+  /** How many crossed the model's calibrated threshold. */
+  anomaly_exceeds: number
 }
 
 export interface TimelineSeries {
   bucket_sec: number
   buckets: TimelineBucket[]
-  /** Always false in this build — there is no anomaly series to plot yet (#47). */
+  /** True when a flow-anomaly-v1 model scored flows anywhere in the window. */
   anomaly_available: boolean
 }
 
@@ -955,9 +969,9 @@ export interface ReportCoverage {
   notable_candidates: number
   notable_flows_truncated: boolean
   flow_records_missing: number
-  /** Always false in this build — behavioural baselines are issues #47 / #63. */
+  /** Always false in this build — behavioural baselines are issue #63. */
   baseline_available: boolean
-  /** Always false in this build — anomaly scoring is issue #47. */
+  /** True when a flow-anomaly-v1 model scored any verdict in scope (ADR 0037). */
   anomaly_available: boolean
 }
 
@@ -1002,9 +1016,8 @@ export interface InvestigationReport {
 // not produce them and the drawer must not imply otherwise:
 //
 //   * a training baseline, or any "current vs baseline" pair. §19.3's example
-//     shows one, but baselines are issues #47 / #63 — `baseline.available` is
-//     false and there is no value field to render next to it.
-//   * an anomaly score. Issue #47 as well; `anomaly.available` is always false.
+//     shows one, but baselines are issue #63 — `baseline.available` is false and
+//     there is no value field to render next to it.
 //   * a per-feature contribution number for a trained model. Exact attribution
 //     needs gradients or SHAP, so `explanation.kind` is 'unavailable' for an
 //     ONNX model and `rules` is empty. A rough proxy is not offered at all,
@@ -1117,6 +1130,35 @@ export interface StubSection {
   note: string
 }
 
+/** internal/inference.FeatureDelta — one feature's reconstruction gap (normalized space). */
+export interface FeatureDelta {
+  index: number
+  name: string
+  input: number
+  output: number
+  /** output - input */
+  delta: number
+}
+
+/**
+ * internal/api.anomalySection — the autoencoder novelty view of a flow (ADR
+ * 0037). When `available`, the scalars come from the stored verdict; `top_deltas`
+ * is present only while the model that produced it is still loaded. When no
+ * anomaly model scored the flow it is `{ available: false, note }` with no
+ * value fields — a labelled gap, never a fabricated number.
+ */
+export interface AnomalySection {
+  available: boolean
+  model_id?: string
+  /** bounded 0..1 reconstruction-error score */
+  score?: number
+  recon_error?: number
+  threshold?: number
+  exceeds?: boolean
+  top_deltas?: FeatureDelta[]
+  note?: string
+}
+
 /** GET /api/v1/flows/{id}/explain */
 export interface FlowExplain {
   flow_id: number
@@ -1125,7 +1167,7 @@ export interface FlowExplain {
   verdict_available: boolean
   verdict?: ExplainVerdict
   models: ExplainModel[]
-  anomaly: StubSection
+  anomaly: AnomalySection
   baseline: StubSection
   notes?: string[]
 }
