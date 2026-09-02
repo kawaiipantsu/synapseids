@@ -1,7 +1,15 @@
 // Package storage persists flows and classifications behind a small interface so
 // the backend can change without touching the rest of the daemon. Phase 1 ships
-// an in-memory ring buffer; SQLite and later ClickHouse are tracked separately
-// (PROJECT.md §20).
+// an in-memory ring buffer (Mem); SQLite (#53) and later ClickHouse (#51) are
+// tracked separately (PROJECT.md §20).
+//
+// The behavioural contract every Store must satisfy — round-trip, history
+// ordering, newest-first + limit semantics, bounded capacity with counted
+// eviction, a named Driver, idempotent Close — is encoded once as an executable
+// suite in the storagetest sub-package: a new backend adds a single test that
+// runs storagetest.RunConformance against its own constructor. config.Storage's
+// `driver` string selects the backend at startup (currently "memory"; "sqlite"
+// is a recognised-but-unimplemented value).
 package storage
 
 import (

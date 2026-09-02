@@ -2,7 +2,16 @@
 // packet path from the API, storage and live UI. Publishing never blocks: a
 // subscriber that cannot keep up drops events, which are counted, rather than
 // stalling ingestion (PROJECT.md §17, §22). Kafka/NATS are deliberately out of
-// scope until distribution requires them.
+// scope until distribution requires them (#52, EPIC Phase 8).
+//
+// Extension point for distribution. When a message bus is eventually needed, it
+// attaches as an ordinary subscriber, not a rewrite of this package: a relay
+// goroutine calls Bus.Subscribe, serialises each Event (already the frozen
+// event-envelope-v1 shape) and forwards it to the external transport, with the
+// existing bounded-queue backpressure applying to the relay exactly as to any
+// other slow consumer. Producers that should target something other than the
+// concrete *Bus take a Sink (below); a fan-out Sink over {*Bus, relay} is then
+// the only new code. The in-process Bus stays the source of truth (§17).
 package events
 
 import (
@@ -42,6 +51,15 @@ type Event struct {
 	TS   string `json:"ts"`
 	Seq  uint64 `json:"seq"`
 	Data any    `json:"data"`
+}
+
+// Sink is the write side of the bus: everything a producer needs to emit an
+// event. *Bus satisfies it. Code that may later publish to more than the
+// in-process bus (a distribution relay, #52) depends on Sink rather than *Bus
+// so that seam costs no change here. A fan-out implementation lives with the
+// relay, not in this package, until there is one.
+type Sink interface {
+	Publish(t Type, data any)
 }
 
 // Bus is a fan-out event bus with bounded per-subscriber queues.
