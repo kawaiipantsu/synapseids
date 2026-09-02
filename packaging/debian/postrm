@@ -1,0 +1,22 @@
+#!/bin/sh
+# synapseids postrm — reload the systemd manager after the units are gone.
+#
+# The `synapse` system user and /var/lib/synapseids are intentionally left in
+# place on purge: removing a UID that still owns files on disk is how you get
+# orphaned ownership, and the state directory may hold data an operator wants.
+# Remove them by hand if you really mean to:
+#
+#     deluser --system synapse ; rm -rf /var/lib/synapseids
+#
+set -e
+
+case "$1" in
+remove | purge)
+	if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl daemon-reload >/dev/null 2>&1 || true
+	fi
+	;;
+upgrade | failed-upgrade | abort-install | abort-upgrade | disappear) ;;
+esac
+
+exit 0

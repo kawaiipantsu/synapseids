@@ -1,0 +1,15 @@
+#!/bin/sh
+# synapseids prerm — stop the services on package removal (not on upgrade, where
+# the new package's postinst leaves them as they were).
+set -e
+
+case "$1" in
+remove)
+	if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl stop synapsed.service synapse-sensor.service >/dev/null 2>&1 || true
+	fi
+	;;
+upgrade | deconfigure | failed-upgrade) ;;
+esac
+
+exit 0

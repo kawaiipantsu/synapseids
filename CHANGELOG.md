@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
+  default config** (issue #60). Previously it held only binaries + man pages.
+  New: `/lib/systemd/system/{synapsed,synapse-sensor}.service`,
+  `/usr/lib/{sysusers.d,tmpfiles.d}/synapseids.conf`, and
+  `/etc/synapseids/{synapse.json,synapsed.env}` as conffiles. The maintainer
+  scripts (`postinst`/`prerm`/`postrm`) create the unprivileged `synapse` user
+  and its directories, fix the conffile group, and `daemon-reload` — but
+  **never `enable` or `start`**: capturing traffic is an explicit operator
+  decision (PROJECT.md §21). All guarded to be safe on a host without systemd.
 - **Signed `.deb` packages + APT repository** (issue #57). `make deb-sign`
   (`scripts/sign-deb.sh`) writes an armoured detached `.asc` for every `.deb`
   and for `SHA256SUMS` (the anchor `install.sh` already verifies), an optional

@@ -3,8 +3,11 @@
 # directly (no fpm, no ruby). Invoked by `make deb` with VERSION, DIST, BINARIES set.
 #
 # Each package carries all three binaries plus a man page each, DEP-5 copyright
-# and a Debian changelog. No Depends — the binaries are static. systemd units
-# ship separately in contrib/ (tracked: unit in the .deb).
+# and a Debian changelog, the systemd units + sysusers + tmpfiles fragments, and
+# a default config under /etc/synapseids (conffiles). No Depends — the binaries
+# are static. The maintainer scripts create the `synapse` user and its
+# directories and reload the systemd manager; they never enable or start the
+# daemon (issue #60, PROJECT.md §21).
 set -eu
 
 VERSION="${VERSION:?}"
@@ -47,7 +50,11 @@ for arch in amd64 386 arm64 arm; do
 	mkdir -p "$pkgdir/DEBIAN" \
 		"$pkgdir/usr/bin" \
 		"$pkgdir/usr/share/doc/synapseids" \
-		"$pkgdir/usr/share/man/man1"
+		"$pkgdir/usr/share/man/man1" \
+		"$pkgdir/lib/systemd/system" \
+		"$pkgdir/usr/lib/sysusers.d" \
+		"$pkgdir/usr/lib/tmpfiles.d" \
+		"$pkgdir/etc/synapseids"
 
 	for b in $BINARIES; do
 		install -m 0755 "$src/$b" "$pkgdir/usr/bin/$b"
@@ -60,6 +67,33 @@ for arch in amd64 386 arm64 arm; do
 	install -m 0644 "$COPYRIGHT" "$pkgdir/usr/share/doc/synapseids/copyright"
 	sed -e "s/@VERSION@/$DEBVER/g" -e "s/@DATE@/$(date -u -R)/g" "$CHANGELOG_IN" \
 		| gzip -9 -n > "$pkgdir/usr/share/doc/synapseids/changelog.Debian.gz"
+
+	# systemd units + sysusers/tmpfiles fragments (issue #60). The units carry
+	# their [Install] section commented out / the daemon-off posture; the
+	# maintainer scripts do not enable them.
+	install -m 0644 "$ROOT/contrib/systemd/synapsed.service" \
+		"$pkgdir/lib/systemd/system/synapsed.service"
+	install -m 0644 "$ROOT/contrib/systemd/synapse-sensor.service" \
+		"$pkgdir/lib/systemd/system/synapse-sensor.service"
+	install -m 0644 "$ROOT/contrib/systemd/synapseids.sysusers" \
+		"$pkgdir/usr/lib/sysusers.d/synapseids.conf"
+	install -m 0644 "$ROOT/contrib/systemd/synapseids.tmpfiles" \
+		"$pkgdir/usr/lib/tmpfiles.d/synapseids.conf"
+
+	# Default config under /etc, tracked as conffiles so an operator's edits
+	# survive an upgrade. Laid down root:root 0640; postinst chgrps to `synapse`
+	# once that group exists.
+	install -m 0640 "$ROOT/contrib/config/synapse.json" \
+		"$pkgdir/etc/synapseids/synapse.json"
+	install -m 0640 "$ROOT/contrib/systemd/synapsed.env" \
+		"$pkgdir/etc/synapseids/synapsed.env"
+	install -m 0644 "$ROOT/packaging/debian/conffiles" "$pkgdir/DEBIAN/conffiles"
+
+	# Maintainer scripts: create the user + dirs, reload systemd, stop on remove.
+	# Never enable or start (PROJECT.md §21, §28.18).
+	for s in postinst prerm postrm; do
+		install -m 0755 "$ROOT/packaging/debian/$s" "$pkgdir/DEBIAN/$s"
+	done
 
 	out="$DIST/synapseids_${DEBVER}_${da}.deb"
 	dpkg-deb --root-owner-group --build "$pkgdir" "$out" >/dev/null
