@@ -383,11 +383,13 @@ feature.
 - **Deliberately labelled stubs** on Hosts and Investigate, each naming its open
   issue (#63 per-host baselines, #49 drift): behavioural baseline and
   unusual-feature callouts. The API reports `baseline_available: false` and the
-  SPA says so rather than inventing a baseline. **Anomaly scoring is real**
-  once a `flow-anomaly-v1` model is active (ADR 0037): the API populates
+  SPA says so rather than inventing a baseline. **Anomaly scoring is real** once
+  a `flow-anomaly-v1` model is active (ADR 0037): the API populates
   `anomaly_available` / the `anomaly` object / per-bucket and per-host
-  reconstruction-score aggregates; the SPA panels that plot it are a
-  follow-up, so until then the SPA still shows the `#47` stub. No placeholder anywhere in the SPA cites a
+  reconstruction-score aggregates, and the SPA renders them — the Flow Inspector
+  anomaly section, a timeline caption, a Dashboard *Anomaly rate* card, a Hosts
+  **anomaly** column and an Investigate *Anomaly score* stat — a labelled gap
+  when no model is active. No placeholder anywhere in the SPA cites a
   development phase any more: a phase number goes stale the instant its epic
   closes, which turned correct "this is missing" notices into apparent broken
   promises (#118). A **downloadable report** carries the same

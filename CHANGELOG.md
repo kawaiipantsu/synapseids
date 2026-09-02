@@ -57,7 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (reconstruction-error percentiles + a p99 threshold) plus a
     reconstruction-shaped `metrics.json` (percentiles, suggested threshold,
     ROC-AUC / TPR-FPR vs held-out attack traffic). `trainer/examples/anomaly-recipe.json`.
-  - Not yet in this release: the SPA views that surface the score (issue #167).
+  - **SPA:** the Flow Inspector's anomaly section renders the score, the
+    reconstruction error, the calibrated threshold and an over-threshold badge,
+    plus a table of the largest per-feature reconstruction gaps; the timeline
+    caption, a new Dashboard *Anomaly rate* card, an **anomaly** column on the
+    Hosts table and an *Anomaly score* stat on the Investigate host view all
+    show real numbers when a `flow-anomaly-v1` model is active and a labelled
+    gap otherwise (issue #167).
 
 - **`GET /api/v1/drift` now carries an advisory retraining suggestion** (issue
   #65, [ADR 0038](docs/adr/0038-drift-config-and-retraining-suggestion.md)). A
