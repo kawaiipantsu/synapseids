@@ -53,6 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the score — both tracked as follow-ups. The Go side is exercised with
     `modeltest`-built autoencoder bundles.
 
+- **`GET /api/v1/drift` now carries an advisory retraining suggestion** (issue
+  #65, [ADR 0038](docs/adr/0038-drift-config-and-retraining-suggestion.md)). A
+  new `drift` config block makes the per-feature bands tunable
+  (`warn_z` / `drift_z`, defaults `2.0` / `4.0`) and adds the suggestion trips
+  (`retrain_suggest_z` `6.0`, `retrain_suggest_features` `3`). When a training
+  baseline exists the response gains a `suggestion` object —
+  `retrain_suggested` true once `overall.max_z` or the drift-band feature count
+  crosses its threshold, with a `reason`. It is **advice only**: no event, no
+  storage, and the daemon still never retrains or activates a model on its own
+  (PROJECT.md §19.13, §28.10). `contrib/config/synapse.{json,yaml}` carry the
+  defaults.
+
 - **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
   default config** (issue #60). Previously it held only binaries + man pages.
   New: `/lib/systemd/system/{synapsed,synapse-sensor}.service`,

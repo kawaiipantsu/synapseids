@@ -46,9 +46,11 @@ z_i = |current_mean_i − training_mean_i| / training_std_i
 with `training_std_i` floored at 1e-9 (the trainer already floors it). Bands:
 `stable` (`z < 2`), `warn` (`2 ≤ z < 4`), `drift` (`z ≥ 4`); the overall `state`
 is the worst band present. `std_ratio_i = current_std_i / training_std_i` is
-also reported so a change in spread with a steady mean is still visible. The
-bands are documented constants for now — a `drift.*` config block is a
-follow-up, not a blocker.
+also reported so a change in spread with a steady mean is still visible.
+
+> The bands were documented constants here; the `drift.*` config block and an
+> advisory retraining suggestion followed in issue #65 /
+> [ADR 0038](0038-drift-config-and-retraining-suggestion.md).
 
 `z` is a coarse first-cut signal, deliberately. A distribution-distance measure
 (PSI, KL, a two-sample test) is a better metric and is left for when a trained

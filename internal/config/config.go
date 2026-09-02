@@ -60,6 +60,7 @@ type Config struct {
 	Training  Training  `json:"training"`
 	Review    Review    `json:"review"`
 	Alerts    Alerts    `json:"alerts"`
+	Drift     Drift     `json:"drift"`
 	Logging   Logging   `json:"logging"`
 	Auth      Auth      `json:"auth"`
 	Live      Live      `json:"live"`
@@ -208,6 +209,24 @@ type Review struct {
 	Directory string `json:"directory"`
 }
 
+// Drift configures GET /api/v1/drift (issue #49, ADR 0036/0038). The bands were
+// documented constants in ADR 0036; this block makes them tunable and adds the
+// retraining-suggestion thresholds (issue #65). The suggestion is advisory only
+// — the daemon never retrains or activates a model (PROJECT.md §19.13, §28.10).
+type Drift struct {
+	// WarnZ / DriftZ are the per-feature bands on the standardized mean shift
+	// z = |current_mean - training_mean| / training_std: stable (z < WarnZ),
+	// warn (WarnZ <= z < DriftZ), drift (z >= DriftZ). Defaults: 2.0 and 4.0.
+	WarnZ  float64 `json:"warn_z"`
+	DriftZ float64 `json:"drift_z"`
+	// RetrainSuggestZ is the overall max-z at or above which the drift response
+	// carries retrain_suggested:true. RetrainSuggestFeatures does the same when
+	// that many features are individually in the drift band. Either trips it.
+	// Defaults: 6.0 and 3.
+	RetrainSuggestZ        float64 `json:"retrain_suggest_z"`
+	RetrainSuggestFeatures int     `json:"retrain_suggest_features"`
+}
+
 // Alerts configures the detection policy and the bounded detection store behind
 // GET /api/v1/detections (issue #117; ADR 0027).
 //
@@ -334,6 +353,12 @@ func Default() Config {
 			AlertOnDisagreement:   true,
 			MaxRecent:             1000,
 			DedupWindowSec:        60,
+		},
+		Drift: Drift{
+			WarnZ:                  2.0,
+			DriftZ:                 4.0,
+			RetrainSuggestZ:        6.0,
+			RetrainSuggestFeatures: 3,
 		},
 		Logging: Logging{Format: "text", Level: "info"},
 		Auth:    Auth{Enabled: false, AllowLoopback: true},
@@ -499,6 +524,9 @@ func (c Config) validate() error {
 	if err := ValidateAlerts(c.Alerts); err != nil {
 		return fmt.Errorf("config: alerts: %w", err)
 	}
+	if err := ValidateDrift(c.Drift); err != nil {
+		return fmt.Errorf("config: drift: %w", err)
+	}
 	if err := ValidateLogging(c.Logging); err != nil {
 		return fmt.Errorf("config: logging: %w", err)
 	}
@@ -608,6 +636,24 @@ func ValidateAlerts(a Alerts) error {
 		if err := validateSuppressRule(r); err != nil {
 			return fmt.Errorf("suppress[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// ValidateDrift checks the drift bands are positive and ordered
+// (warn <= drift <= retrain-suggest) and that the feature-count trip is >= 1.
+func ValidateDrift(d Drift) error {
+	if d.WarnZ <= 0 || d.DriftZ <= 0 || d.RetrainSuggestZ <= 0 {
+		return fmt.Errorf("warn_z, drift_z and retrain_suggest_z must all be > 0 (got %g, %g, %g)", d.WarnZ, d.DriftZ, d.RetrainSuggestZ)
+	}
+	if d.WarnZ > d.DriftZ {
+		return fmt.Errorf("warn_z %g must not exceed drift_z %g", d.WarnZ, d.DriftZ)
+	}
+	if d.DriftZ > d.RetrainSuggestZ {
+		return fmt.Errorf("drift_z %g must not exceed retrain_suggest_z %g", d.DriftZ, d.RetrainSuggestZ)
+	}
+	if d.RetrainSuggestFeatures < 1 {
+		return fmt.Errorf("retrain_suggest_features must be >= 1 (got %d)", d.RetrainSuggestFeatures)
 	}
 	return nil
 }

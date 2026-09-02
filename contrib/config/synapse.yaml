@@ -39,6 +39,12 @@ alerts:
   max_recent: 1000
   dedup_window_sec: 60
 
+drift:
+  warn_z: 2.0
+  drift_z: 4.0
+  retrain_suggest_z: 6.0
+  retrain_suggest_features: 3
+
 live:
   websocket_batch: 100ms
   client_queue_size: 5000
