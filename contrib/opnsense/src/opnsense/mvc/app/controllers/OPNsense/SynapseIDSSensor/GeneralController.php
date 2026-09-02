@@ -31,28 +31,21 @@ namespace OPNsense\SynapseIDSSensor;
 use OPNsense\Base\IndexController;
 
 /**
- * Class SettingsController
+ * SynapseIDS > General: master enable, transport posture, bearer token, TLS
+ * material and the shared log level (issue #178).
  *
- * Back-compatibility shim. The plugin UI moved from one page to a SynapseIDS
- * submenu (Sensors / General / Logs / Diagnostics) in issue #178, so the real
- * pages now live in SensorsController, GeneralController, LogsController and
- * DiagnosticsController. This class stays only so a bookmarked
- * /ui/synapseidssensor/settings still lands somewhere useful -- the Sensors
- * page -- instead of 404ing. Carries no business logic.
+ * The form is controllers/.../forms/dialogSensor.xml; Save posts to
+ * /api/synapseidssensor/settings/set, which re-renders every instance
+ * configuration and restarts the sensors. Carries no business logic.
  *
- * @package OPNsense\SynapseIDSSensor
+ * Reachable as /ui/synapseidssensor/general.
  */
-class SettingsController extends IndexController
+class GeneralController extends IndexController
 {
-    /**
-     * Show the Sensors page for the legacy /ui/synapseidssensor/settings URL.
-     *
-     * @return void
-     */
     public function indexAction()
     {
-        $this->view->title = gettext('SynapseIDS Sensor - Sensors');
-        $this->view->formDialogInstance = $this->getForm('dialogInstance');
-        $this->view->pick('OPNsense/SynapseIDSSensor/sensors');
+        $this->view->title = gettext('SynapseIDS Sensor - General');
+        $this->view->formDialogSensor = $this->getForm('dialogSensor');
+        $this->view->pick('OPNsense/SynapseIDSSensor/general');
     }
 }

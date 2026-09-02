@@ -1,19 +1,30 @@
 <?xml version="1.0"?>
 <!--
-    Menu/Menu.xml - menu entry for the SynapseIDS sensor plugin.
+    Menu/Menu.xml - side-menu entries for the SynapseIDS sensor plugin.
 
     Copyright (C) 2026 SynapseIDS contributors
     All rights reserved. BSD 2-Clause; see Sensor.php for the full text.
 
-    Adds Services -> SynapseIDS Sensor, pointing at
-    OPNsense\SynapseIDSSensor\SettingsController::indexAction().
+    A top-level "SynapseIDS" section that expands to four pages, one per concern,
+    instead of one long scrolling page (issue #178):
+
+      Sensors      the capture-instance grid (one synapse-sensor process per
+                   interface), add/remove, Save/Apply, per-instance start-stop
+      General      master enable, transport posture, bearer token, TLS material,
+                   and the shared log level
+      Logs         the tail of each instance's sensor.log
+      Diagnostics  the on-box selftest (`synapse-sensor doctor`)
+
+    Each child points at OPNsense\SynapseIDSSensor\<page>Controller::indexAction
+    (SensorsController, GeneralController, LogsController, DiagnosticsController).
+    All four are guarded by the single page-services-synapseidssensor privilege
+    in ACL/ACL.xml, whose patterns already glob ui/synapseidssensor/*.
 -->
 <menu>
-    <Services>
-        <SynapseIDSSensor
-            order="80"
-            VisibleName="SynapseIDS Sensor"
-            cssClass="fa fa-shield fa-fw"
-            url="/ui/synapseidssensor/settings"/>
-    </Services>
+    <SynapseIDS VisibleName="SynapseIDS" cssClass="fa fa-shield fa-fw" order="80">
+        <Sensors order="10" cssClass="fa fa-microchip fa-fw" url="/ui/synapseidssensor/sensors"/>
+        <General order="20" cssClass="fa fa-sliders fa-fw" url="/ui/synapseidssensor/general"/>
+        <Logs order="30" cssClass="fa fa-list-alt fa-fw" url="/ui/synapseidssensor/logs"/>
+        <Diagnostics order="40" cssClass="fa fa-stethoscope fa-fw" url="/ui/synapseidssensor/diagnostics"/>
+    </SynapseIDS>
 </menu>

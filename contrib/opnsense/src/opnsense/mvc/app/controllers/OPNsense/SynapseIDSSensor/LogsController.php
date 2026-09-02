@@ -31,28 +31,17 @@ namespace OPNsense\SynapseIDSSensor;
 use OPNsense\Base\IndexController;
 
 /**
- * Class SettingsController
+ * SynapseIDS > Logs: the tail of each instance's sensor.log, read through
+ * configd via /api/synapseidssensor/service/log[/<instance>] (issue #178).
+ * Read-only; the API redacts the bearer token before returning it.
  *
- * Back-compatibility shim. The plugin UI moved from one page to a SynapseIDS
- * submenu (Sensors / General / Logs / Diagnostics) in issue #178, so the real
- * pages now live in SensorsController, GeneralController, LogsController and
- * DiagnosticsController. This class stays only so a bookmarked
- * /ui/synapseidssensor/settings still lands somewhere useful -- the Sensors
- * page -- instead of 404ing. Carries no business logic.
- *
- * @package OPNsense\SynapseIDSSensor
+ * Reachable as /ui/synapseidssensor/logs.
  */
-class SettingsController extends IndexController
+class LogsController extends IndexController
 {
-    /**
-     * Show the Sensors page for the legacy /ui/synapseidssensor/settings URL.
-     *
-     * @return void
-     */
     public function indexAction()
     {
-        $this->view->title = gettext('SynapseIDS Sensor - Sensors');
-        $this->view->formDialogInstance = $this->getForm('dialogInstance');
-        $this->view->pick('OPNsense/SynapseIDSSensor/sensors');
+        $this->view->title = gettext('SynapseIDS Sensor - Logs');
+        $this->view->pick('OPNsense/SynapseIDSSensor/logs');
     }
 }

@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
 	"math/big"
 	"net"
 	"os"
@@ -58,14 +57,14 @@ func runConnect(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 		retryMax = retryMin
 	}
 
-	log.Printf("pcap-over-ip: connecting out to collector %s (link %d, sensor %q, location %q)",
+	logInfof("pcap-over-ip: connecting out to collector %s (link %d, sensor %q, location %q)",
 		o.connect, cfg.LinkType, o.sensorID, o.location)
 
 	delay := retryMin
 	for ctx.Err() == nil {
 		conn, derr := dialCollector(ctx, o.connect, tlsCfg)
 		if derr != nil {
-			log.Printf("pcap-over-ip: dial %s: %v — retrying in %s", o.connect, derr, delay.Round(time.Millisecond))
+			logErrorf("pcap-over-ip: dial %s: %v — retrying in %s", o.connect, derr, delay.Round(time.Millisecond))
 			if !sleepCtx(ctx, jitter(delay)) {
 				break
 			}
@@ -73,7 +72,7 @@ func runConnect(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 			continue
 		}
 
-		log.Printf("pcap-over-ip: connected to %s; waiting for the collector handshake", conn.RemoteAddr())
+		logVerbosef("pcap-over-ip: connected to %s; waiting for the collector handshake", conn.RemoteAddr())
 		delay = retryMin // a successful dial resets the backoff
 
 		// ServeConn owns the connection and closes it when the session ends.
@@ -82,7 +81,7 @@ func runConnect(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 		if ctx.Err() != nil {
 			break
 		}
-		log.Printf("pcap-over-ip: session with %s ended — reconnecting in %s",
+		logInfof("pcap-over-ip: session with %s ended — reconnecting in %s",
 			o.connect, delay.Round(time.Millisecond))
 		if !sleepCtx(ctx, jitter(delay)) {
 			break
@@ -90,7 +89,7 @@ func runConnect(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 		delay = nextDelay(delay, retryMax)
 	}
 
-	log.Printf("pcap-over-ip: stopped")
+	logInfof("pcap-over-ip: stopped")
 	return 0
 }
 
@@ -131,7 +130,7 @@ func connectTLSConfig(o *sensorOpts) (*tls.Config, error) {
 			return nil, fmt.Errorf("ca %q holds no PEM certificate", o.caFile)
 		}
 		cfg.RootCAs = pool
-		log.Printf("pcap-over-ip: verifying the collector against %s", o.caFile)
+		logVerbosef("pcap-over-ip: verifying the collector against %s", o.caFile)
 	}
 
 	if o.certFile != "" {
@@ -140,11 +139,11 @@ func connectTLSConfig(o *sensorOpts) (*tls.Config, error) {
 			return nil, fmt.Errorf("loading client certificate: %w", err)
 		}
 		cfg.Certificates = []tls.Certificate{pair}
-		log.Printf("pcap-over-ip: presenting the client certificate %s for mutual TLS", o.certFile)
+		logVerbosef("pcap-over-ip: presenting the client certificate %s for mutual TLS", o.certFile)
 	}
 
 	if o.insecureTLS {
-		log.Printf("pcap-over-ip: WARNING --insecure-tls is set — the collector's certificate is NOT verified")
+		logErrorf("pcap-over-ip: WARNING --insecure-tls is set — the collector's certificate is NOT verified")
 	}
 	return cfg, nil
 }

@@ -12,6 +12,10 @@ etc/rc.d/synapseids_sensor
 opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/Api/ServiceController.php
 opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/Api/SettingsController.php
 opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/SettingsController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/DiagnosticsController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/GeneralController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/LogsController.php
+opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/SensorsController.php
 opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/forms/dialogInstance.xml
 opnsense/mvc/app/controllers/OPNsense/SynapseIDSSensor/forms/dialogSensor.xml
 opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/ACL/ACL.xml
@@ -19,7 +23,10 @@ opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Menu/Menu.xml
 opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Migrations/M1_0_1.php
 opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.php
 opnsense/mvc/app/models/OPNsense/SynapseIDSSensor/Sensor.xml
-opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/index.volt
+opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/diagnostics.volt
+opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/general.volt
+opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/logs.volt
+opnsense/mvc/app/views/OPNsense/SynapseIDSSensor/sensors.volt
 opnsense/scripts/OPNsense/SynapseIDSSensor/fixperms.sh
 opnsense/service/conf/actions.d/actions_synapseidssensor.conf
 opnsense/service/templates/OPNsense/SynapseIDSSensor/+TARGETS
@@ -29,3 +36,4 @@ opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-instance.conf
 opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor-key.pem
 opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.conf
 opnsense/service/templates/OPNsense/SynapseIDSSensor/sensor.token
+

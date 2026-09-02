@@ -30,6 +30,18 @@
             disturbing the others.
         </help>
     </field>
+    <field>
+        <id>sensor.general.log_level</id>
+        <label>Log level</label>
+        <type>dropdown</type>
+        <style>selectpicker</style>
+        <help>
+            How much every sensor on this firewall writes to its log (the --log-level flag). Errors keeps only
+            warnings and failures; Normal adds the lifecycle - sensor identity, send mode, transport, stop -
+            and matches every release before this control existed; Verbose adds a line per connection attempt,
+            handshake and reconnect. Applied on Save. The log itself is on SynapseIDS &gt; Logs.
+        </help>
+    </field>
 
     <field>
         <type>header</type>

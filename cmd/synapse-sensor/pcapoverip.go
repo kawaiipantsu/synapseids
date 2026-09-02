@@ -83,6 +83,11 @@ type sensorOpts struct {
 
 	retryMin time.Duration
 	retryMax time.Duration
+
+	// logLevel is the raw --log-level value; logVerbosity is it resolved.
+	// parseSensorFlags validates and fills both.
+	logLevel     string
+	logVerbosity logVerbosity
 }
 
 // runPCAPOverIPCtx is the testable core: it stops when ctx is cancelled and, in
@@ -94,6 +99,7 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 	if opts == nil {
 		return code
 	}
+	currentLogVerbosity = opts.logVerbosity
 
 	stream, link, drops, err := openSource(opts)
 	if err != nil {
@@ -112,7 +118,7 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 		AgentVersion: version.Version,
 		OSArch:       runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	log.Printf("pcap-over-ip: sensor identity id=%q location=%q agent=%s os=%s",
+	logInfof("pcap-over-ip: sensor identity id=%q location=%q agent=%s os=%s",
 		ident.SensorID, ident.Location, ident.AgentVersion, ident.OSArch)
 
 	srvCfg := pcapoverip.ServerConfig{
@@ -123,16 +129,16 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 		Filter:        opts.filterLabel(),
 		Drops:         drops,
 		SessionPrefix: pcapoverip.FormatSessionPrefix(ident),
-		Logf:          log.Printf,
+		Logf:          infoLogf(),
 	}
 	switch opts.mode {
 	case pcapoverip.ModeRaw:
-		log.Printf("pcap-over-ip: mode raw — every captured frame is streamed to the daemon (SYNPOIP v1 compatible)")
+		logInfof("pcap-over-ip: mode raw — every captured frame is streamed to the daemon (SYNPOIP v1 compatible)")
 	case pcapoverip.ModeFlow:
-		log.Printf("pcap-over-ip: mode flow — flows are aggregated here and shipped as %s records; the daemon does not rebuild them (needs SYNPOIP v2)",
+		logInfof("pcap-over-ip: mode flow — flows are aggregated here and shipped as %s records; the daemon does not rebuild them (needs SYNPOIP v2)",
 			pcapoverip.FlowRecordSchema)
 	case pcapoverip.ModeFeature:
-		log.Printf("pcap-over-ip: mode feature — only %s vectors are shipped; NO packet content leaves this host (needs SYNPOIP v2)",
+		logInfof("pcap-over-ip: mode feature — only %s vectors are shipped; NO packet content leaves this host (needs SYNPOIP v2)",
 			pcapoverip.FeatureRecordSchema)
 	}
 
@@ -187,6 +193,9 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 	fs.DurationVar(&o.retryMin, "retry-min", 2*time.Second, "--connect only: initial reconnect delay")
 	fs.DurationVar(&o.retryMax, "retry-max", 60*time.Second, "--connect only: maximum reconnect delay")
 
+	fs.StringVar(&o.logLevel, "log-level", "", "log verbosity: "+strings.Join(logLevelValues, ", ")+" (default normal). "+
+		"errors keeps only warnings and failures; verbose adds per-connection detail")
+
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Stream captured traffic to synapsed over the framed, authenticated SYNPOIP transport.")
 		fmt.Fprintln(os.Stderr, "\nUsage:")
@@ -218,6 +227,13 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 	}
 	o.speed = speed
 
+	lv, lerr := parseLogVerbosity(o.logLevel)
+	if lerr != nil {
+		fmt.Fprintln(os.Stderr, "pcap-over-ip:", lerr)
+		return nil, 2
+	}
+	o.logVerbosity = lv
+
 	// Precedence matches the identity flags: flag, then environment, then the
 	// default (PROJECT.md §23).
 	if modeStr == "" {
@@ -246,7 +262,7 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 		tok = strings.TrimSpace(string(b))
 	}
 	if tok == "" {
-		log.Printf("pcap-over-ip: WARNING no token configured — every peer that completes TLS is accepted")
+		logErrorf("pcap-over-ip: WARNING no token configured — every peer that completes TLS is accepted")
 	}
 	o.token = tok
 
@@ -373,7 +389,7 @@ func openSource(o *sensorOpts) (pcapoverip.StreamFunc, uint32, func() uint64, er
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		log.Printf("pcap-over-ip: source is the capture file %s (link %d) at speed %v", o.from, link, o.speed)
+		logInfof("pcap-over-ip: source is the capture file %s (link %d) at speed %v", o.from, link, o.speed)
 		return stream, link, nil, nil
 	}
 
@@ -385,12 +401,12 @@ func openSource(o *sensorOpts) (pcapoverip.StreamFunc, uint32, func() uint64, er
 		Direction:   o.direction,
 		Device:      o.device,
 		BufferLen:   o.bpfBuffer,
-		Logf:        log.Printf,
+		Logf:        infoLogf(),
 	})
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	log.Printf("pcap-over-ip: source is the live interface %s (link %d, filter %q)",
+	logInfof("pcap-over-ip: source is the live interface %s (link %d, filter %q)",
 		o.iface, live.LinkType(), o.filterLabel())
 	return live.Stream, live.LinkType(), live.Drops, nil
 }
@@ -409,17 +425,17 @@ func runListen(ctx context.Context, o *sensorOpts, cfg pcapoverip.ServerConfig,
 		fmt.Fprintln(os.Stderr, "pcap-over-ip: listen:", err)
 		return 1
 	}
-	log.Printf("pcap-over-ip: serving on %s (link %d)", ln.Addr(), cfg.LinkType)
+	logInfof("pcap-over-ip: serving on %s (link %d)", ln.Addr(), cfg.LinkType)
 	if ready != nil {
 		ready(ln.Addr())
 	}
 
 	serr := pcapoverip.Serve(ctx, ln, cfg, stream)
 	if serr != nil && !errors.Is(serr, context.Canceled) {
-		log.Printf("pcap-over-ip: %v", serr)
+		logErrorf("pcap-over-ip: %v", serr)
 		return 1
 	}
-	log.Printf("pcap-over-ip: stopped")
+	logInfof("pcap-over-ip: stopped")
 	return 0
 }
 
@@ -443,9 +459,9 @@ func serverTLSConfig(listen, certFile, keyFile, clientCA string) (*tls.Config, e
 		}
 		cfg.Certificates = []tls.Certificate{pair}
 		sum := sha256.Sum256(certPEM)
-		log.Printf("pcap-over-ip: using a generated self-signed certificate for %q", host)
-		log.Printf("pcap-over-ip: cert SHA-256 %s", hex.EncodeToString(sum[:]))
-		log.Printf("pcap-over-ip: point synapsed at it with insecure_tls + authorized, or pin this PEM as ca_file")
+		logInfof("pcap-over-ip: using a generated self-signed certificate for %q", host)
+		logInfof("pcap-over-ip: cert SHA-256 %s", hex.EncodeToString(sum[:]))
+		logInfof("pcap-over-ip: point synapsed at it with insecure_tls + authorized, or pin this PEM as ca_file")
 	}
 
 	if clientCA != "" {
@@ -459,7 +475,7 @@ func serverTLSConfig(listen, certFile, keyFile, clientCA string) (*tls.Config, e
 		}
 		cfg.ClientCAs = pool
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-		log.Printf("pcap-over-ip: mutual TLS required — clients must present a certificate signed by %s", clientCA)
+		logInfof("pcap-over-ip: mutual TLS required — clients must present a certificate signed by %s", clientCA)
 	}
 	return cfg, nil
 }
