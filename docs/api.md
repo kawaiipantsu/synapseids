@@ -383,7 +383,13 @@ the route above rather than part of it, so `FlowRecord`'s shape is unchanged.
       }
     }
   ],
-  "anomaly": { "available": false, "note": "Not available in this build. …" },
+  "anomaly": {
+    "available": true,
+    "model_id": "flow-anomaly-v1-…",
+    "score": 0.83, "recon_error": 0.21, "threshold": 0.18, "exceeds": true,
+    "top_deltas": [ { "index": 12, "name": "bytes_per_second", "input": …, "output": …, "delta": … } ],
+    "note": "Reconstruction error and the largest per-feature gaps …"
+  },
   "baseline": { "available": false, "note": "Not available in this build. …" }
 }
 ```
@@ -432,13 +438,18 @@ gradients or SHAP, and `internal/nn` exposes no weights; no linear proxy is
 offered, because a proxy drawn in an explanation panel reads as an explanation.
 The full `scores` vector is that model's complete output.
 
-#### There is no baseline column and no anomaly score
+#### `anomaly` and the (still-absent) baseline column
 
-`baseline` and `anomaly` are always `{available: false, note: …}` — two keys, **no
-value field**. §19.3's example shows a "Current vs Baseline" table, but
-behavioural baselines and anomaly scoring are Phase 7 (§13), exactly as
-`/api/v1/hosts` and the reports already report. A fabricated expected range would
-turn "never checked" into "checked and clean", so there is nothing here to plot.
+`baseline` is always `{available: false, note: …}` — behavioural baselines are
+still Phase 7 (§19.4), so there is no "Current vs Baseline" table.
+
+`anomaly` is populated when a `flow-anomaly-v1` autoencoder scored the flow (ADR
+0037): `model_id`, the bounded `score` (0..1), the raw `recon_error`, the
+calibrated `threshold` and whether it `exceeds` it — all from the stored verdict
+— plus `top_deltas`, the largest per-feature reconstruction gaps, recomputed on
+demand **only while that model is still loaded**. With no anomaly model it is
+`{available: false, note: …}` with no value fields: a labelled gap, never a
+fabricated number, so "never scored" cannot read as "scored and clean".
 
 ### GET /api/v1/flows/{id}/snapshots
 
@@ -778,9 +789,11 @@ classified flow stream — see `docs/adr/0016-host-and-time-aggregation-for-inve
 The list view is shallow: `top_ports` is capped at 5 and `top_peers` /
 `recent_flows` are omitted. Fetch one host for the full lists.
 
-`baseline_available` and `anomaly_available` are **always `false`**. Behavioural
-baseline and anomaly trend (§19.5) need the Phase 7 anomaly work; the fields exist
-so a client can label the gap rather than plot an invented number.
+`baseline_available` is **always `false`** — behavioural baselines (§19.5) are
+still Phase 7. `anomaly_available` is `true` when a `flow-anomaly-v1` model
+scored any of this host's flows, and then `anomaly_flows` / `anomaly_mean` /
+`anomaly_max` / `anomaly_exceeded` summarise those reconstruction-error scores
+(ADR 0037); it is `false` with those fields zeroed otherwise.
 
 Counting rules worth knowing:
 
@@ -871,12 +884,16 @@ Classification volume bucketed over time (PROJECT.md §19.6, issue #41).
 {
   "bucket_sec": 1,
   "buckets": [
-    { "ts": "2026-08-31T08:41:11Z", "total": 6, "by_class": { "normal": 4, "brute_force": 2 }, "disagreements": 0 },
-    { "ts": "2026-08-31T08:41:12Z", "total": 3, "by_class": { "normal": 2, "brute_force": 1 }, "disagreements": 0 }
+    { "ts": "2026-08-31T08:41:11Z", "total": 6, "by_class": { "normal": 4, "brute_force": 2 }, "disagreements": 0,
+      "anomaly_n": 0, "anomaly_mean": 0, "anomaly_max": 0, "anomaly_exceeds": 0 }
   ],
   "anomaly_available": false
 }
 ```
+
+Each bucket carries `anomaly_n` (flows an anomaly model scored), `anomaly_mean` /
+`anomaly_max` (over their bounded 0..1 reconstruction scores) and
+`anomaly_exceeds` (how many crossed the model's threshold).
 
 The series is **dense**: a quiet interval is an explicit zero bucket, not a missing
 `ts`, so a chart does not have to interpolate. With no `from`, it starts at the
@@ -891,9 +908,9 @@ An unscoped query is answered from the incrementally maintained ring. A `class=`
 `host=` scoped query is bucketed on demand from the newest 5000 stored
 classifications instead — a ring per host would be unbounded.
 
-`anomaly_available` is **always `false`**: the anomaly-score series (§19.6) needs
-the Phase 7 anomaly model, and the API reports its absence rather than returning a
-fabricated zero series.
+`anomaly_available` is `true` when a `flow-anomaly-v1` model scored flows in the
+window (ADR 0037); otherwise it is `false` and the per-bucket `anomaly_*` fields
+are zero rather than a fabricated series.
 
 ### GET /api/v1/drift
 
@@ -1021,7 +1038,9 @@ traversal when the browser writes the file (§28.11).
   },
   "notes": [
     { "code": "baseline_unavailable", "level": "warning",
-      "text": "Behavioural baseline and anomaly scoring are not available in this build (Phase 7, …). Absence of an anomaly finding here does NOT mean the traffic was checked against a baseline and found normal." },
+      "text": "Behavioural baseline comparison is not available in this build (Phase 7, …)." },
+    { "code": "anomaly_unavailable", "level": "warning",
+      "text": "No anomaly model scored this traffic. … the absence of an anomaly finding here does NOT mean the traffic was checked for novelty and found normal." },
     { "code": "partial_topn_pruned", "level": "warning",
       "text": "PARTIAL VIEW: per-host top-N lists are capped at 128 distinct ports and peers and 3072 low-count keys have been pruned. …" }
   ],
@@ -1061,10 +1080,11 @@ traversal when the browser writes the file (§28.11).
 **Honesty contract.** `coverage` and `notes` come *before* the findings on
 purpose — the caveats are part of the finding.
 
-- `baseline_available` and `anomaly_available` are **always `false`** in this
-  build, and the `baseline_unavailable` note is **unconditional** while they are.
-  A report never contains an empty anomaly chart that could be read as "checked
-  and clean".
+- `baseline_available` is **always `false`** (Phase 7), and the
+  `baseline_unavailable` note is unconditional. `anomaly_available` is `true`
+  when a `flow-anomaly-v1` model scored any verdict in scope; when it is
+  `false` the `anomaly_unavailable` note fires so an empty anomaly result can
+  never read as "checked for novelty and clean" (ADR 0037).
 - `coverage.partial` is `true` whenever any bound bit: the record ring evicted,
   the 5000-verdict scan budget filled, the requested `from` predates the oldest
   retained verdict, the host map evicted, a per-host top-N list was pruned,

@@ -21,6 +21,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Anomaly autoencoder model family** (issue #47, EPIC Phase 7, [ADR
+  0037](docs/adr/0037-anomaly-autoencoder-model.md)). A second model family,
+  `flow-anomaly-v1`: a 48-in / 48-out autoencoder whose per-flow reconstruction
+  error is a novelty score, scored **alongside** the primary classifier and
+  never driving the verdict or the disagreement flag (PROJECT.md §13).
+  - New frozen output contract `schemas/outputs/reconstruction-v1.json` (48
+    slots, locked name-for-name to `flow-features-v1`). `internal/schema`
+    validation is now family-aware — the `flow-classifier-v1` checks are
+    unchanged.
+  - `inference.AnomalyScorer` + `inference.ONNXAnomalyModel`: reconstruction
+    error in normalized space, an `err/(err+p50)` bounded 0..1 score, an
+    `exceeds` flag against the bundle's calibrated threshold, and the top-8
+    per-feature reconstruction gaps. `inference.Result` gains an additive
+    optional `anomaly` object.
+  - The runtime and registry are **role-aware**: a primary classifier and an
+    anomaly model can be Active at once. `POST /api/v1/models/{id}/activate`
+    learns the role from the bundle family and swaps only within that role;
+    `registry.Entry.role` is persisted (a pre-existing `registry.json` loads
+    with every entry as `primary`); the startup reconcile still deactivates
+    every model.
+  - `GET /api/v1/flows/{id}/explain` `anomaly` is populated from the stored
+    verdict when a `flow-anomaly-v1` model scored the flow, with the
+    per-feature gaps recomputed on demand while that model is loaded; the
+    timeline, insight host profiles and downloadable reports carry per-bucket /
+    per-host reconstruction-score aggregates. All of it stays an explicit
+    `available: false` with zeroed fields when no anomaly model is active — a
+    labelled gap, never a fabricated number (§16).
+  - Not yet in this release: the `synapse-trainer` `reconstruction` objective
+    that produces a `flow-anomaly-v1` bundle, and the SPA views that surface
+    the score — both tracked as follow-ups. The Go side is exercised with
+    `modeltest`-built autoencoder bundles.
+
 - **The `.deb` now carries the systemd units, sysusers/tmpfiles fragments, and a
   default config** (issue #60). Previously it held only binaries + man pages.
   New: `/lib/systemd/system/{synapsed,synapse-sensor}.service`,
