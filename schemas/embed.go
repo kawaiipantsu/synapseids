@@ -15,6 +15,13 @@ var FlowFeaturesV1 []byte
 //go:embed outputs/traffic-classes-v1.json
 var TrafficClassesV1 []byte
 
+// ReconstructionV1 is the raw schemas/outputs/reconstruction-v1.json document:
+// the frozen output contract for the flow-anomaly-v1 autoencoder family
+// (PROJECT.md §13, ADR 0037).
+//
+//go:embed outputs/reconstruction-v1.json
+var ReconstructionV1 []byte
+
 // EventEnvelopeV1 is the raw schemas/events/event-envelope-v1.json document.
 //
 //go:embed events/event-envelope-v1.json

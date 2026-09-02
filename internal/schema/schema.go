@@ -16,6 +16,7 @@ import (
 var (
 	flowFeaturesV1JSON   = schemas.FlowFeaturesV1
 	trafficClassesV1JSON = schemas.TrafficClassesV1
+	reconstructionV1JSON = schemas.ReconstructionV1
 	eventEnvelopeV1JSON  = schemas.EventEnvelopeV1
 )
 
@@ -61,6 +62,7 @@ type OutputSchema struct {
 var (
 	flowFeaturesV1   FeatureSchema
 	trafficClassesV1 OutputSchema
+	reconstructionV1 OutputSchema
 )
 
 func init() {
@@ -81,6 +83,29 @@ func init() {
 	if got := len(trafficClassesV1.Classes); got != trafficClassesV1.OutputSize {
 		panic(fmt.Sprintf("schema: traffic-classes-v1 has %d classes but output_size=%d", got, trafficClassesV1.OutputSize))
 	}
+
+	if err := json.Unmarshal(reconstructionV1JSON, &reconstructionV1); err != nil {
+		panic(fmt.Sprintf("schema: reconstruction-v1.json: %v", err))
+	}
+	if got := len(reconstructionV1.Classes); got != reconstructionV1.OutputSize {
+		panic(fmt.Sprintf("schema: reconstruction-v1 has %d classes but output_size=%d", got, reconstructionV1.OutputSize))
+	}
+	// reconstruction-v1 mirrors flow-features-v1 slot for slot: the autoencoder
+	// reconstructs the feature vector, so its output ordering is locked to the
+	// feature ordering it targets (ADR 0037).
+	if reconstructionV1.OutputSize != flowFeaturesV1.InputSize {
+		panic(fmt.Sprintf("schema: reconstruction-v1 output_size=%d != flow-features-v1 input_size=%d",
+			reconstructionV1.OutputSize, flowFeaturesV1.InputSize))
+	}
+	for i, c := range reconstructionV1.Classes {
+		if c.Index != i {
+			panic(fmt.Sprintf("schema: reconstruction-v1 slot %q has index %d, expected %d", c.Name, c.Index, i))
+		}
+		if c.Name != flowFeaturesV1.Features[i].Name {
+			panic(fmt.Sprintf("schema: reconstruction-v1 slot %d is %q, must mirror flow-features-v1 feature %q",
+				i, c.Name, flowFeaturesV1.Features[i].Name))
+		}
+	}
 }
 
 // FlowFeaturesV1 returns the frozen flow-features-v1 schema.
@@ -94,6 +119,13 @@ func FlowFeaturesV1JSON() []byte { return flowFeaturesV1JSON }
 
 // TrafficClassesV1JSON returns the raw embedded traffic-classes-v1 document.
 func TrafficClassesV1JSON() []byte { return trafficClassesV1JSON }
+
+// ReconstructionV1 returns the frozen reconstruction-v1 output schema (the
+// flow-anomaly-v1 autoencoder family's output contract, ADR 0037).
+func ReconstructionV1() OutputSchema { return reconstructionV1 }
+
+// ReconstructionV1JSON returns the raw embedded reconstruction-v1 document.
+func ReconstructionV1JSON() []byte { return reconstructionV1JSON }
 
 // EventEnvelopeV1JSON returns the raw embedded event-envelope-v1 document.
 func EventEnvelopeV1JSON() []byte { return eventEnvelopeV1JSON }
@@ -149,37 +181,107 @@ func (a Architecture) IsZero() bool {
 	return a.InputSize == 0 && a.OutputSize == 0 && len(a.Hidden) == 0
 }
 
-// ValidateArchitecture reports whether an architecture is buildable for this
-// build: its input and output layers must match the frozen feature and output
-// schemas (the edge layers are locked, not the trainer's to choose — PROJECT.md
-// §10, §28.6), and every editable hidden layer must have a positive width, a
-// supported activation, an in-range dropout and — if residual — a matching
-// previous width. The hidden-stack rules mirror the trainer's architecture.py.
-func ValidateArchitecture(a Architecture) error {
-	if a.InputSize != flowFeaturesV1.InputSize {
-		return fmt.Errorf("architecture.input_size %d != %s input_size %d", a.InputSize, flowFeaturesV1.Schema, flowFeaturesV1.InputSize)
+// Model family identifiers. Each family locks its own feature/output edge
+// contract; ValidateBundle and ValidateArchitectureForFamily switch on it. A new
+// need is a new family, never an edit to a released one (PROJECT.md §10, §28.5-6,
+// ADR 0037).
+const (
+	// FamilyClassifierV1 is the supervised traffic classifier: flow-features-v1
+	// in, traffic-classes-v1 (7 classes) out.
+	FamilyClassifierV1 = "flow-classifier-v1"
+	// FamilyAnomalyV1 is the autoencoder novelty detector: flow-features-v1 in,
+	// reconstruction-v1 (48 slots) out; the per-flow reconstruction error is the
+	// anomaly score (PROJECT.md §13).
+	FamilyAnomalyV1 = "flow-anomaly-v1"
+)
+
+// familyEdges is a model family's locked edge contract: the feature schema and
+// input width it consumes, and the output schema and width it produces.
+type familyEdges struct {
+	featureSchema string
+	inputSize     int
+	outputSchema  string
+	outputSize    int
+}
+
+// familyEdgesFor returns the locked edge contract for a known model family.
+func familyEdgesFor(family string) (familyEdges, bool) {
+	switch family {
+	case FamilyClassifierV1:
+		return familyEdges{
+			flowFeaturesV1.Schema, flowFeaturesV1.InputSize,
+			trafficClassesV1.Schema, trafficClassesV1.OutputSize,
+		}, true
+	case FamilyAnomalyV1:
+		return familyEdges{
+			flowFeaturesV1.Schema, flowFeaturesV1.InputSize,
+			reconstructionV1.Schema, reconstructionV1.OutputSize,
+		}, true
+	default:
+		return familyEdges{}, false
 	}
-	if a.OutputSize != trafficClassesV1.OutputSize {
-		return fmt.Errorf("architecture.output_size %d != %s output_size %d", a.OutputSize, trafficClassesV1.Schema, trafficClassesV1.OutputSize)
+}
+
+// KnownFamily reports whether family is a model family this build can run.
+func KnownFamily(family string) bool {
+	_, ok := familyEdgesFor(family)
+	return ok
+}
+
+// ValidateArchitecture is ValidateArchitectureForFamily for the supervised
+// flow-classifier-v1 family — the original signature, kept for callers that only
+// ever build that family.
+func ValidateArchitecture(a Architecture) error {
+	return ValidateArchitectureForFamily(FamilyClassifierV1, a)
+}
+
+// ValidateArchitectureForFamily reports whether an architecture is buildable for
+// the given model family: its input and output layers must match that family's
+// locked edge contract (the edge layers are not the trainer's to choose —
+// PROJECT.md §10, §28.6), and every editable hidden layer must have a positive
+// width, a supported activation, an in-range dropout and — if residual — a
+// matching previous width. The hidden-stack rules mirror the trainer's
+// architecture.py.
+func ValidateArchitectureForFamily(family string, a Architecture) error {
+	edges, ok := familyEdgesFor(family)
+	if !ok {
+		if family == "" {
+			return fmt.Errorf("architecture: model family is empty")
+		}
+		return fmt.Errorf("architecture: model family %q is not supported by this build", family)
+	}
+	if a.InputSize != edges.inputSize {
+		return fmt.Errorf("architecture.input_size %d != %s input_size %d", a.InputSize, edges.featureSchema, edges.inputSize)
+	}
+	if a.OutputSize != edges.outputSize {
+		return fmt.Errorf("architecture.output_size %d != %s output_size %d", a.OutputSize, edges.outputSchema, edges.outputSize)
 	}
 	return validateHiddenStack(a)
 }
 
-// ValidateBundle reports whether a model bundle's feature/output contract matches
-// what this build of the daemon can feed and interpret. An incompatible model is
-// rejected before inference, never silently run (PROJECT.md §9, §28.6).
+// ValidateBundle reports whether a model bundle's family and feature/output
+// contract match what this build of the daemon can feed and interpret. An
+// incompatible model is rejected before inference, never silently run
+// (PROJECT.md §9, §28.6).
 func ValidateBundle(m BundleMeta) error {
-	if m.FeatureSchema != flowFeaturesV1.Schema {
-		return fmt.Errorf("feature schema %q is not supported (daemon speaks %q)", m.FeatureSchema, flowFeaturesV1.Schema)
+	edges, ok := familyEdgesFor(m.Family)
+	if !ok {
+		if m.Family == "" {
+			return fmt.Errorf("model family is empty")
+		}
+		return fmt.Errorf("model family %q is not supported (daemon runs %q and %q)", m.Family, FamilyClassifierV1, FamilyAnomalyV1)
 	}
-	if m.InputSize != flowFeaturesV1.InputSize {
-		return fmt.Errorf("model input_size %d != %s input_size %d", m.InputSize, flowFeaturesV1.Schema, flowFeaturesV1.InputSize)
+	if m.FeatureSchema != edges.featureSchema {
+		return fmt.Errorf("feature schema %q is not supported (daemon speaks %q)", m.FeatureSchema, edges.featureSchema)
 	}
-	if m.OutputSchema != trafficClassesV1.Schema {
-		return fmt.Errorf("output schema %q is not supported (daemon speaks %q)", m.OutputSchema, trafficClassesV1.Schema)
+	if m.InputSize != edges.inputSize {
+		return fmt.Errorf("model input_size %d != %s input_size %d", m.InputSize, edges.featureSchema, edges.inputSize)
 	}
-	if m.OutputSize != trafficClassesV1.OutputSize {
-		return fmt.Errorf("model output_size %d != %s output_size %d", m.OutputSize, trafficClassesV1.Schema, trafficClassesV1.OutputSize)
+	if m.OutputSchema != edges.outputSchema {
+		return fmt.Errorf("output schema %q is not supported for family %q (daemon speaks %q)", m.OutputSchema, m.Family, edges.outputSchema)
+	}
+	if m.OutputSize != edges.outputSize {
+		return fmt.Errorf("model output_size %d != %s output_size %d", m.OutputSize, edges.outputSchema, edges.outputSize)
 	}
 	return nil
 }

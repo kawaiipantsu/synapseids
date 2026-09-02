@@ -37,6 +37,40 @@ func TestArchitectureParameterMath_48_64_32_7(t *testing.T) {
 	}
 }
 
+// aeArch is a locked-edge (48 in / 48 out) autoencoder Architecture — the
+// flow-anomaly-v1 family (ADR 0037). The hand-computed numbers here match the
+// trainer's trainer/tests/test_architecture.py autoencoder case.
+func aeArch(h ...HiddenLayer) Architecture {
+	return Architecture{InputSize: 48, OutputSize: 48, Hidden: h}
+}
+
+func TestArchitectureParameterMath_Autoencoder_48_32_16_32_48(t *testing.T) {
+	a := aeArch(HiddenLayer{Width: 32}, HiddenLayer{Width: 16}, HiddenLayer{Width: 32})
+
+	// Dense 48->32 : 48*32 + 32 = 1568
+	// Dense 32->16 : 32*16 + 16 =  528
+	// Dense 16->32 : 16*32 + 32 =  544
+	// Dense 32->48 : 32*48 + 48 = 1584  → total 4224
+	const wantParams = 1568 + 528 + 544 + 1584
+	if wantParams != 4224 {
+		t.Fatalf("hand arithmetic drifted: %d != 4224", wantParams)
+	}
+	if got := a.ParameterCount(); got != wantParams {
+		t.Fatalf("ParameterCount() = %d, want %d", got, wantParams)
+	}
+	// rough FLOPs = 2*(48*32 + 32*16 + 16*32 + 32*48) = 8192
+	const wantFLOPs = 2 * (48*32 + 32*16 + 16*32 + 32*48)
+	if wantFLOPs != 8192 {
+		t.Fatalf("hand arithmetic drifted: %d != 8192", wantFLOPs)
+	}
+	if got := a.RoughFLOPs(); got != wantFLOPs {
+		t.Fatalf("RoughFLOPs() = %d, want %d", got, wantFLOPs)
+	}
+	if err := ValidateArchitectureForFamily(FamilyAnomalyV1, a); err != nil {
+		t.Fatalf("autoencoder architecture rejected: %v", err)
+	}
+}
+
 func TestArchitectureBatchNormAddsTwoParamsPerUnit(t *testing.T) {
 	plain := arch(HiddenLayer{Width: 64}, HiddenLayer{Width: 32})
 	bn := arch(HiddenLayer{Width: 64, BatchNorm: true}, HiddenLayer{Width: 32})

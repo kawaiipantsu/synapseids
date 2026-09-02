@@ -27,6 +27,27 @@ type Metadata struct {
 	// absent value marks a lineage root. It is not part of the frozen validation
 	// contract and Validate does not check it.
 	DerivedFrom string `json:"derived_from,omitempty"`
+
+	// Anomaly is the reconstruction-error calibration of a flow-anomaly-v1
+	// autoencoder bundle (ADR 0037). Additive and optional like DerivedFrom;
+	// present only for the anomaly family and not checked by Validate.
+	Anomaly *AnomalyCalibration `json:"anomaly,omitempty"`
+}
+
+// AnomalyCalibration records how a trained flow-anomaly-v1 model's
+// reconstruction error is distributed over its training NORMAL set, in the
+// normalized input space the network sees. The runtime turns a raw error into a
+// bounded score with ErrorPercentiles["p50"] and flags Exceeds at Threshold
+// (default: the p99 percentile). All fields optional — a bundle with no
+// calibration still scores, just without a real threshold (ADR 0037).
+type AnomalyCalibration struct {
+	// Space is the measurement space, always "normalized" for now.
+	Space string `json:"space,omitempty"`
+	// ErrorPercentiles maps percentile labels ("p50","p90","p95","p99","max")
+	// to the reconstruction error at that percentile over the NORMAL set.
+	ErrorPercentiles map[string]float64 `json:"error_percentiles,omitempty"`
+	// Threshold is the suggested alerting threshold on raw reconstruction error.
+	Threshold float64 `json:"threshold,omitempty"`
 }
 
 // BundleMeta projects the frozen-contract subset that schema.ValidateBundle
