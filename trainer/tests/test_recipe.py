@@ -84,3 +84,46 @@ def test_example_recipe_parses():
     assert rc.dataset_ids == ["thugs/lab-attacks-2026-08", "hq-copenhagen/baseline-2026-08"]
     assert rc.architecture.widths() == [48, 64, 32, 7]
     assert rc.architecture.parameter_count() == 5575  # with the batchnorm on layer 0
+
+
+# ---- reconstruction objective (ADR 0037) ---------------------------------
+
+
+def test_objective_defaults_to_classification():
+    rc = R.from_dict(_base())
+    assert rc.objective == "classification"
+    assert rc.architecture.family == "flow-classifier-v1"
+    assert rc.to_json()["objective"] == "classification"
+
+
+def test_reconstruction_objective_selects_the_anomaly_family():
+    rc = R.from_dict(_base(objective="reconstruction"))
+    assert rc.objective == "reconstruction"
+    assert rc.architecture.family == "flow-anomaly-v1"
+    assert rc.architecture.output_size == 48
+    assert rc.architecture.widths() == [48, 32, 16, 32, 48]
+    # class weighting has no meaning here — an unset value resolves to "none".
+    assert rc.class_weighting == "none"
+    j = rc.to_json()
+    assert j["objective"] == "reconstruction"
+    assert j["architecture"]["output_size"] == 48
+    assert R.from_dict(j).to_json() == j
+
+
+def test_reconstruction_rejects_class_weighting_and_wrong_es_metric():
+    with pytest.raises(R.RecipeError):
+        R.from_dict(_base(objective="reconstruction", class_weighting="balanced"))
+    with pytest.raises(R.RecipeError):
+        R.from_dict(_base(objective="reconstruction", early_stopping={"metric": "val_accuracy"}))
+
+
+def test_rejects_unknown_objective():
+    with pytest.raises(R.RecipeError):
+        R.from_dict(_base(objective="ranking"))
+
+
+def test_example_anomaly_recipe_parses():
+    rc = R.load(Path(__file__).resolve().parents[1] / "examples" / "anomaly-recipe.json")
+    assert rc.objective == "reconstruction"
+    assert rc.architecture.family == "flow-anomaly-v1"
+    assert rc.architecture.parameter_count() == 4224

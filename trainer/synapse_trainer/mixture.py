@@ -409,6 +409,11 @@ class Mixture:
     fractions: dict[str, float]
     target_train_rows: int
     warnings: list[str]
+    #: The class ids the train partition was restricted to (after the split), or
+    #: None when unfiltered. Val/test are never filtered.
+    train_label_filter: list[int] | None = None
+    #: How many train rows the filter dropped, before weighting/resampling.
+    dropped_pre_weight_train_rows: int = 0
 
     #: Named so a future change of strategy is visible in every old bundle.
     STRATEGY = "split-per-dataset-then-weighted-resample-train/v1"
@@ -438,6 +443,8 @@ class Mixture:
             "seed": int(self.seed),
             "split_before_mix": True,
             "resampled_splits": ["train"],
+            "train_label_filter": self.train_label_filter,
+            "dropped_pre_weight_train_rows": int(self.dropped_pre_weight_train_rows),
             "fractions": {k: float(v) for k, v in self.fractions.items()},
             "target_train_rows": int(self.target_train_rows),
             "sizes": self.sizes(),
@@ -472,10 +479,16 @@ class Mixture:
 # ---------------------------------------------------------------------------
 
 
-def _warnings_for(components: list[Component], y_train: np.ndarray, sizes: dict[str, int]) -> list[str]:
+def _warnings_for(
+    components: list[Component],
+    y_train: np.ndarray,
+    sizes: dict[str, int],
+    *,
+    label_filtered: bool = False,
+) -> list[str]:
     warns: list[str] = []
     for c in components:
-        if c.train_rows == 0:
+        if c.train_rows == 0 and not label_filtered:
             warns.append(
                 f"dataset {c.id!r} contributes 0 training rows "
                 f"(weight={c.weight:g}, {c.source_rows} source rows) — it will not affect the model"
@@ -491,24 +504,27 @@ def _warnings_for(components: list[Component], y_train: np.ndarray, sizes: dict[
                 )
     n = int(y_train.size)
     counts = label_counts(y_train)
-    if n:
-        top_class, top_n = max(counts.items(), key=lambda kv: kv[1])
-        if top_n / n > DOMINANT_CLASS_FRACTION:
-            warns.append(
-                f"class {top_class!r} is {100.0 * top_n / n:.1f}% of the training mixture — "
-                "severely imbalanced; consider re-weighting the datasets"
-            )
-    for name, cnt in counts.items():
-        if cnt == 0:
-            warns.append(
-                f"class {name!r} has no rows in the training mixture — "
-                f"the model cannot learn it but still emits {OUTPUT_SIZE} scores"
-            )
-        elif cnt < MIN_CLASS_ROWS:
-            warns.append(
-                f"class {name!r} has only {cnt} training row(s) (< {MIN_CLASS_ROWS}) — "
-                "metrics for it will not be meaningful"
-            )
+    # A label-filtered mixture (the autoencoder's NORMAL-only train pool) is
+    # single-class by design, so the class-mix warnings below do not apply.
+    if not label_filtered:
+        if n:
+            top_class, top_n = max(counts.items(), key=lambda kv: kv[1])
+            if top_n / n > DOMINANT_CLASS_FRACTION:
+                warns.append(
+                    f"class {top_class!r} is {100.0 * top_n / n:.1f}% of the training mixture — "
+                    "severely imbalanced; consider re-weighting the datasets"
+                )
+        for name, cnt in counts.items():
+            if cnt == 0:
+                warns.append(
+                    f"class {name!r} has no rows in the training mixture — "
+                    f"the model cannot learn it but still emits {OUTPUT_SIZE} scores"
+                )
+            elif cnt < MIN_CLASS_ROWS:
+                warns.append(
+                    f"class {name!r} has only {cnt} training row(s) (< {MIN_CLASS_ROWS}) — "
+                    "metrics for it will not be meaningful"
+                )
     for split in ("val", "test"):
         if sizes[split] == 0:
             warns.append(f"the {split} split is empty — no {split} metrics will be produced")
@@ -520,6 +536,7 @@ def build_mixture(
     data_root: str | Path,
     *,
     target_train_rows: int | None = None,
+    train_label_filter: set[int] | frozenset[int] | None = None,
     loader=load_csv,
 ) -> Mixture:
     """Resolve, load, split and weight every dataset in ``recipe``.
@@ -527,6 +544,11 @@ def build_mixture(
     Order is deliberate and load-bearing: **resolve → load → check → split each
     dataset → weight/resample only the train portions → concatenate**.  See the
     module docstring for why splitting must precede mixing.
+
+    ``train_label_filter``, when given, restricts the **train** partition to rows
+    whose class id is in the set — applied *after* the per-dataset split, so
+    validation and test keep every class (the autoencoder trains on NORMAL only
+    but its threshold is measured against held-out attack traffic; ADR 0037).
     """
     root = Path(data_root)
     if not root.exists():
@@ -572,8 +594,24 @@ def build_mixture(
             raise MixtureError(f"dataset {ref.id!r}: {exc}") from exc
         per_split.append(sp)
 
+    # ---- 1b. NORMAL-only (or any) train filter, applied after the split --
+    train_idx = [np.asarray(sp.train, dtype=np.int64) for sp in per_split]
+    dropped_pre_weight = 0
+    if train_label_filter is not None:
+        keep = np.array(sorted(int(c) for c in train_label_filter), dtype=np.int64)
+        for k, ds in enumerate(datasets):
+            ti = train_idx[k]
+            mask = np.isin(ds.y[ti], keep)
+            dropped_pre_weight += int((~mask).sum())
+            train_idx[k] = ti[mask]
+        if all(ti.size == 0 for ti in train_idx):
+            raise MixtureError(
+                "train_label_filter removed every training row — no dataset has a row "
+                f"with a class id in {sorted(int(c) for c in train_label_filter)}"
+            )
+
     # ---- 2. apportion the training pool by weight ------------------------
-    train_pool = [int(sp.train.size) for sp in per_split]
+    train_pool = [int(ti.size) for ti in train_idx]
     total_train = int(sum(train_pool))
     target = int(target_train_rows) if target_train_rows is not None else total_train
     quotas = apportion([float(r.weight) for r in recipe.datasets], target)
@@ -584,11 +622,14 @@ def build_mixture(
     Xte_parts, yte_parts, te_ids = [], [], []
     components: list[Component] = []
 
-    for ref, res, ds, sp, quota in zip(recipe.datasets, resolutions, datasets, per_split, quotas):
+    for k, (ref, res, ds, sp, quota) in enumerate(
+        zip(recipe.datasets, resolutions, datasets, per_split, quotas)
+    ):
+        ti = train_idx[k]
         sample_seed = derive_seed(recipe.seed, "mixture", ref.id)
         rng = np.random.default_rng(sample_seed)
-        pick, mode, dupes = _resample_indices(int(sp.train.size), quota, rng)
-        rows = sp.train[pick] if pick.size else np.array([], dtype=np.int64)
+        pick, mode, dupes = _resample_indices(int(ti.size), quota, rng)
+        rows = ti[pick] if pick.size else np.array([], dtype=np.int64)
 
         Xtr_parts.append(ds.X[rows])
         ytr_parts.append(ds.y[rows])
@@ -657,7 +698,15 @@ def build_mixture(
         seed=int(recipe.seed),
         fractions=fr,
         target_train_rows=target,
-        warnings=_warnings_for(components, y_train, sizes),
+        warnings=_warnings_for(
+            components, y_train, sizes, label_filtered=train_label_filter is not None
+        ),
+        train_label_filter=(
+            sorted(int(c) for c in train_label_filter)
+            if train_label_filter is not None
+            else None
+        ),
+        dropped_pre_weight_train_rows=int(dropped_pre_weight),
     )
 
 

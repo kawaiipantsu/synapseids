@@ -22,6 +22,9 @@ from typing import Any
 
 FEATURE_SCHEMA = "flow-features-v1"
 OUTPUT_SCHEMA = "traffic-classes-v1"
+# The autoencoder / anomaly family's output contract: 48 reconstruction slots
+# locked name-for-name to flow-features-v1 (ADR 0037).
+RECON_SCHEMA = "reconstruction-v1"
 
 
 class SchemaNotFound(RuntimeError):
@@ -67,17 +70,20 @@ def _load(name: str, subdir: str) -> dict[str, Any]:
 
 _FEATURES_DOC = _load(FEATURE_SCHEMA, "features")
 _CLASSES_DOC = _load(OUTPUT_SCHEMA, "outputs")
+_RECON_DOC = _load(RECON_SCHEMA, "outputs")
 
 # ---- derived constants -------------------------------------------------------
 
 _FEATURES = sorted(_FEATURES_DOC["features"], key=lambda f: f["index"])
 _CLASSES = sorted(_CLASSES_DOC["classes"], key=lambda c: c["index"])
+_RECON = sorted(_RECON_DOC["classes"], key=lambda c: c["index"])
 
 FEATURE_NAMES: list[str] = [f["name"] for f in _FEATURES]
 CLASS_NAMES: list[str] = [c["name"] for c in _CLASSES]
 
 INPUT_SIZE: int = int(_FEATURES_DOC["input_size"])
 OUTPUT_SIZE: int = int(_CLASSES_DOC["output_size"])
+RECON_SIZE: int = int(_RECON_DOC["output_size"])
 
 # Fail loudly at import time on any drift between the JSON's own count fields and
 # its arrays — the same invariant internal/schema enforces in Go (ADR 0002).
@@ -93,6 +99,16 @@ if len(CLASS_NAMES) != OUTPUT_SIZE:
     )
 if [c["index"] for c in _CLASSES] != list(range(OUTPUT_SIZE)):
     raise SchemaMismatch(f"{OUTPUT_SCHEMA}: class indices are not 0..{OUTPUT_SIZE - 1} in order")
+# reconstruction-v1 mirrors flow-features-v1 slot for slot (ADR 0037): same
+# count, same order, same names.
+if RECON_SIZE != INPUT_SIZE:
+    raise SchemaMismatch(
+        f"{RECON_SCHEMA}: output_size={RECON_SIZE} but {FEATURE_SCHEMA} input_size={INPUT_SIZE}"
+    )
+if [c["index"] for c in _RECON] != list(range(RECON_SIZE)):
+    raise SchemaMismatch(f"{RECON_SCHEMA}: slot indices are not 0..{RECON_SIZE - 1} in order")
+if [c["name"] for c in _RECON] != FEATURE_NAMES:
+    raise SchemaMismatch(f"{RECON_SCHEMA}: slot names must mirror {FEATURE_SCHEMA} feature names")
 
 DEFAULT_MISSING: float = float(_FEATURES_DOC.get("default_missing", 0.0))
 

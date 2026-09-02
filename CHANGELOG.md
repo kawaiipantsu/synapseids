@@ -48,10 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     per-host reconstruction-score aggregates. All of it stays an explicit
     `available: false` with zeroed fields when no anomaly model is active — a
     labelled gap, never a fabricated number (§16).
-  - Not yet in this release: the `synapse-trainer` `reconstruction` objective
-    that produces a `flow-anomaly-v1` bundle, and the SPA views that surface
-    the score — both tracked as follow-ups. The Go side is exercised with
-    `modeltest`-built autoencoder bundles.
+  - **`synapse-trainer` grows an `objective: "reconstruction"`** (issue #166).
+    It selects the `flow-anomaly-v1` family (symmetric autoencoder, output
+    locked to 48), trains on **NORMAL rows only** (`build_mixture`'s new
+    `train_label_filter`, applied after the per-dataset split so val/test keep
+    every class), uses MSE loss, exports the 48→48 net with **no softmax**
+    (output `reconstruction`), and writes the `anomaly` calibration block
+    (reconstruction-error percentiles + a p99 threshold) plus a
+    reconstruction-shaped `metrics.json` (percentiles, suggested threshold,
+    ROC-AUC / TPR-FPR vs held-out attack traffic). `trainer/examples/anomaly-recipe.json`.
+  - Not yet in this release: the SPA views that surface the score (issue #167).
 
 - **`GET /api/v1/drift` now carries an advisory retraining suggestion** (issue
   #65, [ADR 0038](docs/adr/0038-drift-config-and-retraining-suggestion.md)). A

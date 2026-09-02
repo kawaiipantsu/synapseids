@@ -493,3 +493,38 @@ def test_format_plan_is_readable(tmp_path):
     for name in schema.CLASS_NAMES:
         assert name in text
     assert "warnings" in text
+
+
+# ---------------------------------------------------------------------------
+# train_label_filter — the autoencoder's NORMAL-only train pool (ADR 0037)
+# ---------------------------------------------------------------------------
+
+
+def test_train_label_filter_restricts_train_but_not_val_or_test(tmp_path):
+    write_dataset(tmp_path / "a.csv", n=280, seed=70)
+    write_dataset(tmp_path / "b.csv", n=280, seed=71)
+    recipe = make_recipe([{"id": "a", "weight": 0.5}, {"id": "b", "weight": 0.5}])
+
+    normal = schema.class_id("normal")
+    m = build_mixture(recipe, tmp_path, train_label_filter={normal})
+
+    # every training row is NORMAL ...
+    assert set(m.y_train.tolist()) == {normal}
+    assert m.dropped_pre_weight_train_rows > 0
+    assert m.train_label_filter == [normal]
+    # ... but validation and test still carry the full class spread
+    assert len(set(m.y_val.tolist())) > 1
+    assert len(set(m.y_test.tolist())) > 1
+    # and the single-class train pool does not trip the imbalance warnings
+    assert not any("imbalanced" in w or "cannot learn it" in w for w in m.warnings)
+
+    block = m.to_json()
+    assert block["train_label_filter"] == [normal]
+    assert block["dropped_pre_weight_train_rows"] == m.dropped_pre_weight_train_rows
+
+
+def test_train_label_filter_that_matches_nothing_is_an_error(tmp_path):
+    write_dataset(tmp_path / "a.csv", n=60, seed=72, labels=["scan"])
+    recipe = make_recipe([{"id": "a", "weight": 1.0}])
+    with pytest.raises(MixtureError):
+        build_mixture(recipe, tmp_path, train_label_filter={schema.class_id("normal")})

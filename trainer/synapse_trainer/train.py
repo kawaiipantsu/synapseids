@@ -29,7 +29,7 @@ import numpy as np
 
 from .architecture import Architecture
 from .recipe import Recipe
-from .schema import CLASS_NAMES, OUTPUT_SIZE
+from .schema import CLASS_NAMES, OUTPUT_SIZE, class_id
 
 try:  # heavy, optional
     import torch
@@ -128,6 +128,96 @@ def classification_metrics(
             "per_class": t["per_class"],
             "confusion": t["confusion"],
         }
+    return m
+
+
+_RECON_PCTS = (50, 90, 95, 99)
+
+
+def _roc_auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
+    """ROC-AUC via the rank-sum (Mann–Whitney) identity. numpy only."""
+    pos = scores[positive]
+    neg = scores[~positive]
+    if pos.size == 0 or neg.size == 0:
+        return None
+    order = np.argsort(np.concatenate([neg, pos]), kind="mergesort")
+    ranks = np.empty(order.size, dtype=np.float64)
+    ranks[order] = np.arange(1, order.size + 1)
+    # average ties
+    allv = np.concatenate([neg, pos])
+    sv = allv[order]
+    i = 0
+    while i < sv.size:
+        j = i
+        while j + 1 < sv.size and sv[j + 1] == sv[i]:
+            j += 1
+        if j > i:
+            ranks[order[i : j + 1]] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    rank_pos_sum = ranks[neg.size :].sum()
+    auc = (rank_pos_sum - pos.size * (pos.size + 1) / 2.0) / (pos.size * neg.size)
+    return float(auc)
+
+
+def reconstruction_metrics(
+    recon_val: Any,
+    y_val: Any,
+    *,
+    normal_id: int,
+    train_loss: float | None = None,
+    val_loss: float | None = None,
+    test_loss: float | None = None,
+    recon_test: Any = None,
+    y_test: Any = None,
+) -> dict[str, Any]:
+    """Assemble the ``metrics.json`` body for a reconstruction (autoencoder) run.
+
+    ``recon_*`` are per-row reconstruction errors (mean squared error in the
+    model's normalized input space). Percentiles and the suggested threshold are
+    measured over the **NORMAL** rows only; separation metrics (ROC-AUC, and
+    TPR/FPR at the threshold) use the attack rows the split kept.
+    """
+    rv = np.asarray(recon_val, dtype=np.float64).ravel()
+    yv = np.asarray(y_val, dtype=np.int64).ravel()
+    normal_mask = yv == int(normal_id)
+    normal_err = rv[normal_mask]
+    if normal_err.size == 0:  # degenerate: no NORMAL rows in validation
+        normal_err = rv
+
+    pcts = {f"p{p}": float(np.percentile(normal_err, p)) for p in _RECON_PCTS}
+    pcts["max"] = float(normal_err.max()) if normal_err.size else 0.0
+    threshold = pcts["p99"]
+
+    def _separation(err: np.ndarray, y: np.ndarray) -> dict[str, Any]:
+        attack = y != int(normal_id)
+        out: dict[str, Any] = {
+            "rows": int(err.size),
+            "normal_rows": int((~attack).sum()),
+            "attack_rows": int(attack.sum()),
+            "mean_error": float(err.mean()) if err.size else 0.0,
+        }
+        out["roc_auc"] = _roc_auc(err, attack)
+        if attack.any() and (~attack).any():
+            flagged = err >= threshold
+            out["tpr_at_threshold"] = float((flagged & attack).sum() / attack.sum())
+            out["fpr_at_threshold"] = float((flagged & ~attack).sum() / (~attack).sum())
+        return out
+
+    m: dict[str, Any] = {
+        "objective": "reconstruction",
+        "recon_error_percentiles": pcts,
+        "suggested_threshold": threshold,
+        "threshold_percentile": "p99",
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "test_loss": test_loss,
+        "val": _separation(rv, yv),
+    }
+    if recon_test is not None and y_test is not None:
+        rt = np.asarray(recon_test, dtype=np.float64).ravel()
+        yt = np.asarray(y_test, dtype=np.int64).ravel()
+        if rt.size:
+            m["test"] = {"loss": test_loss, **_separation(rt, yt)}
     return m
 
 
@@ -250,20 +340,32 @@ def train_iter(
     if not _HAVE_TORCH:
         raise TrainingUnavailable()
 
+    is_recon = recipe.objective == "reconstruction"
+
     seed_everything(recipe.seed)
     Xtr = torch.tensor(np.asarray(X_train), dtype=torch.float32)
-    ytr = torch.tensor(np.asarray(y_train), dtype=torch.long)
     Xva = torch.tensor(np.asarray(X_val), dtype=torch.float32)
+    # Supervised: long class ids. Reconstruction: the loss target is the input
+    # itself, but the class ids ride along for the held-out threshold evaluation.
+    ytr = torch.tensor(np.asarray(y_train), dtype=torch.long)
     yva = torch.tensor(np.asarray(y_val), dtype=torch.long)
+    tgt_tr = Xtr if is_recon else ytr
+    tgt_va = Xva if is_recon else yva
     has_test = X_test is not None and y_test is not None
     if has_test:
         Xte = torch.tensor(np.asarray(X_test), dtype=torch.float32)
         yte = torch.tensor(np.asarray(y_test), dtype=torch.long)
+        tgt_te = Xte if is_recon else yte
 
     model = model or build_model(arch)
     opt = _make_optimizer(recipe.optimizer, model.parameters(), recipe.lr)
     sched = _make_scheduler(recipe.scheduler, opt, recipe.epochs)
-    loss_fn = nn.CrossEntropyLoss(weight=_class_weights(np.asarray(y_train), recipe.class_weighting))
+    if is_recon:
+        loss_fn = nn.MSELoss()
+    else:
+        loss_fn = nn.CrossEntropyLoss(
+            weight=_class_weights(np.asarray(y_train), recipe.class_weighting)
+        )
 
     n = Xtr.shape[0]
     bs = max(1, min(recipe.batch_size, n))
@@ -275,13 +377,17 @@ def train_iter(
     bad_epochs = 0
     started = time.monotonic()
 
-    def _eval(X, y):
+    def _eval(X, tgt):
         model.eval()
         with torch.no_grad():
-            logits = model(X)
-            loss = float(loss_fn(logits, y).item())
-            pred = logits.argmax(dim=1)
-            acc = float((pred == y).float().mean().item())
+            out = model(X)
+            loss = float(loss_fn(out, tgt).item())
+            if is_recon:
+                # per-row mean squared reconstruction error
+                per_row = ((out - X) ** 2).mean(dim=1)
+                return loss, None, per_row.cpu().numpy()
+            pred = out.argmax(dim=1)
+            acc = float((pred == tgt).float().mean().item())
         return loss, acc, pred.cpu().numpy()
 
     for epoch in range(1, recipe.epochs + 1):
@@ -291,20 +397,22 @@ def train_iter(
         batches_done = 0
         for start in range(0, n, bs):
             idx = perm[start : start + bs]
-            xb, yb = Xtr[idx], ytr[idx]
+            xb, tb = Xtr[idx], tgt_tr[idx]
             if xb.shape[0] < 2:  # BatchNorm needs >1 row
                 continue
             opt.zero_grad()
             out = model(xb)
-            loss = loss_fn(out, yb)
+            loss = loss_fn(out, tb)
             loss.backward()
             opt.step()
             running += float(loss.item()) * xb.shape[0]
             batches_done += 1
 
         train_loss = running / max(n, 1)
-        val_loss, val_acc, val_pred = _eval(Xva, yva)
-        val_prf = confusion_and_prf(yva.cpu().numpy(), val_pred)
+        val_loss, val_acc, val_out = _eval(Xva, tgt_va)
+        val_prf = (
+            None if is_recon else confusion_and_prf(yva.cpu().numpy(), val_out)
+        )
 
         if sched is not None:
             if isinstance(sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -312,7 +420,9 @@ def train_iter(
             else:
                 sched.step()
 
-        current = {
+        # A reconstruction run's early-stopping metric is validated to be
+        # val_loss (= MSE); classification allows accuracy / macro-F1 too.
+        current = val_loss if is_recon else {
             "val_loss": val_loss,
             "val_accuracy": val_acc,
             "val_macro_f1": val_prf["macro_f1"],
@@ -329,7 +439,7 @@ def train_iter(
         # are stable: the daemon stores each dict verbatim and the SPA reads
         # these keys. `val_*` are this epoch's validation metrics; the richer
         # per-class table and confusion matrix ride the final "done" dict.
-        yield {
+        msg = {
             "event": "epoch",
             "status": "running",
             "epoch": epoch,
@@ -338,39 +448,55 @@ def train_iter(
             "batches_total": batches_total,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "accuracy": val_acc,
-            "val_accuracy": val_acc,  # kept: older readers
-            "val_macro_precision": val_prf["macro_precision"],
-            "val_macro_recall": val_prf["macro_recall"],
-            "val_macro_f1": val_prf["macro_f1"],
             "lr": float(opt.param_groups[0]["lr"]),
             "elapsed_s": time.monotonic() - started,
             "device": device,
             "early_stop_bad_epochs": bad_epochs,
         }
+        if is_recon:
+            msg["objective"] = "reconstruction"
+            msg["val_recon_error"] = val_loss
+        else:
+            msg["accuracy"] = val_acc
+            msg["val_accuracy"] = val_acc  # kept: older readers
+            msg["val_macro_precision"] = val_prf["macro_precision"]
+            msg["val_macro_recall"] = val_prf["macro_recall"]
+            msg["val_macro_f1"] = val_prf["macro_f1"]
+        yield msg
 
         if es.patience and bad_epochs >= es.patience:
             break
 
     model.load_state_dict(best_state)
 
-    final_train_loss, _, _ = _eval(Xtr, ytr)
-    val_loss, _, val_pred = _eval(Xva, yva)
-    test_true = test_pred = None
+    final_train_loss, _, _ = _eval(Xtr, tgt_tr)
+    val_loss, _, val_out = _eval(Xva, tgt_va)
     test_loss = None
+    test_out = None
     if has_test and Xte.shape[0]:
-        test_loss, _, test_pred = _eval(Xte, yte)
-        test_true = yte.cpu().numpy()
+        test_loss, _, test_out = _eval(Xte, tgt_te)
 
-    metrics = classification_metrics(
-        yva.cpu().numpy(),
-        val_pred,
-        train_loss=final_train_loss,
-        val_loss=val_loss,
-        test_loss=test_loss,
-        test_true=test_true,
-        test_pred=test_pred,
-    )
+    if is_recon:
+        metrics = reconstruction_metrics(
+            val_out,
+            yva.cpu().numpy(),
+            normal_id=class_id("normal"),
+            train_loss=final_train_loss,
+            val_loss=val_loss,
+            test_loss=test_loss,
+            recon_test=test_out,
+            y_test=(yte.cpu().numpy() if (has_test and Xte.shape[0]) else None),
+        )
+    else:
+        metrics = classification_metrics(
+            yva.cpu().numpy(),
+            val_out,
+            train_loss=final_train_loss,
+            val_loss=val_loss,
+            test_loss=test_loss,
+            test_true=(yte.cpu().numpy() if (has_test and Xte.shape[0]) else None),
+            test_pred=test_out,
+        )
     metrics["epochs_run"] = epoch
     metrics["parameter_count"] = arch.parameter_count()
     metrics["elapsed_s"] = time.monotonic() - started

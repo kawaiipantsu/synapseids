@@ -60,6 +60,38 @@ A trained bundle records, under an additive optional `"anomaly"` key in
 
 It is not part of the frozen `BundleMeta` and `model.Validate` does not check it.
 
+## Training a bundle
+
+`synapse-trainer` grows a second **objective** on the same `train` command:
+
+```json
+{ "objective": "reconstruction", "datasets": [ … ], "architecture": { "hidden": [ … ] } }
+```
+
+- `objective: "reconstruction"` selects the `flow-anomaly-v1` family. The
+  architecture is a symmetric autoencoder — `Architecture` locks the output
+  width to 48 for this family; `default_architecture` is `48 → 32 → 16 → 32 →
+  48`. Hidden activations are `relu` / `leaky_relu` / `sigmoid` / `tanh` (what
+  `internal/nn` can run).
+- **Training data is NORMAL rows only.** `build_mixture(...,
+  train_label_filter={class_id("normal")})` restricts the train partition
+  *after* the per-dataset split, so validation and test keep every class — the
+  reconstruction error's threshold and its separation are measured against
+  held-out attack traffic. `class_weighting` is inert and forced to `none`;
+  early stopping is on `val_loss` (the MSE).
+- The loss is `nn.MSELoss()` with the normalized feature vector as its own
+  target. `train.reconstruction_metrics` (numpy only) reports the
+  reconstruction-error percentiles over the NORMAL validation rows, a suggested
+  threshold at p99, and ROC-AUC + TPR/FPR-at-threshold when attack rows are
+  present.
+- `export_onnx` writes the 48→48 net **with no softmax**, output name
+  `reconstruction`, shape `[1, 48]`. `metadata.json` carries the `family`,
+  `output_schema: reconstruction-v1`, `output_size: 48`, and the additive
+  `anomaly` calibration block above; `metrics.json` carries the
+  reconstruction-error stats instead of a confusion matrix.
+
+See `trainer/examples/anomaly-recipe.json`.
+
 ## In the ensemble
 
 `RoleAnomaly`. `inference.Runtime` keeps anomaly models in a slice separate from
@@ -91,9 +123,7 @@ Every one of these is an explicit `available: false` with zeroed fields when no
 
 ## Not yet built
 
-- The `synapse-trainer` `objective: "reconstruction"` that trains on NORMAL
-  traffic only and writes a `flow-anomaly-v1` bundle (the Go side is exercised
-  with `internal/modeltest` autoencoder bundles until then).
-- The SPA panels that plot the score (Flow Inspector, timeline, dashboard).
+- The SPA panels that plot the score (Flow Inspector, timeline, dashboard) —
+  issue #167.
 - `events.AnomalyDetected` and alert-policy integration for `exceeds` flows —
   the score is informational only for now.
