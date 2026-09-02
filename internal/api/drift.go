@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
@@ -19,16 +21,14 @@ import (
 // an index the memory store does not have.
 const driftScan = 5000
 
-// Drift state thresholds on the per-feature standardized mean shift
-// z = |current_mean - training_mean| / training_std. They are informational
-// bands, not alarms (PROJECT.md §19.13): a feature at or above driftZ has moved
-// several training standard deviations and is worth a human look. Left as
-// documented constants for now — a config block is a follow-up.
-const (
-	driftWarnZ  = 2.0
-	driftZ      = 4.0
-	driftStdEps = 1e-9
-)
+// driftStdEps floors training_std in the standardized mean shift
+// z = |current_mean - training_mean| / max(training_std, driftStdEps).
+const driftStdEps = 1e-9
+
+// The per-feature bands (warn / drift) and the retraining-suggestion trips come
+// from config.Drift (ADR 0036 documented them as constants; ADR 0038 / issue #65
+// make them tunable and add the advisory). Nothing here retrains or activates a
+// model — the suggestion is advisory only (PROJECT.md §19.13, §28.10).
 
 // handleDrift serves GET /api/v1/drift (issue #49, PROJECT.md §19.13): it
 // compares the current flow-features-v1 distribution against the active model's
@@ -59,6 +59,9 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	dcfg := s.cfg.Drift
+	warnZ, driftBandZ := dcfg.WarnZ, dcfg.DriftZ
 
 	rows := s.store.RecentFlows(driftScan)
 
@@ -119,10 +122,10 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 			df.Z = ptrFloat(z)
 			df.StdRatio = ptrFloat(ratio)
 			switch {
-			case z >= driftZ:
+			case z >= driftBandZ:
 				df.State = "drift"
 				driftN++
-			case z >= driftWarnZ:
+			case z >= warnZ:
 				df.State = "warn"
 				warnN++
 			default:
@@ -171,8 +174,13 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 			"first_seen": nilIfZeroTime(firstSeen),
 			"last_seen":  nilIfZeroTime(lastSeen),
 		},
-		"thresholds": map[string]float64{"warn": driftWarnZ, "drift": driftZ},
-		"features":   feats,
+		"thresholds": map[string]any{
+			"warn":                     warnZ,
+			"drift":                    driftBandZ,
+			"retrain_suggest_z":        dcfg.RetrainSuggestZ,
+			"retrain_suggest_features": dcfg.RetrainSuggestFeatures,
+		},
+		"features": feats,
 		"advisory": "Drift is informational. The daemon never retrains or activates a " +
 			"model automatically (PROJECT.md §19.13, §28.10).",
 	}
@@ -183,12 +191,42 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 			"features_warn":  warnN,
 			"features_drift": driftN,
 		}
+		resp["suggestion"] = driftSuggestion(dcfg, maxZ, driftN, base.modelID)
 	}
 	if baseErr != nil {
 		resp["baseline_note"] = baseErr.Error()
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// driftSuggestion turns the overall drift picture into an advisory retraining
+// suggestion when the configured band is crossed (issue #65, ADR 0038). It is
+// suggestion only: the daemon never retrains or activates a model on its own
+// (PROJECT.md §19.13, §28.10). Only called when a training baseline exists.
+func driftSuggestion(d config.Drift, maxZ float64, driftN int, modelID string) map[string]any {
+	byZ := maxZ >= d.RetrainSuggestZ
+	byN := driftN >= d.RetrainSuggestFeatures
+	s := map[string]any{
+		"retrain_suggested": byZ || byN,
+		"advisory": "Suggestion only. Retraining and activation are always an explicit " +
+			"operator decision (PROJECT.md §19.13, §28.10).",
+	}
+	switch {
+	case byZ && byN:
+		s["reason"] = fmt.Sprintf("%d feature(s) past the drift band and overall max z %.1f ≥ %.1f "+
+			"against the active model %q's training distribution", driftN, maxZ, d.RetrainSuggestZ, modelID)
+	case byZ:
+		s["reason"] = fmt.Sprintf("overall max z %.1f ≥ %.1f against the active model %q's training distribution",
+			maxZ, d.RetrainSuggestZ, modelID)
+	case byN:
+		s["reason"] = fmt.Sprintf("%d feature(s) past the drift band (threshold %d) against the active model %q",
+			driftN, d.RetrainSuggestFeatures, modelID)
+	default:
+		s["reason"] = fmt.Sprintf("drift is within tolerance (max z %.1f < %.1f, %d/%d feature(s) in the drift band)",
+			maxZ, d.RetrainSuggestZ, driftN, d.RetrainSuggestFeatures)
+	}
+	return s
 }
 
 func ptrFloat(f float64) *float64 { return &f }

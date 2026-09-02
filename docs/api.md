@@ -942,7 +942,7 @@ It is a read-side fold of the newest 5000 stored flow vectors, like
                 "model_id": "flow-classifier-v1-cph-0002", "method": "standard" },
   "window": { "flows": 4213, "scanned": 4213, "truncated": false,
               "first_seen": "2026-09-01T08:00:00Z", "last_seen": "2026-09-01T09:10:00Z" },
-  "thresholds": { "warn": 2.0, "drift": 4.0 },
+  "thresholds": { "warn": 2.0, "drift": 4.0, "retrain_suggest_z": 6.0, "retrain_suggest_features": 3 },
   "overall": { "max_z": 3.1, "mean_z": 0.7, "features_warn": 3, "features_drift": 0 },
   "features": [
     { "index": 12, "name": "bytes_per_second",
@@ -950,14 +950,25 @@ It is a read-side fold of the newest 5000 stored flow vectors, like
       "current_mean": 2510.2, "current_std": 690.1,
       "z": 2.79, "std_ratio": 1.51, "state": "warn" }
   ],
+  "suggestion": {
+    "retrain_suggested": false,
+    "reason": "drift is within tolerance (max z 3.1 < 6.0, 0/3 feature(s) in the drift band)",
+    "advisory": "Suggestion only. Retraining and activation are always an explicit operator decision (PROJECT.md §19.13, §28.10)."
+  },
   "advisory": "Drift is informational. The daemon never retrains or activates a model automatically (PROJECT.md §19.13, §28.10)."
 }
 ```
 
 - `z` — the standardized mean shift `|current_mean − training_mean| / training_std`.
-  `state` per feature is `stable` (`z < 2`), `warn` (`2 ≤ z < 4`) or `drift`
-  (`z ≥ 4`). The bands are documented constants for now; a config block is a
-  follow-up.
+  `state` per feature is `stable` (`z < warn_z`), `warn` (`warn_z ≤ z < drift_z`)
+  or `drift` (`z ≥ drift_z`). The bands are the `drift.warn_z` / `drift.drift_z`
+  config values (defaults `2.0` / `4.0`).
+- `suggestion` (only when a training baseline exists, issue #65 / ADR 0038) is an
+  **advisory** retraining hint. `retrain_suggested` is `true` when
+  `overall.max_z ≥ drift.retrain_suggest_z` (default `6.0`) **or** at least
+  `drift.retrain_suggest_features` features (default `3`) are in the drift band;
+  `reason` explains which trip fired (or why none did). It never retrains,
+  deploys or activates anything — that is always an explicit operator step.
 - `std_ratio` — `current_std / training_std`, so a feature whose spread changed
   without its mean moving is still visible.
 - `features` is sorted worst-`z` first when a baseline exists, schema order
@@ -969,8 +980,10 @@ It is a read-side fold of the newest 5000 stored flow vectors, like
   is not covered.
 
 **Drift never triggers an action.** The daemon does not retrain, deploy or
-activate a model on its own; this route is a signal for an operator (PROJECT.md
-§19.13, §28.10). See [ADR 0036](adr/0036-feature-drift-monitoring.md).
+activate a model on its own — not even when `suggestion.retrain_suggested` is
+`true`; this route is a signal for an operator (PROJECT.md §19.13, §28.10). See
+[ADR 0036](adr/0036-feature-drift-monitoring.md) and
+[ADR 0038](adr/0038-drift-config-and-retraining-suggestion.md).
 
 ### GET /api/v1/reports/host/{ip}
 
