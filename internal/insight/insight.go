@@ -144,6 +144,9 @@ type observation struct {
 	bytesBwd      uint64
 	classID       int
 	disagreement  bool
+	anomAvail     bool    // a flow-anomaly-v1 model scored this flow
+	anomScore     float64 // bounded 0..1 reconstruction-error score
+	anomExceeds   bool    // the raw error crossed the model's threshold
 }
 
 // item is one queue element: either an observation or a sync barrier.
@@ -247,6 +250,11 @@ func observationOf(fr *storage.FlowRecord, cl *storage.Classification) observati
 		ob.ts = cl.TS
 		ob.classID = cl.Result.ClassID
 		ob.disagreement = cl.Result.Disagreement
+		if a := cl.Result.Anomaly; a != nil && a.Available {
+			ob.anomAvail = true
+			ob.anomScore = a.Score
+			ob.anomExceeds = a.Exceeds
+		}
 	}
 	return ob
 }
@@ -297,7 +305,7 @@ func (ix *Index) apply(ob observation) {
 	// because that is what /api/v1/classifications contains.
 	if ob.classID >= 0 {
 		for _, r := range ix.rings {
-			r.add(ob.ts, ob.classID, ob.disagreement)
+			r.add(ob)
 		}
 	}
 
@@ -440,6 +448,10 @@ type host struct {
 	classes              [inference.OutputSize]uint64
 	classifications      uint64
 	disagreements        uint64
+	anomN                uint64  // classified records for this host an anomaly model scored
+	anomSum              float64 // sum of their bounded scores
+	anomMax              float64 // largest bounded score seen
+	anomExceeds          uint64  // how many crossed the model's threshold
 
 	recent     []flowRef
 	recentHead int
@@ -468,6 +480,16 @@ func (h *host) observe(ob observation, asInitiator bool, ix *Index) {
 		}
 		if ob.disagreement {
 			h.disagreements++
+		}
+		if ob.anomAvail {
+			h.anomN++
+			h.anomSum += ob.anomScore
+			if ob.anomScore > h.anomMax {
+				h.anomMax = ob.anomScore
+			}
+			if ob.anomExceeds {
+				h.anomExceeds++
+			}
 		}
 	}
 
@@ -617,10 +639,30 @@ func (c *counter[K]) top(n int, less func(a, b K) bool) []kv[K] {
 // -------------------------------------------------------------- timeline ring
 
 type tbucket struct {
-	ts       int64 // bucket start, unix seconds; 0 means "never written"
-	total    uint32
-	byClass  [inference.OutputSize]uint32
-	disagree uint32
+	ts          int64 // bucket start, unix seconds; 0 means "never written"
+	total       uint32
+	byClass     [inference.OutputSize]uint32
+	disagree    uint32
+	anomN       uint32  // flows in this bucket that an anomaly model scored
+	anomSum     float64 // sum of their bounded scores
+	anomMax     float64 // largest bounded score in the bucket
+	anomExceeds uint32  // how many crossed the model's threshold
+}
+
+// foldAnomaly adds one flow's anomaly verdict to the bucket. A no-op when the
+// flow was not scored by an anomaly model.
+func (t *tbucket) foldAnomaly(avail bool, score float64, exceeds bool) {
+	if !avail {
+		return
+	}
+	t.anomN++
+	t.anomSum += score
+	if score > t.anomMax {
+		t.anomMax = score
+	}
+	if exceeds {
+		t.anomExceeds++
+	}
 }
 
 // ring is a fixed-width, fixed-length bucket ring. Slot reuse is the eviction
@@ -638,11 +680,11 @@ func newRing(width int64, n int) *ring {
 	return &ring{width: width, buf: make([]tbucket, n)}
 }
 
-func (r *ring) add(ts time.Time, classID int, disagree bool) {
-	if ts.IsZero() {
+func (r *ring) add(ob observation) {
+	if ob.ts.IsZero() {
 		return
 	}
-	sec := ts.Unix()
+	sec := ob.ts.Unix()
 	b := sec - mod(sec, r.width)
 	idx := int(mod(sec/r.width, int64(len(r.buf))))
 	slot := &r.buf[idx]
@@ -658,12 +700,13 @@ func (r *ring) add(ts time.Time, classID int, disagree bool) {
 		return
 	}
 	slot.total++
-	if classID >= 0 && classID < len(slot.byClass) {
-		slot.byClass[classID]++
+	if ob.classID >= 0 && ob.classID < len(slot.byClass) {
+		slot.byClass[ob.classID]++
 	}
-	if disagree {
+	if ob.disagreement {
 		slot.disagree++
 	}
+	slot.foldAnomaly(ob.anomAvail, ob.anomScore, ob.anomExceeds)
 	if b > r.newest {
 		r.newest = b
 	}
@@ -739,7 +782,24 @@ func bucketOf(b int64, slot tbucket) Bucket {
 			out.ByClass[className[i]] = n
 		}
 	}
+	if slot.anomN > 0 {
+		out.AnomalyN = slot.anomN
+		out.AnomalyMean = slot.anomSum / float64(slot.anomN)
+		out.AnomalyMax = slot.anomMax
+		out.AnomalyExceeds = slot.anomExceeds
+	}
 	return out
+}
+
+// anyAnomalyBucket reports whether any bucket carries an anomaly score, i.e.
+// whether an anomaly model was active over the series' window.
+func anyAnomalyBucket(bs []Bucket) bool {
+	for i := range bs {
+		if bs[i].AnomalyN > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ------------------------------------------------------------------ read side
@@ -785,9 +845,10 @@ type FlowRef struct {
 // shallow profiles (short top-N lists, no peers, no recent flows); the detail
 // endpoint fills everything in.
 //
-// BaselineAvailable and AnomalyAvailable are always false in Phase 5: behavioural
-// baselines and anomaly trend need the Phase 7 anomaly/drift work, and this
-// package will not invent them (PROJECT.md §13, §19.5).
+// BaselineAvailable is always false: behavioural baselines are still Phase 7 and
+// this package will not invent one (PROJECT.md §13, §19.5). AnomalyAvailable is
+// true when a flow-anomaly-v1 model scored any of this host's flows, and the
+// Anomaly* fields summarise those reconstruction-error scores (ADR 0037).
 type Profile struct {
 	IP              string       `json:"ip"`
 	FirstSeen       time.Time    `json:"first_seen"`
@@ -809,6 +870,13 @@ type Profile struct {
 
 	BaselineAvailable bool `json:"baseline_available"`
 	AnomalyAvailable  bool `json:"anomaly_available"`
+	// AnomalyFlows is how many of this host's classified records an anomaly
+	// model scored; AnomalyMean / AnomalyMax are over those bounded 0..1
+	// scores; AnomalyExceeded is how many crossed the model's threshold.
+	AnomalyFlows    uint64  `json:"anomaly_flows"`
+	AnomalyMean     float64 `json:"anomaly_mean"`
+	AnomalyMax      float64 `json:"anomaly_max"`
+	AnomalyExceeded uint64  `json:"anomaly_exceeded"`
 }
 
 // depth controls how much of a profile is materialised.
@@ -869,6 +937,13 @@ func (h *host) profile(d depth) Profile {
 			FlowID: r.id, TS: r.ts, Proto: r.proto, Peer: r.peer,
 			Port: r.port, Bytes: r.bytes, Class: ClassName(r.classID),
 		})
+	}
+	if h.anomN > 0 {
+		p.AnomalyAvailable = true
+		p.AnomalyFlows = h.anomN
+		p.AnomalyMean = h.anomSum / float64(h.anomN)
+		p.AnomalyMax = h.anomMax
+		p.AnomalyExceeded = h.anomExceeds
 	}
 	return p
 }
@@ -955,22 +1030,30 @@ func (ix *Index) Host(ip string) (Profile, bool) {
 	return h.profile(full), true
 }
 
-// Bucket is one time slice of the classification timeline. Anomaly scores are
-// Phase 7 and deliberately absent — see Series.AnomalyAvailable.
+// Bucket is one time slice of the classification timeline. The anomaly fields
+// are populated when a flow-anomaly-v1 model scored flows in the window; they
+// stay zero otherwise (see Series.AnomalyAvailable).
 type Bucket struct {
 	TS            time.Time         `json:"ts"`
 	Total         uint32            `json:"total"`
 	ByClass       map[string]uint32 `json:"by_class"`
 	Disagreements uint32            `json:"disagreements"`
+	// AnomalyN is how many flows in the bucket an anomaly model scored;
+	// AnomalyMean / AnomalyMax are over those flows' bounded 0..1 scores;
+	// AnomalyExceeds is how many crossed the model's calibrated threshold.
+	AnomalyN       uint32  `json:"anomaly_n"`
+	AnomalyMean    float64 `json:"anomaly_mean"`
+	AnomalyMax     float64 `json:"anomaly_max"`
+	AnomalyExceeds uint32  `json:"anomaly_exceeds"`
 }
 
 // Series is a bucketed classification timeline (PROJECT.md §19.6).
 type Series struct {
 	BucketSec int      `json:"bucket_sec"`
 	Buckets   []Bucket `json:"buckets"`
-	// AnomalyAvailable is always false until the Phase 7 anomaly model lands.
-	// The field exists so a client can label the gap instead of plotting a
-	// fabricated zero line.
+	// AnomalyAvailable is true when an anomaly model scored flows anywhere in
+	// this series' window. When false the per-bucket anomaly fields are all
+	// zero and a client should label the gap rather than plot a flat line.
 	AnomalyAvailable bool `json:"anomaly_available"`
 }
 
@@ -1016,6 +1099,7 @@ func (ix *Index) Timeline(bucketSec int, from, to time.Time) Series {
 			break
 		}
 	}
+	s.AnomalyAvailable = anyAnomalyBucket(s.Buckets)
 	return s
 }
 
@@ -1065,6 +1149,9 @@ func BucketSamples(rows []storage.Classification, bucketSec int, from, to time.T
 		if c.Result.Disagreement {
 			t.disagree++
 		}
+		if a := c.Result.Anomaly; a != nil && a.Available {
+			t.foldAnomaly(true, a.Score, a.Exceeds)
+		}
 	}
 	if len(agg) == 0 {
 		return s
@@ -1081,5 +1168,6 @@ func BucketSamples(rows []storage.Classification, bucketSec int, from, to time.T
 			s.Buckets = append(s.Buckets, bucketOf(b, tbucket{}))
 		}
 	}
+	s.AnomalyAvailable = anyAnomalyBucket(s.Buckets)
 	return s
 }

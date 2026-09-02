@@ -34,6 +34,9 @@ type spec struct {
 	score        float64
 	disagreement bool
 	offsetSec    int
+	// anomalyScore > 0 attaches an anomaly verdict to the classification.
+	anomalyScore   float64
+	anomalyExceeds bool
 	// skipFlow omits the flow record, simulating a verdict whose record has
 	// already been evicted from the bounded ring.
 	skipFlow bool
@@ -92,6 +95,12 @@ func newFixture(t *testing.T, opt insight.Options, specs ...spec) fixture {
 					Class: s.class, ClassID: s.classID, Score: s.score,
 				}},
 			},
+		}
+		if s.anomalyScore > 0 {
+			cl.Result.Anomaly = &inference.AnomalyResult{
+				Available: true, ModelID: "flow-anomaly-v1-test", Score: s.anomalyScore,
+				ReconError: s.anomalyScore, Exceeds: s.anomalyExceeds,
+			}
 		}
 		if !s.skipFlow {
 			store.PutFlow(fr)
@@ -400,17 +409,19 @@ func TestPhase7UnavailabilityNoteIsAlwaysPresent(t *testing.T) {
 		if r.Coverage.BaselineAvailable || r.Coverage.AnomalyAvailable {
 			t.Fatalf("coverage claims a baseline: %+v", r.Coverage)
 		}
-		n, ok := noteCodes(r)[NoteBaselineUnavailable]
+		base, ok := noteCodes(r)[NoteBaselineUnavailable]
 		if !ok {
-			t.Fatalf("%s scope: missing the Phase 7 unavailability note", opt.Scope)
+			t.Fatalf("%s scope: missing the baseline-unavailable note", opt.Scope)
 		}
-		if n.Level != LevelWarning {
-			t.Fatalf("Phase 7 note must be a warning, got %q", n.Level)
+		if base.Level != LevelWarning || !strings.Contains(base.Text, "not available in this build") {
+			t.Fatalf("baseline note wrong: %+v", base)
 		}
-		for _, want := range []string{"not available in this build", "does NOT mean"} {
-			if !strings.Contains(n.Text, want) {
-				t.Fatalf("Phase 7 note should say %q: %q", want, n.Text)
-			}
+		anom, ok := noteCodes(r)[NoteAnomalyUnavailable]
+		if !ok {
+			t.Fatalf("%s scope: missing the anomaly-unavailable note", opt.Scope)
+		}
+		if anom.Level != LevelWarning || !strings.Contains(anom.Text, "does NOT mean") {
+			t.Fatalf("anomaly note should say %q: %+v", "does NOT mean", anom)
 		}
 		// The timeline carries the same statement rather than an empty series
 		// that reads as "clean".
@@ -421,6 +432,33 @@ func TestPhase7UnavailabilityNoteIsAlwaysPresent(t *testing.T) {
 		if _, ok := noteCodes(r)[NoteFeatureAttribution]; !ok {
 			t.Fatal("missing the feature-attribution caveat")
 		}
+	}
+}
+
+// When a flow-anomaly-v1 model scored the traffic, the report says so:
+// Coverage.AnomalyAvailable is true, the timeline carries the anomaly series,
+// and the "no anomaly model" warning is gone.
+func TestReportReflectsActiveAnomalyModel(t *testing.T) {
+	f := newFixture(t, insight.Options{},
+		spec{flowID: 1, initiator: "10.0.0.1", responder: "10.0.0.9", rport: 80, proto: "tcp",
+			class: "normal", classID: 0, score: 0.9, anomalyScore: 0.2},
+		spec{flowID: 2, initiator: "10.0.0.1", responder: "10.0.0.9", rport: 80, proto: "tcp",
+			class: "normal", classID: 0, score: 0.9, anomalyScore: 0.85, anomalyExceeds: true, offsetSec: 1},
+	)
+	r := mustBuild(t, f.src, rangeOpts())
+
+	if !r.Coverage.AnomalyAvailable {
+		t.Fatal("Coverage.AnomalyAvailable = false with anomaly-scored verdicts in scope")
+	}
+	if !r.Timeline.AnomalyAvailable {
+		t.Fatal("timeline does not carry the anomaly series")
+	}
+	if _, ok := noteCodes(r)[NoteAnomalyUnavailable]; ok {
+		t.Fatal("anomaly-unavailable note present while an anomaly model scored the traffic")
+	}
+	// The baseline is still Phase 7, so that note stays.
+	if _, ok := noteCodes(r)[NoteBaselineUnavailable]; !ok {
+		t.Fatal("baseline-unavailable note should still be present")
 	}
 }
 

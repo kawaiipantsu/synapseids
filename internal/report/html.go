@@ -547,8 +547,13 @@ a point-in-time copy of daemon state and does not update.
   <p class="dim">No timeline buckets in the retained window. This is an absence of retained
   data, not a statement that the window was quiet.</p>
 {{end}}
-  <p class="dim">There is no anomaly series: anomaly scoring is Phase 7 and this build
-  computes none, so none is plotted.</p>
+  {{if .Timeline.AnomalyAvailable}}
+  <p class="dim">Anomaly scoring active over this window: mean/max reconstruction-error
+  score and a threshold-exceeded count are recorded per bucket in the JSON report.</p>
+  {{else}}
+  <p class="dim">No anomaly model scored this traffic, so no reconstruction-error
+  series is plotted. This is an absence of scoring, not a statement of normality.</p>
+  {{end}}
 </div>
 
 <h2>Peers, service ports and protocols</h2>
@@ -674,7 +679,7 @@ values are raw <code>{{.Generator.FeatureSchema}}</code> values, not normalized 
 <tr><th>aggregation queue</th><td>{{uint .Coverage.ObservationsDropped}} observations dropped · {{uint .Coverage.TimelineLate}} verdicts too late for a timeline bucket</td></tr>
 <tr><th>notable flows</th><td>{{.Coverage.NotableCandidates}} candidates, cap {{.Coverage.NotableFlowCap}}{{if .Coverage.NotableFlowsTruncated}} — TRUNCATED{{end}} · {{.Coverage.FlowRecordsMissing}} without a retained flow record</td></tr>
 <tr><th>behavioural baseline</th><td>{{if .Coverage.BaselineAvailable}}available{{else}}NOT AVAILABLE IN THIS BUILD (Phase 7){{end}}</td></tr>
-<tr><th>anomaly score</th><td>{{if .Coverage.AnomalyAvailable}}available{{else}}NOT AVAILABLE IN THIS BUILD (Phase 7){{end}}</td></tr>
+<tr><th>anomaly score</th><td>{{if .Coverage.AnomalyAvailable}}available (a flow-anomaly-v1 model scored this window){{else}}not computed (no anomaly model active){{end}}</td></tr>
 </tbody>
 </table>
 </div>

@@ -17,7 +17,11 @@ package api
 //     so; a trained model's normalized inputs come from its own bundle.
 //   - No baseline column. Behavioural baselines are Phase 7; `insight` and
 //     `report` already report baseline_available:false and so does this.
-//   - No anomaly number. Also Phase 7, reported as an explicit unavailable stub.
+//   - The anomaly section is populated from the stored ensemble verdict when a
+//     flow-anomaly-v1 autoencoder scored the flow (ADR 0037); when the model
+//     that produced it is still loaded, the largest per-feature reconstruction
+//     gaps are recomputed on demand from the stored vector. With no anomaly
+//     model it is an explicit available:false, never a fabricated number.
 //   - No fabricated per-feature attribution for trained models. See
 //     inference.UnavailableExplanation.
 
@@ -42,16 +46,39 @@ const (
 	inputUnknown    = "unknown"    // cannot be determined — say so, show nothing
 )
 
-// phase7Note is the shared wording for the two Phase-7 gaps, deliberately
-// consistent with insight.Profile and report.Coverage.
+// phase7Note is the wording for the behavioural-baseline gap, deliberately
+// consistent with insight.Profile and report.Coverage. (Anomaly scoring is no
+// longer a Phase-7 stub — see anomalySection — so only the baseline still uses
+// this.)
 const phase7Note = "Not available in this build. " +
-	"Anomaly scoring and behavioural baselines are Phase 7 work (PROJECT.md §13, §19.3). " +
+	"Behavioural baselines are Phase 7 work (PROJECT.md §13, §19.3). " +
 	"The field exists so a client can label the gap rather than plot an invented number."
+
+// anomalyUnavailableNote is shown when no flow-anomaly-v1 autoencoder scored the
+// flow — a labelled gap, not a fabricated zero (PROJECT.md §16).
+const anomalyUnavailableNote = "No anomaly model scored this flow. Activate a " +
+	"flow-anomaly-v1 autoencoder bundle to score flows for novelty (PROJECT.md §13, ADR 0037)."
 
 // stubSection is an explicitly-unavailable part of the inspector.
 type stubSection struct {
 	Available bool   `json:"available"`
 	Note      string `json:"note"`
+}
+
+// anomalySection is the autoencoder novelty view of a flow. Available is false
+// when no anomaly model scored it. Score is a bounded 0..1 reconstruction-error
+// signal; Exceeds is its raw error crossing the bundle's calibrated threshold.
+// TopDeltas — the largest per-feature reconstruction gaps — are present only
+// when the model that produced the verdict is still loaded and can be re-run.
+type anomalySection struct {
+	Available  bool                     `json:"available"`
+	ModelID    string                   `json:"model_id,omitempty"`
+	Score      float64                  `json:"score,omitempty"`
+	ReconError float64                  `json:"recon_error,omitempty"`
+	Threshold  float64                  `json:"threshold,omitempty"`
+	Exceeds    bool                     `json:"exceeds,omitempty"`
+	TopDeltas  []inference.FeatureDelta `json:"top_deltas,omitempty"`
+	Note       string                   `json:"note,omitempty"`
 }
 
 // normFeature is one feature as a specific model sees it.
@@ -112,8 +139,8 @@ type flowExplain struct {
 
 	Models []explainModel `json:"models"`
 
-	Anomaly  stubSection `json:"anomaly"`
-	Baseline stubSection `json:"baseline"`
+	Anomaly  anomalySection `json:"anomaly"`
+	Baseline stubSection    `json:"baseline"`
 
 	Notes []string `json:"notes,omitempty"`
 }
@@ -133,7 +160,7 @@ func (s *Server) handleFlowExplain(w http.ResponseWriter, r *http.Request) {
 
 	out := flowExplain{
 		FlowID:   id,
-		Anomaly:  stubSection{Available: false, Note: phase7Note},
+		Anomaly:  anomalySection{Available: false, Note: anomalyUnavailableNote},
 		Baseline: stubSection{Available: false, Note: phase7Note},
 		Models:   []explainModel{},
 	}
@@ -191,7 +218,42 @@ func (s *Server) handleFlowExplain(w http.ResponseWriter, r *http.Request) {
 		out.Models = append(out.Models, em)
 	}
 
+	out.Anomaly = s.anomalyExplain(cl.Result.Anomaly, rec.Features)
+
 	writeJSON(w, http.StatusOK, out)
+}
+
+// anomalyExplain turns the stored ensemble anomaly verdict into the inspector
+// section. The scalars are always the ones recorded at classification time; the
+// per-feature reconstruction gaps are recomputed from the stored vector only
+// when the model that produced the verdict is still loaded (otherwise the gaps
+// cannot be honestly reconstructed).
+func (s *Server) anomalyExplain(ar *inference.AnomalyResult, v features.Vector) anomalySection {
+	if ar == nil || !ar.Available {
+		note := anomalyUnavailableNote
+		if ar != nil {
+			note = "The anomaly model that scored this flow abstained (the network failed to run)."
+		}
+		return anomalySection{Available: false, Note: note}
+	}
+
+	as := anomalySection{
+		Available:  true,
+		ModelID:    ar.ModelID,
+		Score:      ar.Score,
+		ReconError: ar.ReconError,
+		Threshold:  ar.Threshold,
+		Exceeds:    ar.Exceeds,
+	}
+	if am := s.liveAnomalyModel(); am != nil && am.ID() == ar.ModelID {
+		as.TopDeltas = am.ScoreAnomaly(v).TopDeltas
+		as.Note = "Reconstruction error and the largest per-feature gaps from the loaded " +
+			"autoencoder, in its normalized input space."
+	} else {
+		as.Note = "Stored reconstruction score. The autoencoder that produced it is no longer " +
+			"loaded, so the per-feature gaps cannot be reconstructed."
+	}
+	return as
 }
 
 // explanationFor asks a classifier to account for its verdict, falling back to an
@@ -319,6 +381,19 @@ func (s *Server) liveModels() map[string]inference.Classifier {
 		out[c.ID()] = c
 	}
 	return out
+}
+
+// liveAnomalyModel returns the anomaly-role model currently loaded in the
+// runtime, or nil when none is. In practice there is at most one.
+func (s *Server) liveAnomalyModel() inference.AnomalyScorer {
+	if s.rt == nil {
+		return nil
+	}
+	ms := s.rt.AnomalyModels()
+	if len(ms) == 0 {
+		return nil
+	}
+	return ms[0]
 }
 
 // latestClassification returns the newest retained verdict for a flow.

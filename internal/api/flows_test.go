@@ -154,17 +154,22 @@ func TestFlowExplainHeuristicReportsRawAndFiredRules(t *testing.T) {
 		t.Errorf("scan.unanswered_syn not in the explanation: %+v", m.Explanation.Rules)
 	}
 
-	// (4) Anomaly is a labelled stub with no number, and there is no baseline.
+	// (4) With no anomaly model active the anomaly section is a labelled gap
+	// with no number, and the behavioural baseline is still a Phase-7 stub.
 	if got.Anomaly.Available {
-		t.Error("anomaly reported as available")
+		t.Error("anomaly reported as available with no anomaly model loaded")
+	}
+	if got.Anomaly.Score != 0 || got.Anomaly.ReconError != 0 || len(got.Anomaly.TopDeltas) != 0 {
+		t.Errorf("unavailable anomaly section carries values: %+v", got.Anomaly)
+	}
+	if !strings.Contains(got.Anomaly.Note, "anomaly model") {
+		t.Errorf("anomaly note does not explain the gap: %q", got.Anomaly.Note)
 	}
 	if got.Baseline.Available {
 		t.Error("baseline reported as available")
 	}
-	for _, s := range []stubSection{got.Anomaly, got.Baseline} {
-		if !strings.Contains(s.Note, "Phase 7") {
-			t.Errorf("stub note does not name Phase 7: %q", s.Note)
-		}
+	if !strings.Contains(got.Baseline.Note, "Phase 7") {
+		t.Errorf("baseline stub note does not name Phase 7: %q", got.Baseline.Note)
 	}
 }
 
@@ -198,6 +203,56 @@ func TestFlowExplainNoFabricatedBaselineOrAnomalyKeys(t *testing.T) {
 		if strings.Contains(body, banned) {
 			t.Errorf("response contains %q — this build has no such data", banned)
 		}
+	}
+}
+
+// With a flow-anomaly-v1 autoencoder loaded, the explain anomaly section is
+// populated from the stored verdict and carries the recomputed per-feature gaps.
+func TestFlowExplainAnomalySectionPopulated(t *testing.T) {
+	root := t.TempDir()
+	const aeID = "flow-anomaly-v1-test-0001"
+	bundleDir := filepath.Join(root, aeID)
+	if _, err := modeltest.Write(bundleDir, modeltest.Bundle{Family: "flow-anomaly-v1", ModelID: aeID}); err != nil {
+		t.Fatalf("write ae bundle: %v", err)
+	}
+	b, err := model.Load(bundleDir)
+	if err != nil {
+		t.Fatalf("model.Load: %v", err)
+	}
+	ae, err := modelrun.BuildAnomaly(aeID, b)
+	if err != nil {
+		t.Fatalf("modelrun.BuildAnomaly: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Models.Directory = root
+	st := storage.NewMem(100, 100)
+	rt := inference.NewRuntime(inference.NewHeuristic("heuristic-v1", inference.RolePrimary))
+	rt.SetAnomalyModels(ae)
+	insFlow(t, st, rt, 1, 0, "fin_rst", time.Unix(1700000000, 0), 1)
+
+	h := New(cfg, events.New(), st, rt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
+
+	got := decode[flowExplain](t, get(t, h, "/api/v1/flows/1/explain"))
+	if !got.Anomaly.Available {
+		t.Fatalf("anomaly section not available: %+v", got.Anomaly)
+	}
+	if got.Anomaly.ModelID != aeID {
+		t.Errorf("anomaly model_id = %q, want %q", got.Anomaly.ModelID, aeID)
+	}
+	if got.Anomaly.Score <= 0 || got.Anomaly.Score >= 1 {
+		t.Errorf("anomaly score = %v, want 0..1", got.Anomaly.Score)
+	}
+	if len(got.Anomaly.TopDeltas) == 0 {
+		t.Error("per-feature reconstruction gaps not recomputed for the loaded model")
+	}
+	if !strings.Contains(got.Anomaly.Note, "autoencoder") {
+		t.Errorf("note = %q", got.Anomaly.Note)
+	}
+
+	// The supervised section is untouched: still just the heuristic.
+	if len(got.Models) != 1 || got.Models[0].Role == inference.RoleAnomaly {
+		t.Fatalf("anomaly model leaked into Models: %+v", got.Models)
 	}
 }
 

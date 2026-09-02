@@ -58,6 +58,33 @@ func validStatus(s Status) bool {
 	}
 }
 
+// Ensemble roles a registered model can occupy. They mirror inference.Role; the
+// registry keeps its own copies so it takes no dependency on internal/inference.
+const (
+	rolePrimary = "primary"
+	roleAnomaly = "anomaly"
+)
+
+// roleForFamily maps a model family to the role it occupies when activated: the
+// flow-anomaly-v1 autoencoder is the anomaly role, everything else is primary
+// (ADR 0037).
+func roleForFamily(family string) string {
+	if family == schema.FamilyAnomalyV1 {
+		return roleAnomaly
+	}
+	return rolePrimary
+}
+
+// entryRole is e.Role with the empty-value default applied: a registry.json
+// written before the Role field existed has no role, and those entries are all
+// primaries.
+func entryRole(e *Entry) string {
+	if e.Role == "" {
+		return rolePrimary
+	}
+	return e.Role
+}
+
 // Entry is one registered model: its frozen §11 metadata plus registry
 // bookkeeping. Metrics is the bundle's metrics.json carried through verbatim.
 type Entry struct {
@@ -78,10 +105,16 @@ type Entry struct {
 	CreatedAt          string              `json:"created_at"`
 	TrainerVersion     string              `json:"trainer_version"`
 	DerivedFrom        string              `json:"derived_from,omitempty"`
-	Status             Status              `json:"status"`
-	RegisteredAt       string              `json:"registered_at"`
-	ActivatedAt        string              `json:"activated_at,omitempty"`
-	Dir                string              `json:"dir"`
+	// Role is the ensemble role this model occupies when activated, mirroring
+	// inference.Role: "primary" (the default, and what an absent value means on
+	// a registry.json written before this field existed) or "anomaly" for the
+	// flow-anomaly-v1 autoencoder family. At most one entry is Active per role
+	// (ADR 0037).
+	Role         string `json:"role,omitempty"`
+	Status       Status `json:"status"`
+	RegisteredAt string `json:"registered_at"`
+	ActivatedAt  string `json:"activated_at,omitempty"`
+	Dir          string `json:"dir"`
 }
 
 // TreeNode is one model in the lineage forest returned by Tree: an Entry plus its
@@ -220,6 +253,7 @@ func (r *Registry) Register(b *model.Bundle) (Entry, error) {
 		upd.Metrics = cloneRaw(b.Metrics())
 		upd.ArtifactBytes = artifactBytes
 		upd.DerivedFrom = m.DerivedFrom
+		upd.Role = roleForFamily(m.Family)
 		r.byID[m.ModelID] = &upd
 		if err := r.persistLocked(); err != nil {
 			return Entry{}, err
@@ -245,6 +279,7 @@ func (r *Registry) Register(b *model.Bundle) (Entry, error) {
 		CreatedAt:          m.CreatedAt,
 		TrainerVersion:     m.TrainerVersion,
 		DerivedFrom:        m.DerivedFrom,
+		Role:               roleForFamily(m.Family),
 		Status:             StatusRegistered,
 		RegisteredAt:       time.Now().UTC().Format(time.RFC3339),
 		Dir:                b.Dir(),
@@ -261,9 +296,11 @@ func (r *Registry) Register(b *model.Bundle) (Entry, error) {
 }
 
 // SetStatus records a lifecycle transition. Moving to StatusActive stamps
-// ActivatedAt and demotes any other Active entry to StatusDeactivated, so at most
-// one entry is Active. It does not touch inference.Runtime — the caller wires the
-// live model (see the activate route and internal/modelrun).
+// ActivatedAt and demotes any other Active entry *in the same role* to
+// StatusDeactivated, so at most one entry is Active per role — a primary
+// classifier and an anomaly model can be Active at the same time (ADR 0037). It
+// does not touch inference.Runtime — the caller wires the live model (see the
+// activate route and internal/modelrun).
 func (r *Registry) SetStatus(id string, st Status) (Entry, error) {
 	if !validStatus(st) {
 		return Entry{}, fmt.Errorf("registry: invalid status %q", st)
@@ -289,11 +326,12 @@ func (r *Registry) SetStatus(id string, st Status) (Entry, error) {
 	}
 
 	if st == StatusActive {
+		want := entryRole(cur)
 		for _, oid := range r.order {
 			if oid == id {
 				continue
 			}
-			if e := r.byID[oid]; e.Status == StatusActive {
+			if e := r.byID[oid]; e.Status == StatusActive && entryRole(e) == want {
 				set(e, StatusDeactivated)
 			}
 		}
@@ -332,12 +370,30 @@ func (r *Registry) List() []Entry {
 	return out
 }
 
-// Active returns the single entry currently in StatusActive, if any.
+// Active returns the entry currently Active in the primary role, if any. It is
+// the classifier the read-side (drift baseline, flow explain) means by "the
+// active model"; an Active anomaly model is reached via ActiveByRole.
 func (r *Registry) Active() (Entry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.activeByRoleLocked(rolePrimary)
+}
+
+// ActiveByRole returns the entry currently Active in the given role ("primary"
+// or "anomaly"; an empty string means "primary"). At most one entry is Active
+// per role.
+func (r *Registry) ActiveByRole(role string) (Entry, bool) {
+	if role == "" {
+		role = rolePrimary
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.activeByRoleLocked(role)
+}
+
+func (r *Registry) activeByRoleLocked(role string) (Entry, bool) {
 	for _, id := range r.order {
-		if e := r.byID[id]; e.Status == StatusActive {
+		if e := r.byID[id]; e.Status == StatusActive && entryRole(e) == role {
 			return *e, true
 		}
 	}

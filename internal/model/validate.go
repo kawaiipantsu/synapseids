@@ -35,7 +35,7 @@ func (b *Bundle) Validate() error {
 	if m.Architecture.IsZero() {
 		return errors.New("metadata.json: architecture block is missing")
 	}
-	if err := schema.ValidateArchitecture(m.Architecture); err != nil {
+	if err := schema.ValidateArchitectureForFamily(m.Family, m.Architecture); err != nil {
 		return fmt.Errorf("metadata.json: %w", err)
 	}
 	if m.Family == "" {

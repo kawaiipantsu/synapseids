@@ -1,0 +1,249 @@
+{
+  "schema": "reconstruction-v1",
+  "version": 1,
+  "frozen": true,
+  "description": "Autoencoder reconstruction output vector for the flow-anomaly-v1 model family. Each slot is the reconstructed value of the corresponding flow-features-v1 feature; the count and ordering are locked to flow-features-v1 (PROJECT.md §9, §13). The per-flow reconstruction error is a novelty score, NOT a supervised class.",
+  "output_size": 48,
+  "classes": [
+    {
+      "index": 0,
+      "name": "flow_duration",
+      "description": "Reconstruction of flow_duration."
+    },
+    {
+      "index": 1,
+      "name": "packets_forward",
+      "description": "Reconstruction of packets_forward."
+    },
+    {
+      "index": 2,
+      "name": "packets_backward",
+      "description": "Reconstruction of packets_backward."
+    },
+    {
+      "index": 3,
+      "name": "bytes_forward",
+      "description": "Reconstruction of bytes_forward."
+    },
+    {
+      "index": 4,
+      "name": "bytes_backward",
+      "description": "Reconstruction of bytes_backward."
+    },
+    {
+      "index": 5,
+      "name": "packet_size_mean",
+      "description": "Reconstruction of packet_size_mean."
+    },
+    {
+      "index": 6,
+      "name": "packet_size_min",
+      "description": "Reconstruction of packet_size_min."
+    },
+    {
+      "index": 7,
+      "name": "packet_size_max",
+      "description": "Reconstruction of packet_size_max."
+    },
+    {
+      "index": 8,
+      "name": "packet_size_stddev",
+      "description": "Reconstruction of packet_size_stddev."
+    },
+    {
+      "index": 9,
+      "name": "forward_packet_size_mean",
+      "description": "Reconstruction of forward_packet_size_mean."
+    },
+    {
+      "index": 10,
+      "name": "backward_packet_size_mean",
+      "description": "Reconstruction of backward_packet_size_mean."
+    },
+    {
+      "index": 11,
+      "name": "packets_per_second",
+      "description": "Reconstruction of packets_per_second."
+    },
+    {
+      "index": 12,
+      "name": "bytes_per_second",
+      "description": "Reconstruction of bytes_per_second."
+    },
+    {
+      "index": 13,
+      "name": "forward_packets_per_second",
+      "description": "Reconstruction of forward_packets_per_second."
+    },
+    {
+      "index": 14,
+      "name": "backward_packets_per_second",
+      "description": "Reconstruction of backward_packets_per_second."
+    },
+    {
+      "index": 15,
+      "name": "interarrival_mean",
+      "description": "Reconstruction of interarrival_mean."
+    },
+    {
+      "index": 16,
+      "name": "interarrival_min",
+      "description": "Reconstruction of interarrival_min."
+    },
+    {
+      "index": 17,
+      "name": "interarrival_max",
+      "description": "Reconstruction of interarrival_max."
+    },
+    {
+      "index": 18,
+      "name": "interarrival_stddev",
+      "description": "Reconstruction of interarrival_stddev."
+    },
+    {
+      "index": 19,
+      "name": "forward_interarrival_mean",
+      "description": "Reconstruction of forward_interarrival_mean."
+    },
+    {
+      "index": 20,
+      "name": "backward_interarrival_mean",
+      "description": "Reconstruction of backward_interarrival_mean."
+    },
+    {
+      "index": 21,
+      "name": "source_port",
+      "description": "Reconstruction of source_port."
+    },
+    {
+      "index": 22,
+      "name": "destination_port",
+      "description": "Reconstruction of destination_port."
+    },
+    {
+      "index": 23,
+      "name": "protocol_tcp",
+      "description": "Reconstruction of protocol_tcp."
+    },
+    {
+      "index": 24,
+      "name": "protocol_udp",
+      "description": "Reconstruction of protocol_udp."
+    },
+    {
+      "index": 25,
+      "name": "protocol_icmp",
+      "description": "Reconstruction of protocol_icmp."
+    },
+    {
+      "index": 26,
+      "name": "tcp_syn_count",
+      "description": "Reconstruction of tcp_syn_count."
+    },
+    {
+      "index": 27,
+      "name": "tcp_ack_count",
+      "description": "Reconstruction of tcp_ack_count."
+    },
+    {
+      "index": 28,
+      "name": "tcp_fin_count",
+      "description": "Reconstruction of tcp_fin_count."
+    },
+    {
+      "index": 29,
+      "name": "tcp_rst_count",
+      "description": "Reconstruction of tcp_rst_count."
+    },
+    {
+      "index": 30,
+      "name": "tcp_psh_count",
+      "description": "Reconstruction of tcp_psh_count."
+    },
+    {
+      "index": 31,
+      "name": "tcp_urg_count",
+      "description": "Reconstruction of tcp_urg_count."
+    },
+    {
+      "index": 32,
+      "name": "syn_ack_ratio",
+      "description": "Reconstruction of syn_ack_ratio."
+    },
+    {
+      "index": 33,
+      "name": "packet_direction_ratio",
+      "description": "Reconstruction of packet_direction_ratio."
+    },
+    {
+      "index": 34,
+      "name": "byte_direction_ratio",
+      "description": "Reconstruction of byte_direction_ratio."
+    },
+    {
+      "index": 35,
+      "name": "initial_tcp_window",
+      "description": "Reconstruction of initial_tcp_window."
+    },
+    {
+      "index": 36,
+      "name": "average_tcp_window",
+      "description": "Reconstruction of average_tcp_window."
+    },
+    {
+      "index": 37,
+      "name": "down_up_bytes_ratio",
+      "description": "Reconstruction of down_up_bytes_ratio."
+    },
+    {
+      "index": 38,
+      "name": "small_packet_ratio",
+      "description": "Reconstruction of small_packet_ratio."
+    },
+    {
+      "index": 39,
+      "name": "large_packet_ratio",
+      "description": "Reconstruction of large_packet_ratio."
+    },
+    {
+      "index": 40,
+      "name": "average_payload_length",
+      "description": "Reconstruction of average_payload_length."
+    },
+    {
+      "index": 41,
+      "name": "bidirectional_flag",
+      "description": "Reconstruction of bidirectional_flag."
+    },
+    {
+      "index": 42,
+      "name": "internal_to_internal",
+      "description": "Reconstruction of internal_to_internal."
+    },
+    {
+      "index": 43,
+      "name": "internal_to_external",
+      "description": "Reconstruction of internal_to_external."
+    },
+    {
+      "index": 44,
+      "name": "external_to_internal",
+      "description": "Reconstruction of external_to_internal."
+    },
+    {
+      "index": 45,
+      "name": "external_to_external",
+      "description": "Reconstruction of external_to_external."
+    },
+    {
+      "index": 46,
+      "name": "dest_port_is_wellknown",
+      "description": "Reconstruction of dest_port_is_wellknown."
+    },
+    {
+      "index": 47,
+      "name": "snapshot_index",
+      "description": "Reconstruction of snapshot_index."
+    }
+  ]
+}

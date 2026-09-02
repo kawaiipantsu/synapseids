@@ -40,6 +40,61 @@ func feed(ix *Index, fr storage.FlowRecord, cl storage.Classification) {
 	ix.Observe(&fr, &cl)
 }
 
+// withAnomaly attaches an anomaly verdict to a classification.
+func withAnomaly(cl storage.Classification, score float64, exceeds bool) storage.Classification {
+	cl.Result.Anomaly = &inference.AnomalyResult{
+		Available: true, ModelID: "ae-test", Score: score, ReconError: score, Exceeds: exceeds,
+	}
+	return cl
+}
+
+func TestTimelineAndProfileFoldAnomalyScores(t *testing.T) {
+	ix := New(Options{})
+	defer ix.Close() //nolint:errcheck
+
+	// Three flows for one host at the same second, two of them scored by an
+	// anomaly model (one over threshold).
+	fr1, cl1 := rec(1, "10.0.0.5", 40001, "10.0.0.9", 443, "tcp", base, 100, 200, "normal", 0, false)
+	feed(ix, fr1, withAnomaly(cl1, 0.2, false))
+	fr2, cl2 := rec(2, "10.0.0.5", 40002, "10.0.0.9", 443, "tcp", base, 100, 200, "normal", 0, false)
+	feed(ix, fr2, withAnomaly(cl2, 0.8, true))
+	fr3, cl3 := rec(3, "10.0.0.5", 40003, "10.0.0.9", 443, "tcp", base, 100, 200, "normal", 0, false)
+	feed(ix, fr3, cl3) // no anomaly model scored this one
+	ix.Sync()
+
+	ser := ix.Timeline(1, time.Time{}, time.Time{})
+	if !ser.AnomalyAvailable {
+		t.Fatal("Timeline.AnomalyAvailable = false with anomaly-scored flows")
+	}
+	var n uint32
+	var sawExceeds uint32
+	var maxSeen float64
+	for _, b := range ser.Buckets {
+		n += b.AnomalyN
+		sawExceeds += b.AnomalyExceeds
+		if b.AnomalyMax > maxSeen {
+			maxSeen = b.AnomalyMax
+		}
+	}
+	if n != 2 || sawExceeds != 1 || maxSeen != 0.8 {
+		t.Fatalf("bucket anomaly totals: n=%d exceeds=%d max=%v", n, sawExceeds, maxSeen)
+	}
+
+	p, ok := ix.Host("10.0.0.5")
+	if !ok {
+		t.Fatal("host not found")
+	}
+	if !p.AnomalyAvailable || p.AnomalyFlows != 2 || p.AnomalyExceeded != 1 {
+		t.Fatalf("profile anomaly = %+v", p)
+	}
+	if got := p.AnomalyMean; got < 0.49 || got > 0.51 { // (0.2 + 0.8) / 2
+		t.Fatalf("AnomalyMean = %v, want ~0.5", got)
+	}
+	if p.AnomalyMax != 0.8 {
+		t.Fatalf("AnomalyMax = %v, want 0.8", p.AnomalyMax)
+	}
+}
+
 func TestProfileAccumulates(t *testing.T) {
 	ix := New(Options{})
 	defer ix.Close() //nolint:errcheck // always nil

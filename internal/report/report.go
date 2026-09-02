@@ -347,6 +347,7 @@ const (
 // Note codes. A consumer keys on Code; a human reads Text.
 const (
 	NoteBaselineUnavailable = "baseline_unavailable"
+	NoteAnomalyUnavailable  = "anomaly_unavailable"
 	NotePartialStoreEvicted = "partial_store_evicted"
 	NotePartialScanWindow   = "partial_scan_window"
 	NotePartialRetention    = "partial_before_retention"
@@ -883,10 +884,11 @@ func coverage(src Sources, opt Options, scanned []storage.Classification, candid
 		NotableCandidates:     candidates,
 		NotableFlowsTruncated: candidates > listed,
 		FlowRecordsMissing:    missing,
-		// Phase 7. insight computes neither, and this package will not invent
-		// them (§13, §19.4-6).
+		// Behavioural baselines are still Phase 7 and this package will not
+		// invent one (§13, §19.4-6). AnomalyAvailable is set below from the
+		// scanned verdicts: true when a flow-anomaly-v1 model scored any of them.
 		BaselineAvailable: false,
-		AnomalyAvailable:  false,
+		AnomalyAvailable:  anomalyScored(scanned),
 	}
 	if src.Store != nil {
 		st := src.Store.Stats()
@@ -932,21 +934,37 @@ func coverage(src Sources, opt Options, scanned []storage.Classification, candid
 	return c
 }
 
-// notes turns Coverage into the prose a reader actually sees. The Phase 7 note
-// is unconditional while the two availability flags are false: a report must
-// never look like a clean anomaly result when nothing computed one.
+// anomalyScored reports whether a flow-anomaly-v1 model scored any of the
+// scanned verdicts.
+func anomalyScored(scanned []storage.Classification) bool {
+	for i := range scanned {
+		if a := scanned[i].Result.Anomaly; a != nil && a.Available {
+			return true
+		}
+	}
+	return false
+}
+
+// notes turns Coverage into the prose a reader actually sees. The baseline note
+// is unconditional (baselines are always Phase 7); the anomaly note fires only
+// when nothing scored the traffic for novelty, so a report never looks like a
+// clean anomaly result when none was computed.
 func notes(c Coverage, sc Scope, models int) []Note {
 	out := make([]Note, 0, 12)
 	add := func(code, level, format string, args ...any) {
 		out = append(out, Note{Code: code, Level: level, Text: fmt.Sprintf(format, args...)})
 	}
 
-	if !c.BaselineAvailable && !c.AnomalyAvailable {
+	if !c.BaselineAvailable {
 		add(NoteBaselineUnavailable, LevelWarning,
-			"Behavioural baseline and anomaly scoring are not available in this build "+
-				"(Phase 7, PROJECT.md §13/§19.4). This report contains no baseline comparison "+
-				"and no anomaly score. Absence of an anomaly finding here does NOT mean the "+
-				"traffic was checked against a baseline and found normal.")
+			"Behavioural baseline comparison is not available in this build (Phase 7, "+
+				"PROJECT.md §19.4). This report contains no per-host baseline column.")
+	}
+	if !c.AnomalyAvailable {
+		add(NoteAnomalyUnavailable, LevelWarning,
+			"No anomaly model scored this traffic. This report carries no reconstruction "+
+				"score, and the absence of an anomaly finding here does NOT mean the traffic "+
+				"was checked for novelty and found normal (PROJECT.md §13, ADR 0037).")
 	}
 	add(NoteFeatureAttribution, LevelInfo,
 		"The per-flow feature table is a fixed, documented subset of %s — the named raw "+
