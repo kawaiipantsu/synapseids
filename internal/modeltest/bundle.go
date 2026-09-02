@@ -71,10 +71,10 @@ func Write(dir string, b Bundle) (string, error) {
 	if anomaly {
 		// 48 -> 16 -> 8 -> 16 -> 48 symmetric autoencoder, no softmax.
 		g = onnxbuild.MLP(48, []onnxbuild.Layer{
-			{W: r.matrix(16, 48, 0.25), B: r.vec(16, 0.1), Activation: "Relu"},
-			{W: r.matrix(8, 16, 0.25), B: r.vec(8, 0.1), Activation: "Relu"},
-			{W: r.matrix(16, 8, 0.25), B: r.vec(16, 0.1), Activation: "Relu"},
-			{W: r.matrix(48, 16, 0.25), B: r.vec(48, 0.1)},
+			{W: r.matrix(16, 48), B: r.vec(16, 0.1), Activation: "Relu"},
+			{W: r.matrix(8, 16), B: r.vec(8, 0.1), Activation: "Relu"},
+			{W: r.matrix(16, 8), B: r.vec(16, 0.1), Activation: "Relu"},
+			{W: r.matrix(48, 16), B: r.vec(48, 0.1)},
 		}, false)
 		paramCount = (16*48 + 16) + (8*16 + 8) + (16*8 + 16) + (48*16 + 48) // 1880
 		outSchema, outSize = "reconstruction-v1", 48
@@ -92,8 +92,8 @@ func Write(dir string, b Bundle) (string, error) {
 		}
 	} else {
 		g = onnxbuild.MLP(48, []onnxbuild.Layer{
-			{W: r.matrix(8, 48, 0.25), B: r.vec(8, 0.1), Activation: "Relu"},
-			{W: r.matrix(7, 8, 0.25), B: r.vec(7, 0.1)},
+			{W: r.matrix(8, 48), B: r.vec(8, 0.1), Activation: "Relu"},
+			{W: r.matrix(7, 8), B: r.vec(7, 0.1)},
 		}, true)
 		paramCount = 8*48 + 8 + 7*8 + 7 // 455
 		outSchema, outSize = "traffic-classes-v1", 7
@@ -173,10 +173,14 @@ func (l *lcg) next() float64 {
 	return float64(l.state>>11) / float64(uint64(1)<<53)
 }
 
-func (l *lcg) matrix(rows, cols int, scale float64) [][]float32 {
+// weightScale keeps the fixture's random weights small so the untrained network
+// produces a sane (non-saturated) output.
+const weightScale = 0.25
+
+func (l *lcg) matrix(rows, cols int) [][]float32 {
 	m := make([][]float32, rows)
 	for i := range m {
-		m[i] = l.vec(cols, scale)
+		m[i] = l.vec(cols, weightScale)
 	}
 	return m
 }
