@@ -31,24 +31,18 @@ namespace OPNsense\SynapseIDSSensor;
 use OPNsense\Base\IndexController;
 
 /**
- * Class SettingsController
+ * SynapseIDS > Sensors: the capture-instance grid (issue #178).
  *
- * Back-compatibility shim. The plugin UI moved from one page to a SynapseIDS
- * submenu (Sensors / General / Logs / Diagnostics) in issue #178, so the real
- * pages now live in SensorsController, GeneralController, LogsController and
- * DiagnosticsController. This class stays only so a bookmarked
- * /ui/synapseidssensor/settings still lands somewhere useful -- the Sensors
- * page -- instead of 404ing. Carries no business logic.
+ * One synapse-sensor process per interface. The grid and its dialog talk to
+ * /api/synapseidssensor/settings/*Instance; the Apply button calls
+ * settings/set, which is the single place the whole reconfigure cycle runs.
+ * Carries no business logic.
  *
- * @package OPNsense\SynapseIDSSensor
+ * Reachable as /ui/synapseidssensor/sensors (and, for old bookmarks,
+ * /ui/synapseidssensor/settings -- see SettingsController).
  */
-class SettingsController extends IndexController
+class SensorsController extends IndexController
 {
-    /**
-     * Show the Sensors page for the legacy /ui/synapseidssensor/settings URL.
-     *
-     * @return void
-     */
     public function indexAction()
     {
         $this->view->title = gettext('SynapseIDS Sensor - Sensors');

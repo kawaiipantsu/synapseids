@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The OPNsense plugin UI is now a `SynapseIDS` side-menu section** (issue
+  #178), replacing the single **Services → SynapseIDS Sensor** page. It expands
+  to four pages: **Sensors** (the capture-instance grid + Apply), **General**
+  (master switch, transport, bearer token, TLS material, and a new **Log level**
+  control), **Logs** (the `sensor.log` tail), and **Diagnostics** (the
+  `synapse-sensor doctor` selftest + per-instance start/stop). `index.volt` was
+  split into `sensors/general/logs/diagnostics.volt` with one `IndexController`
+  each; the API controllers are unchanged, and a bookmarked
+  `/ui/synapseidssensor/settings` still resolves (to Sensors).
+- **`synapse-sensor` gained `--log-level {errors|normal|verbose}`** (issue #178),
+  driven by the OPNsense **Log level** dropdown and rendered into each instance
+  config. `errors` keeps only warnings and failures; `normal` (the default, and
+  the pre-existing behaviour) adds the lifecycle lines; `verbose` adds
+  per-connection detail. Bare `log.Printf` in the sensor is replaced by a
+  level-gated `logInfof`/`logVerbosef`/`logErrorf`.
+
 - **The SPA build moved to Vite 8** (issue #147). Vite 8 dropped the object form
   of `build.rollupOptions.output.manualChunks`, which the config used to keep
   React in its own cacheable chunk — rewritten to the function form, chunk

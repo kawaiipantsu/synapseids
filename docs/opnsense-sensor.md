@@ -3,10 +3,20 @@
 Turn an OPNsense firewall into a sensor — or **one per interface** — for a
 central SynapseIDS daemon: capture through FreeBSD's BPF devices, stream to
 `synapsed` over the authenticated SYNPOIP transport, and see the classifications
-in the SynapseIDS UI. Everything is configured from
-**Services → SynapseIDS Sensor**.
+in the SynapseIDS UI. Everything is configured from the **SynapseIDS**
+side-menu section, which expands to four pages:
 
-**One `synapse-sensor` process per captured interface.** The settings page holds
+| page | what it holds |
+|------|---------------|
+| **Sensors** | the grid of capture instances, one per interface — add, edit, remove, and Apply |
+| **General** | the master switch, the transport posture, the bearer token, the TLS material, and the **Log level** shared by every sensor on the firewall |
+| **Logs** | the tail of each instance's `sensor.log`, read through configd |
+| **Diagnostics** | the on-box selftest (`synapse-sensor doctor`) and per-instance start/stop |
+
+(A bookmarked `Services → SynapseIDS Sensor` / `/ui/synapseidssensor/settings`
+URL still resolves — to the Sensors page.)
+
+**One `synapse-sensor` process per captured interface.** The Sensors page holds
 a *list* of sensor instances; each has its own interface, its own sensor
 identity, its own capture settings, its own log and its own authorisation
 assertion. Four monitored segments are four named sensors on the daemon, which is
@@ -92,14 +102,15 @@ Without it the sensor refuses to start and prints exactly these commands.
 
 ## 2. Configure
 
-**Services → SynapseIDS Sensor** has two parts: a **grid of sensor instances**,
-one per interface, and below it the settings they share.
+The **Sensors** page is a **grid of sensor instances**, one per interface; the
+**General** page holds the settings they share.
 
-### The shared settings — one collector, one identity
+### The shared settings — one collector, one identity (General)
 
 | field | meaning |
 |-------|---------|
 | Enable sensors | master switch. Start the configured instances with the firewall |
+| Log level | how much every sensor writes to its log (`--log-level`): **Errors only** (warnings and failures), **Normal** (＋ lifecycle: identity, mode, transport, stop — the pre-existing behaviour), or **Verbose** (＋ a line per connection attempt, handshake and reconnect). Applied on Save; the log itself is on the **Logs** page |
 | Mode | **Daemon connects to this firewall** (`--listen`) or **This firewall connects out** (`--connect`) |
 | Collector address | connect mode: the `host:port` every instance dials |
 | Bearer token | the shared secret for the SYNPOIP handshake. One for the firewall — instances are told apart by their **sensor IDs**, not by their credentials |
@@ -382,7 +393,7 @@ pkg add     dist/os-synapseids-sensor-<ver>-freebsd14-amd64.pkg
 # 2. upgrading? confirm the migration ran and kept the sensor you had.
 /usr/local/opnsense/mvc/script/run_migrations.php -v OPNsense/SynapseIDSSensor
 
-# 3. do the UI pages appear? Services > SynapseIDS Sensor
+# 3. do the UI pages appear? the SynapseIDS side-menu section (Sensors / General / Logs / Diagnostics)
 #    add one instance per interface, save, then:
 
 # 4. did the repeating template really produce one file per instance?

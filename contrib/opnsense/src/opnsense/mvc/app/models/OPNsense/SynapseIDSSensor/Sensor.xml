@@ -81,6 +81,31 @@
                 <Required>Y</Required>
             </enabled>
 
+            <!--
+                Log verbosity, shared by every instance on this firewall. Becomes
+                the `log-level` flag on each synapse-sensor process:
+
+                  errors   only warnings and failures
+                  normal   + the lifecycle (identity, mode, transport, stop) -
+                           what every release before this flag produced
+                  verbose  + per-connection detail (each dial, handshake, retry)
+
+                No migration accompanies this field: it is Required but carries a
+                <default>, and OPNsense fills a missing leaf with the default on
+                read, so an upgraded configuration gets "normal" with no model
+                version bump.
+            -->
+            <log_level type="OptionField">
+                <default>normal</default>
+                <Required>Y</Required>
+                <OptionValues>
+                    <errors>Errors only - warnings and failures</errors>
+                    <normal>Normal - lifecycle plus errors (default)</normal>
+                    <verbose>Verbose - add per-connection detail</verbose>
+                </OptionValues>
+                <ValidationMessage>Choose errors, normal or verbose.</ValidationMessage>
+            </log_level>
+
             <!-- ============================ transport ====================== -->
             <!--
                 Shared by every instance: there is one SynapseIDS collector and

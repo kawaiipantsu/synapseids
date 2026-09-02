@@ -31,28 +31,18 @@ namespace OPNsense\SynapseIDSSensor;
 use OPNsense\Base\IndexController;
 
 /**
- * Class SettingsController
+ * SynapseIDS > Diagnostics: the on-box selftest (`synapse-sensor doctor` per
+ * instance) via /api/synapseidssensor/service/selftest[/<instance>], plus
+ * per-instance start/stop/restart (issue #178). Read-only checks; prints no
+ * secrets.
  *
- * Back-compatibility shim. The plugin UI moved from one page to a SynapseIDS
- * submenu (Sensors / General / Logs / Diagnostics) in issue #178, so the real
- * pages now live in SensorsController, GeneralController, LogsController and
- * DiagnosticsController. This class stays only so a bookmarked
- * /ui/synapseidssensor/settings still lands somewhere useful -- the Sensors
- * page -- instead of 404ing. Carries no business logic.
- *
- * @package OPNsense\SynapseIDSSensor
+ * Reachable as /ui/synapseidssensor/diagnostics.
  */
-class SettingsController extends IndexController
+class DiagnosticsController extends IndexController
 {
-    /**
-     * Show the Sensors page for the legacy /ui/synapseidssensor/settings URL.
-     *
-     * @return void
-     */
     public function indexAction()
     {
-        $this->view->title = gettext('SynapseIDS Sensor - Sensors');
-        $this->view->formDialogInstance = $this->getForm('dialogInstance');
-        $this->view->pick('OPNsense/SynapseIDSSensor/sensors');
+        $this->view->title = gettext('SynapseIDS Sensor - Diagnostics');
+        $this->view->pick('OPNsense/SynapseIDSSensor/diagnostics');
     }
 }
