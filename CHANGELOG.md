@@ -34,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit that accuracy / F1 need labels from an offline evaluation run and that
   per-verdict latency is not recorded. The SPA's `#48` Model Comparison stub can
   now render real data. `docs/api.md` updated. (#48)
->>>>>>> origin/develop
 - **Config hot-reload on SIGHUP** (issue #59, PROJECT.md §23).
   `kill -HUP` / `systemctl reload synapsed` re-reads `--config` and applies the
   subset that is safe on a running daemon: the alert policy (`alerts.enabled`,
