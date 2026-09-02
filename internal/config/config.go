@@ -209,13 +209,6 @@ type Review struct {
 	Directory string `json:"directory"`
 }
 
-// Alerts configures the detection policy and the bounded detection store behind
-// GET /api/v1/detections (issue #117; ADR 0027).
-//
-// Severity is NOT configurable here. It is derived from the traffic class in
-// internal/alert, because a severity table is a small closed set that must cover
-// the frozen traffic-classes-v1 list exactly — a per-deployment override would
-// let an operator create a class with no severity, which no filter could select.
 // Drift configures GET /api/v1/drift (issue #49, ADR 0036/0038). The bands were
 // documented constants in ADR 0036; this block makes them tunable and adds the
 // retraining-suggestion thresholds (issue #65). The suggestion is advisory only
@@ -234,6 +227,13 @@ type Drift struct {
 	RetrainSuggestFeatures int     `json:"retrain_suggest_features"`
 }
 
+// Alerts configures the detection policy and the bounded detection store behind
+// GET /api/v1/detections (issue #117; ADR 0027).
+//
+// Severity is NOT configurable here. It is derived from the traffic class in
+// internal/alert, because a severity table is a small closed set that must cover
+// the frozen traffic-classes-v1 list exactly — a per-deployment override would
+// let an operator create a class with no severity, which no filter could select.
 type Alerts struct {
 	// Enabled false stops every detection. The store still runs and still
 	// reports counters, so /api/v1/status can say alerting is off rather than

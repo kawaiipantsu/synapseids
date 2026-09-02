@@ -121,10 +121,10 @@ type driftResp struct {
 	} `json:"suggestion"`
 }
 
-func getDrift(t *testing.T, h http.Handler, path string) (*httptest.ResponseRecorder, driftResp) {
+func getDrift(t *testing.T, h http.Handler) (*httptest.ResponseRecorder, driftResp) {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest("GET", path, nil))
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/drift", nil))
 	var d driftResp
 	if rr.Code == http.StatusOK {
 		if err := json.Unmarshal(rr.Body.Bytes(), &d); err != nil {
@@ -142,7 +142,7 @@ func TestDriftWithStandardBaseline(t *testing.T) {
 	seedFlows(store, 50, tmpl)
 
 	h := driftServerWithActive(t, store, "standard")
-	rr, d := getDrift(t, h, "/api/v1/drift")
+	rr, d := getDrift(t, h)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 	}
@@ -188,7 +188,7 @@ func TestDriftSuggestionBelowBand(t *testing.T) {
 	seedFlows(store, 40, tmpl)
 
 	h := driftServerWithActive(t, store, "standard")
-	rr, d := getDrift(t, h, "/api/v1/drift")
+	rr, d := getDrift(t, h)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d", rr.Code)
 	}
@@ -211,7 +211,7 @@ func TestDriftSuggestionByFeatureCount(t *testing.T) {
 	h := driftServerWithActive(t, store, "standard", func(c *config.Config) {
 		c.Drift.RetrainSuggestFeatures = 2
 	})
-	_, d := getDrift(t, h, "/api/v1/drift")
+	_, d := getDrift(t, h)
 	if d.Suggestion == nil || !d.Suggestion.RetrainSuggested {
 		t.Fatalf("suggestion = %+v, want retrain_suggested=true", d.Suggestion)
 	}
@@ -231,7 +231,7 @@ func TestDriftNoActiveModel(t *testing.T) {
 	h := New(cfg, events.New(), store, inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary)),
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil).Handler()
 
-	rr, d := getDrift(t, h, "/api/v1/drift")
+	rr, d := getDrift(t, h)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d", rr.Code)
 	}
@@ -263,7 +263,7 @@ func TestDriftActiveModelNotStandard(t *testing.T) {
 	seedFlows(store, 5, [features.Size]float64{})
 
 	h := driftServerWithActive(t, store, "identity")
-	rr, d := getDrift(t, h, "/api/v1/drift")
+	rr, d := getDrift(t, h)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d", rr.Code)
 	}
