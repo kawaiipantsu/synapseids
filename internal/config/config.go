@@ -145,6 +145,11 @@ type CaptureSource struct {
 	Interface   string `json:"interface"`   // local NIC for "nic"/"tcpdump"; the remote NIC for "ssh"
 	Promiscuous bool   `json:"promiscuous"` // kind "nic" only; needs CAP_NET_ADMIN
 	Snaplen     int    `json:"snaplen"`     // per-frame bytes; 0 = default
+	// Ring opts a kind "nic" source into the TPACKET_V3 mmap RX ring instead of
+	// one recvfrom per frame (issue #163). Off by default: capture is not
+	// optimised before a measurement shows the per-packet syscall is the
+	// bottleneck (PROJECT.md §22/§26, issue #127). Linux only.
+	Ring bool `json:"ring,omitempty"`
 	// Filter's meaning is per-kind: for "nic" it is "" or a capture.BuiltinFilters
 	// preset name (a cBPF program); for "tcpdump"/"ssh" it is a raw tcpdump
 	// filter expression, tokenised on whitespace and passed as trailing argv
@@ -763,6 +768,9 @@ func ValidateCaptureSource(s CaptureSource) error {
 	}
 	if s.Snaplen < 0 || s.Snaplen > maxCaptureSnaplen {
 		return fmt.Errorf("capture source %q: snaplen %d out of range [0,%d]", s.Name, s.Snaplen, maxCaptureSnaplen)
+	}
+	if s.Ring && s.Kind != "nic" {
+		return fmt.Errorf("capture source %q: \"ring\" is a kind \"nic\" (AF_PACKET) option, not valid for kind %q", s.Name, s.Kind)
 	}
 	return validateCaptureKind(s)
 }

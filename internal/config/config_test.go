@@ -159,6 +159,8 @@ func TestValidateCaptureSourceMatchesWholeFile(t *testing.T) {
 		"nic no iface":        {Name: "a", Kind: "nic"},
 		"nic bad filter":      {Name: "a", Kind: "nic", Interface: "eth0", Filter: "tcp port 80"},
 		"nic bad snaplen":     {Name: "a", Kind: "nic", Interface: "eth0", Snaplen: 9_999_999},
+		"nic ring ok":         {Name: "a", Kind: "nic", Interface: "eth0", Ring: true},
+		"ring on tcpdump":     {Name: "a", Kind: "tcpdump", Interface: "eth0", Ring: true},
 		"tcpdump ok":          {Name: "a", Kind: "tcpdump", Interface: "eth0", Filter: "tcp port 80 or udp"},
 		"tcpdump no iface":    {Name: "a", Kind: "tcpdump"},
 		"ssh ok":              {Name: "a", Kind: "ssh", Destination: "h", Interface: "eth0", Authorized: true, KnownHosts: "accept-new"},

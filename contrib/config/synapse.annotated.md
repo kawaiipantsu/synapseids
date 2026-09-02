@@ -105,6 +105,7 @@ which runs the identical pipeline.
 | `interface` | string | — | For `nic`/`tcpdump`: local NIC name (`eth0`, `lo`, …). For `ssh`: the **remote** interface. Required for `nic`/`tcpdump`/`ssh`; unused by `pcap-over-ip`. |
 | `promiscuous` | bool | `false` | `nic` only. Put the interface into promiscuous mode. Needs `CAP_NET_ADMIN`. |
 | `snaplen` | int | `0` → `262144` | Bytes copied per frame. `0` uses the default; max `262144`. |
+| `ring` | bool | `false` | `nic` only, Linux only. Read frames from a TPACKET_V3 mmap RX ring instead of one `recvfrom` per frame — for a NIC where the per-packet syscall is a measured bottleneck (issue #163). Off by default: capture is not optimised before profiling says to (PROJECT.md §22/§26). |
 | `filter` | string | `""` | **Meaning is per-kind.** `nic`: `""` (everything) or a built-in cBPF preset — `ip`, `ip6`, `ip-any`, `not-arp`. `tcpdump`/`ssh`: a raw tcpdump filter expression (`"tcp port 80 or udp"`), tokenised and passed as arguments, never through a shell. |
 | `binary` | string | `"tcpdump"` / `"ssh"` | `tcpdump`: the capture binary. `ssh`: the ssh client binary. |
 | `extra_args` | string[] | `[]` | `tcpdump` only. Extra tcpdump arguments, inserted before the filter tokens. |
@@ -363,7 +364,7 @@ that drops anything logs `retention: purged N flow(s), …`. Counts surface on
 - a `capture.sources[]` entry with an empty/duplicate `name`; `snaplen` outside
   `[0, 262144]`; an unknown `kind` (not `nic` / `tcpdump` / `ssh` / `pcap-over-ip`);
   a `nic` / `tcpdump` entry with an empty `interface`; a `nic` entry with an
-  unknown `filter` preset; an `ssh` entry with an empty `destination` or
+  unknown `filter` preset; `ring: true` on any kind other than `nic`; an `ssh` entry with an empty `destination` or
   `interface`, `authorized` not `true`, or a `known_hosts` other than `strict` /
   `accept-new`
 - a `pcap-over-ip` source with no `addr`, an inline `token`, only one of
