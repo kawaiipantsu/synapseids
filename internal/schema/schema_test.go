@@ -76,6 +76,34 @@ func TestValidateBundleAnomalyFamily(t *testing.T) {
 	}
 }
 
+func TestValidateBundleSequenceFamily(t *testing.T) {
+	ok := BundleMeta{
+		Family: "flow-sequence-v1", FeatureSchema: "flow-features-v1",
+		InputSize: 48, OutputSchema: "traffic-classes-v1", OutputSize: 7,
+		SeqLen: SequenceLenV1,
+	}
+	if err := ValidateBundle(ok); err != nil {
+		t.Fatalf("valid sequence bundle rejected: %v", err)
+	}
+	if !KnownFamily("flow-sequence-v1") {
+		t.Fatal("flow-sequence-v1 not a known family")
+	}
+	for _, bad := range []BundleMeta{
+		// missing seq_len
+		{Family: "flow-sequence-v1", FeatureSchema: "flow-features-v1", InputSize: 48, OutputSchema: "traffic-classes-v1", OutputSize: 7},
+		// wrong seq_len
+		{Family: "flow-sequence-v1", FeatureSchema: "flow-features-v1", InputSize: 48, OutputSchema: "traffic-classes-v1", OutputSize: 7, SeqLen: 8},
+		// a classifier bundle must not carry a seq_len
+		{Family: "flow-classifier-v1", FeatureSchema: "flow-features-v1", InputSize: 48, OutputSchema: "traffic-classes-v1", OutputSize: 7, SeqLen: SequenceLenV1},
+		// the sequence family still uses the classifier output contract
+		{Family: "flow-sequence-v1", FeatureSchema: "flow-features-v1", InputSize: 48, OutputSchema: "reconstruction-v1", OutputSize: 48, SeqLen: SequenceLenV1},
+	} {
+		if err := ValidateBundle(bad); err == nil {
+			t.Errorf("incompatible sequence bundle accepted: %+v", bad)
+		}
+	}
+}
+
 func TestValidateArchitectureForFamily(t *testing.T) {
 	ae := Architecture{
 		InputSize: 48, OutputSize: 48,
@@ -99,6 +127,31 @@ func TestValidateArchitectureForFamily(t *testing.T) {
 	}
 	if err := ValidateArchitectureForFamily("", ae); err == nil {
 		t.Errorf("empty family accepted")
+	}
+
+	// flow-sequence-v1: input 48, output 7, seq_len 16; the first Dense sees
+	// 16*48 = 768 (effectiveInputSize).
+	seq := Architecture{
+		InputSize: 48, OutputSize: 7, SeqLen: SequenceLenV1,
+		Hidden: []HiddenLayer{{Width: 16, Activation: "relu"}},
+	}
+	if err := ValidateArchitectureForFamily("flow-sequence-v1", seq); err != nil {
+		t.Fatalf("valid sequence architecture rejected: %v", err)
+	}
+	if got, want := seq.ParameterCount(), 16*768+16+7*16+7; got != want {
+		t.Fatalf("sequence ParameterCount() = %d, want %d (768-wide first Dense)", got, want)
+	}
+	// wrong / missing seq_len is rejected; a classifier arch with seq_len is too.
+	for _, bad := range []Architecture{
+		{InputSize: 48, OutputSize: 7, SeqLen: 8, Hidden: []HiddenLayer{{Width: 16}}},
+		{InputSize: 48, OutputSize: 7, Hidden: []HiddenLayer{{Width: 16}}},
+	} {
+		if err := ValidateArchitectureForFamily("flow-sequence-v1", bad); err == nil {
+			t.Errorf("sequence family accepted bad seq_len: %+v", bad)
+		}
+	}
+	if err := ValidateArchitectureForFamily("flow-classifier-v1", seq); err == nil {
+		t.Errorf("classifier family accepted a seq_len")
 	}
 }
 

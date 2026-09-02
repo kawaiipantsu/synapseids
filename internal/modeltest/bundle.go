@@ -1,9 +1,11 @@
 // Package modeltest builds valid, gate-passing model bundles on disk for tests
 // in the registry, api, modelrun and inference packages. The model.onnx it
 // writes is a real feed-forward network that internal/nn can load and run — a
-// 48 -> 8 -> 7 classifier by default, or a 48 -> 16 -> 8 -> 16 -> 48 autoencoder
-// when Family is flow-anomaly-v1 — so a test can exercise the full "register ->
-// activate -> score" path without a committed binary fixture.
+// 48 -> 8 -> 7 classifier by default, a 48 -> 16 -> 8 -> 16 -> 48 autoencoder
+// when Family is flow-anomaly-v1, or a 768 -> 16 -> 7 windowed FFN when Family
+// is flow-sequence-v1 (the [16, 48] history flattened) — so a test can exercise
+// the full "register -> activate -> score" path without a committed binary
+// fixture.
 //
 // It takes no dependency on the testing package: callers pass a directory and
 // handle the returned error.
@@ -25,7 +27,7 @@ type Bundle struct {
 	ModelID     string // default depends on Family
 	Name        string // default "modeltest classifier" / "modeltest autoencoder"
 	Version     string // default "0.0.1"
-	Family      string // "" or "flow-classifier-v1" (default); "flow-anomaly-v1" for an autoencoder
+	Family      string // "" / "flow-classifier-v1" (default), "flow-anomaly-v1", or "flow-sequence-v1"
 	DerivedFrom string // parent model_id, "" for a lineage root
 	Seed        uint64 // weight-generator seed; changes the content hash
 }
@@ -37,13 +39,17 @@ func Write(dir string, b Bundle) (string, error) {
 		b.Family = "flow-classifier-v1"
 	}
 	anomaly := b.Family == "flow-anomaly-v1"
+	sequence := b.Family == "flow-sequence-v1"
 	if b.ModelID == "" {
 		b.ModelID = b.Family + "-test-0001"
 	}
 	if b.Name == "" {
-		if anomaly {
+		switch {
+		case anomaly:
 			b.Name = "modeltest autoencoder"
-		} else {
+		case sequence:
+			b.Name = "modeltest sequence classifier"
+		default:
 			b.Name = "modeltest classifier"
 		}
 	}
@@ -65,10 +71,26 @@ func Write(dir string, b Bundle) (string, error) {
 		paramCount int
 		outSchema  string
 		outSize    int
+		seqLen     int
 		hidden     []map[string]any
 		extraMeta  map[string]any
 	)
-	if anomaly {
+	switch {
+	case sequence:
+		// A windowed FFN: the [T, 48] history is flattened to T*48 and run
+		// through an MLP → 7-class softmax. T = schema.SequenceLenV1 = 16.
+		seqLen = 16
+		const win = 16 * 48
+		g = onnxbuild.MLP(win, []onnxbuild.Layer{
+			{W: r.matrix(16, win), B: r.vec(16, 0.1), Activation: "Relu"},
+			{W: r.matrix(7, 16), B: r.vec(7, 0.1)},
+		}, true)
+		paramCount = 16*win + 16 + 7*16 + 7
+		outSchema, outSize = "traffic-classes-v1", 7
+		hidden = []map[string]any{
+			{"width": 16, "activation": "relu", "dropout": 0.0, "batchnorm": false, "residual": false},
+		}
+	case anomaly:
 		// 48 -> 16 -> 8 -> 16 -> 48 symmetric autoencoder, no softmax.
 		g = onnxbuild.MLP(48, []onnxbuild.Layer{
 			{W: r.matrix(16, 48), B: r.vec(16, 0.1), Activation: "Relu"},
@@ -90,7 +112,7 @@ func Write(dir string, b Bundle) (string, error) {
 				"threshold":         0.25,
 			},
 		}
-	} else {
+	default:
 		g = onnxbuild.MLP(48, []onnxbuild.Layer{
 			{W: r.matrix(8, 48), B: r.vec(8, 0.1), Activation: "Relu"},
 			{W: r.matrix(7, 8), B: r.vec(7, 0.1)},
@@ -118,8 +140,10 @@ func Write(dir string, b Bundle) (string, error) {
 		"architecture": map[string]any{
 			"input_size":  48,
 			"output_size": outSize,
+			"seq_len":     seqLen,
 			"hidden":      hidden,
 		},
+		"seq_len":              seqLen,
 		"training_dataset_ids": []string{"modeltest-ds-v1"},
 		"created_at":           "2026-08-31T12:00:00Z",
 		"trainer_version":      "modeltest 0.0.0",

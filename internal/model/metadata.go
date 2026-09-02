@@ -6,14 +6,17 @@ import "github.com/kawaiipantsu/synapseids/internal/schema"
 // (PROJECT.md §11). It is the contract with synapse-trainer; these field names
 // and JSON tags must stay in lockstep with the trainer's writer.
 type Metadata struct {
-	ModelID            string              `json:"model_id"`
-	Name               string              `json:"name"`
-	Version            string              `json:"version"`
-	Family             string              `json:"family"`
-	FeatureSchema      string              `json:"feature_schema"`
-	InputSize          int                 `json:"input_size"`
-	OutputSchema       string              `json:"output_schema"`
-	OutputSize         int                 `json:"output_size"`
+	ModelID       string `json:"model_id"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Family        string `json:"family"`
+	FeatureSchema string `json:"feature_schema"`
+	InputSize     int    `json:"input_size"`
+	OutputSchema  string `json:"output_schema"`
+	OutputSize    int    `json:"output_size"`
+	// SeqLen is the history length T of a temporal family (flow-sequence-v1);
+	// 0 / absent for a single-vector family. Additive and optional.
+	SeqLen             int                 `json:"seq_len,omitempty"`
 	Architecture       schema.Architecture `json:"architecture"`
 	TrainingDatasetIDs []string            `json:"training_dataset_ids"`
 	CreatedAt          string              `json:"created_at"`
@@ -59,6 +62,7 @@ func (m Metadata) BundleMeta() schema.BundleMeta {
 		InputSize:     m.InputSize,
 		OutputSchema:  m.OutputSchema,
 		OutputSize:    m.OutputSize,
+		SeqLen:        m.SeqLen,
 	}
 }
 

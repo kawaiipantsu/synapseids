@@ -154,6 +154,9 @@ type BundleMeta struct {
 	InputSize     int    `json:"input_size"`
 	OutputSchema  string `json:"output_schema"`
 	OutputSize    int    `json:"output_size"`
+	// SeqLen is the history length T of a temporal family (flow-sequence-v1); it
+	// is 0 / absent for a single-vector family. Additive and optional.
+	SeqLen int `json:"seq_len,omitempty"`
 }
 
 // HiddenLayer is one configurable hidden layer of a model's architecture
@@ -174,11 +177,25 @@ type Architecture struct {
 	InputSize  int           `json:"input_size"`
 	OutputSize int           `json:"output_size"`
 	Hidden     []HiddenLayer `json:"hidden"`
+	// SeqLen is the history length T for a temporal family (flow-sequence-v1):
+	// the first Dense sees SeqLen*InputSize values (the [T, 48] window is
+	// flattened). 0 / absent for a single-vector family.
+	SeqLen int `json:"seq_len,omitempty"`
 }
 
 // IsZero reports whether the architecture block was absent from metadata.json.
 func (a Architecture) IsZero() bool {
 	return a.InputSize == 0 && a.OutputSize == 0 && len(a.Hidden) == 0
+}
+
+// effectiveInputSize is the width the first Dense layer sees: InputSize for a
+// single-vector model, SeqLen*InputSize for a temporal model whose [T, 48]
+// window is flattened before the stack.
+func (a Architecture) effectiveInputSize() int {
+	if a.SeqLen > 1 {
+		return a.InputSize * a.SeqLen
+	}
+	return a.InputSize
 }
 
 // Model family identifiers. Each family locks its own feature/output edge
@@ -193,15 +210,27 @@ const (
 	// reconstruction-v1 (48 slots) out; the per-flow reconstruction error is the
 	// anomaly score (PROJECT.md §13).
 	FamilyAnomalyV1 = "flow-anomaly-v1"
+	// FamilySequenceV1 is the temporal classifier: the last SequenceLenV1
+	// flow-features-v1 vectors of one conversation (a [T, 48] window, oldest
+	// first, left-padded) in, traffic-classes-v1 (7) out — a supervised peer
+	// with memory (PROJECT.md §30, issue #62, ADR 0040).
+	FamilySequenceV1 = "flow-sequence-v1"
 )
 
+// SequenceLenV1 is the frozen history length T of the flow-sequence-v1 family. A
+// different T is a flow-sequence-v2, not an edit.
+const SequenceLenV1 = 16
+
 // familyEdges is a model family's locked edge contract: the feature schema and
-// input width it consumes, and the output schema and width it produces.
+// per-step input width it consumes, the output schema and width it produces, and
+// — for a temporal family — the frozen sequence length (0 for a single-vector
+// family).
 type familyEdges struct {
 	featureSchema string
 	inputSize     int
 	outputSchema  string
 	outputSize    int
+	seqLen        int
 }
 
 // familyEdgesFor returns the locked edge contract for a known model family.
@@ -209,13 +238,19 @@ func familyEdgesFor(family string) (familyEdges, bool) {
 	switch family {
 	case FamilyClassifierV1:
 		return familyEdges{
-			flowFeaturesV1.Schema, flowFeaturesV1.InputSize,
-			trafficClassesV1.Schema, trafficClassesV1.OutputSize,
+			featureSchema: flowFeaturesV1.Schema, inputSize: flowFeaturesV1.InputSize,
+			outputSchema: trafficClassesV1.Schema, outputSize: trafficClassesV1.OutputSize,
 		}, true
 	case FamilyAnomalyV1:
 		return familyEdges{
-			flowFeaturesV1.Schema, flowFeaturesV1.InputSize,
-			reconstructionV1.Schema, reconstructionV1.OutputSize,
+			featureSchema: flowFeaturesV1.Schema, inputSize: flowFeaturesV1.InputSize,
+			outputSchema: reconstructionV1.Schema, outputSize: reconstructionV1.OutputSize,
+		}, true
+	case FamilySequenceV1:
+		return familyEdges{
+			featureSchema: flowFeaturesV1.Schema, inputSize: flowFeaturesV1.InputSize,
+			outputSchema: trafficClassesV1.Schema, outputSize: trafficClassesV1.OutputSize,
+			seqLen: SequenceLenV1,
 		}, true
 	default:
 		return familyEdges{}, false
@@ -256,6 +291,9 @@ func ValidateArchitectureForFamily(family string, a Architecture) error {
 	if a.OutputSize != edges.outputSize {
 		return fmt.Errorf("architecture.output_size %d != %s output_size %d", a.OutputSize, edges.outputSchema, edges.outputSize)
 	}
+	if a.SeqLen != edges.seqLen {
+		return fmt.Errorf("architecture.seq_len %d != %s seq_len %d", a.SeqLen, family, edges.seqLen)
+	}
 	return validateHiddenStack(a)
 }
 
@@ -269,7 +307,7 @@ func ValidateBundle(m BundleMeta) error {
 		if m.Family == "" {
 			return fmt.Errorf("model family is empty")
 		}
-		return fmt.Errorf("model family %q is not supported (daemon runs %q and %q)", m.Family, FamilyClassifierV1, FamilyAnomalyV1)
+		return fmt.Errorf("model family %q is not supported (daemon runs %q, %q and %q)", m.Family, FamilyClassifierV1, FamilyAnomalyV1, FamilySequenceV1)
 	}
 	if m.FeatureSchema != edges.featureSchema {
 		return fmt.Errorf("feature schema %q is not supported (daemon speaks %q)", m.FeatureSchema, edges.featureSchema)
@@ -282,6 +320,9 @@ func ValidateBundle(m BundleMeta) error {
 	}
 	if m.OutputSize != edges.outputSize {
 		return fmt.Errorf("model output_size %d != %s output_size %d", m.OutputSize, edges.outputSchema, edges.outputSize)
+	}
+	if m.SeqLen != edges.seqLen {
+		return fmt.Errorf("model seq_len %d != %s seq_len %d", m.SeqLen, m.Family, edges.seqLen)
 	}
 	return nil
 }

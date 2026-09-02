@@ -20,6 +20,7 @@ const (
 	RolePrimary      Role = "primary"
 	RoleLocation     Role = "location"
 	RoleGlobal       Role = "global"
+	RoleSequence     Role = "sequence"
 	RoleExperimental Role = "experimental"
 	RoleAnomaly      Role = "anomaly"
 )
@@ -88,6 +89,21 @@ type FeatureDelta struct {
 	Delta  float64 `json:"delta"`
 }
 
+// SequenceScorer is a temporal classifier: it scores the last T feature vectors
+// of one conversation (a [T, 48] window, oldest first) into a
+// traffic-classes-v1 distribution. It is a supervised peer *with memory* — its
+// top class feeds Result.Models and the disagreement set exactly like a
+// location/global peer, but it never drives the verdict (PROJECT.md §30, issue
+// #62, ADR 0040). Always RoleSequence.
+type SequenceScorer interface {
+	ID() string
+	Family() string
+	Role() Role
+	// ScoreSequence takes the window oldest-first, length 1..T. The
+	// implementation left-pads a short window to its fixed T.
+	ScoreSequence(window [][features.Size]float64) Scores
+}
+
 // AnomalyOutput is one anomaly model's full verdict for one flow, including the
 // largest per-feature reconstruction gaps for an explain view. Runtime.Score
 // keeps only the scalars (see AnomalyResult); the per-flow log never stores the
@@ -134,6 +150,9 @@ type Runtime struct {
 	fallback        []Classifier    // restored by Deactivate — the models NewRuntime was given
 	anomaly         []AnomalyScorer // the live anomaly-role models Score also runs
 	fallbackAnomaly []AnomalyScorer // restored when the anomaly role is deactivated (nil in the daemon)
+
+	sequence         []SequenceScorer // the live temporal peers ScoreSequence runs
+	fallbackSequence []SequenceScorer // restored when the sequence role is deactivated (nil in the daemon)
 }
 
 // NewRuntime returns a Runtime over the given models. The first model with
@@ -178,6 +197,24 @@ func (r *Runtime) SetAnomalyModels(models ...AnomalyScorer) {
 	r.anomaly = models
 }
 
+// liveSequence returns the current temporal-model slice under the read lock.
+func (r *Runtime) liveSequence() []SequenceScorer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sequence
+}
+
+// SequenceModels returns the currently loaded temporal (flow-sequence-v1) models.
+func (r *Runtime) SequenceModels() []SequenceScorer { return r.liveSequence() }
+
+// SetSequenceModels atomically replaces the live temporal-model slice. It does
+// not change the fallback set; passing no models clears the sequence role.
+func (r *Runtime) SetSequenceModels(models ...SequenceScorer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sequence = models
+}
+
 // Activate atomically replaces the live model set with a single trained primary
 // (issue #26 / PROJECT.md §29 steps 16–18). It never runs on load, scan or
 // startup — only an explicit operator action reaches here. A concurrent Score
@@ -208,36 +245,44 @@ func (r *Runtime) SetModels(models ...Classifier) {
 
 // ActivateRole atomically installs one trained model in the given role, leaving
 // every other role's live models untouched — unlike Activate, which replaces the
-// whole supervised set. Exactly one of class / anomaly is non-nil and must match
-// role (anomaly ⇒ RoleAnomaly, anything else ⇒ the supervised set). It runs only
-// from an explicit operator action, never on load or startup (PROJECT.md
-// §28.10).
-func (r *Runtime) ActivateRole(role Role, class Classifier, anomaly AnomalyScorer) {
+// whole supervised set. model must be an *AnomalyScorer for RoleAnomaly, a
+// *SequenceScorer for RoleSequence, or a Classifier otherwise; a mismatched or
+// nil model is a no-op. It runs only from an explicit operator action, never on
+// load or startup (PROJECT.md §28.10).
+func (r *Runtime) ActivateRole(role Role, model any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if role == RoleAnomaly {
-		if anomaly != nil {
-			r.anomaly = []AnomalyScorer{anomaly}
+	switch role {
+	case RoleAnomaly:
+		if m, ok := model.(AnomalyScorer); ok && m != nil {
+			r.anomaly = []AnomalyScorer{m}
 		}
-		return
-	}
-	if class != nil {
-		r.models = []Classifier{class}
+	case RoleSequence:
+		if m, ok := model.(SequenceScorer); ok && m != nil {
+			r.sequence = []SequenceScorer{m}
+		}
+	default:
+		if m, ok := model.(Classifier); ok && m != nil {
+			r.models = []Classifier{m}
+		}
 	}
 }
 
 // DeactivateRole atomically removes the given role's trained model. The
 // supervised roles fall back to the set NewRuntime was given (the heuristic, in
-// the daemon); the anomaly role falls back to its own fallback set (nil in the
-// daemon, so anomaly scoring simply goes dark).
+// the daemon); the anomaly and sequence roles fall back to their own fallback
+// sets (nil in the daemon, so that role simply goes dark).
 func (r *Runtime) DeactivateRole(role Role) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if role == RoleAnomaly {
+	switch role {
+	case RoleAnomaly:
 		r.anomaly = r.fallbackAnomaly
-		return
+	case RoleSequence:
+		r.sequence = r.fallbackSequence
+	default:
+		r.models = r.fallback
 	}
-	r.models = r.fallback
 }
 
 // Score runs every loaded model over v and combines their outputs into one
@@ -252,6 +297,10 @@ func (r *Runtime) DeactivateRole(role Role) {
 //   - experimental — shadow model (PROJECT.md §12): recorded in Result.Models,
 //     but never influences the verdict and never contributes to
 //     Result.Disagreement.
+//   - sequence — temporal classifier over the flow's [T, 48] history. Runs only
+//     when Score is called with a window (see ScoreSequence). Its top class is
+//     recorded in Result.Models and joins the disagreement set like a
+//     location/global peer, but it never drives the verdict.
 //   - anomaly — novelty detector: reconstruction error, not a supervised class.
 //     Anomaly models run through the separate AnomalyScorer path; their verdict
 //     lands in Result.Anomaly and never touches Result.Class/Score/Disagreement
@@ -264,6 +313,17 @@ func (r *Runtime) DeactivateRole(role Role) {
 // Disagreement is true when the alert-driving models — every role except
 // experimental and anomaly — predict more than one distinct top class.
 func (r *Runtime) Score(v features.Vector) Result {
+	return r.score(v, nil)
+}
+
+// ScoreSequence is Score plus the temporal (flow-sequence-v1) peers, given the
+// flow's recent feature-vector history (oldest first, length 1..T). The pipeline
+// supplies the window from its per-flow ring; every other caller uses Score.
+func (r *Runtime) ScoreSequence(v features.Vector, window [][features.Size]float64) Result {
+	return r.score(v, window)
+}
+
+func (r *Runtime) score(v features.Vector, window [][features.Size]float64) Result {
 	res := Result{FlowID: v.FlowID}
 	var driver *ModelOutput
 	primaryLocked := false
@@ -294,6 +354,21 @@ func (r *Runtime) Score(v features.Vector) Result {
 		}
 	}
 
+	// Temporal peers: score the [T, 48] window, if one was supplied. A sequence
+	// model is a supervised peer with memory — its top class joins Result.Models
+	// and the disagreement set, but it is never a verdict driver.
+	if len(window) > 0 {
+		for _, sm := range r.liveSequence() {
+			sc := sm.ScoreSequence(window)
+			id, p := sc.Top()
+			res.Models = append(res.Models, ModelOutput{
+				ModelID: sm.ID(), Role: sm.Role(),
+				Class: schema.ClassName(id), ClassID: id, Score: p, Scores: sc,
+			})
+			seen[id]++
+		}
+	}
+
 	if driver == nil && len(res.Models) > 0 {
 		d := res.Models[0] // every model is experimental — keep it simple
 		driver = &d
@@ -302,7 +377,7 @@ func (r *Runtime) Score(v features.Vector) Result {
 		res.Class, res.ClassID, res.Score = driver.Class, driver.ClassID, driver.Score
 	}
 	// Disagreement: more than one distinct top class among the alert-driving
-	// models (experimental and anomaly excluded).
+	// models (experimental and anomaly excluded; sequence peers included).
 	res.Disagreement = len(seen) > 1
 
 	// Anomaly models score in parallel: a reconstruction error, not a class.
@@ -334,11 +409,13 @@ func roleRank(r Role) int {
 		return 1
 	case RoleLocation:
 		return 2
-	case RoleExperimental:
+	case RoleSequence:
 		return 3
-	case RoleAnomaly:
+	case RoleExperimental:
 		return 4
-	default:
+	case RoleAnomaly:
 		return 5
+	default:
+		return 6
 	}
 }

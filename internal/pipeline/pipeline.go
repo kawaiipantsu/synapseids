@@ -98,9 +98,13 @@ type Stats struct {
 	// RecordsRejected counts records dropped before classification: an unknown
 	// schema, or a record whose mode does not match its payload. Counted and
 	// skipped, never fatal (PROJECT.md §28.11).
-	RecordsRejected uint64        `json:"sensor_records_rejected"`
-	Elapsed         time.Duration `json:"-"`
-	ElapsedMS       int64         `json:"elapsed_ms"`
+	RecordsRejected uint64 `json:"sensor_records_rejected"`
+	// SeqWindowsEvicted counts conversation histories dropped from the bounded
+	// per-key ring a flow-sequence-v1 model reads (ADR 0040); a dropped key
+	// just starts its next window fresh.
+	SeqWindowsEvicted uint64        `json:"seq_windows_evicted"`
+	Elapsed           time.Duration `json:"-"`
+	ElapsedMS         int64         `json:"elapsed_ms"`
 }
 
 // Run consumes src to completion (or until ctx is cancelled), feeding every
@@ -120,6 +124,15 @@ func Run(
 	// evicted counts oldest-idle evictions seen this run; it drives the
 	// throttled capacity warning below.
 	var evicted uint64
+
+	// seqHist holds the per-conversation feature-vector rings a flow-sequence-v1
+	// model reads. It is touched only from publish (flow-close path), so it is
+	// lock-free. Sized off the flow-table cap so it cannot outgrow it.
+	seqCap := opt.Flow.MaxFlows
+	if seqCap <= 0 {
+		seqCap = 4096
+	}
+	seqHist := newSeqWindows(seqCap)
 
 	// extract times features.Extract for GET /metrics (issue #55). It runs when
 	// a flow closes, on this goroutine, never on the packet loop.
@@ -153,7 +166,15 @@ func Run(
 		bus.Publish(events.FeaturesGenerated, fr.Features)
 
 		scoreStart := time.Now()
-		res := rt.Score(fr.Features)
+		var res inference.Result
+		if len(rt.SequenceModels()) > 0 {
+			key := seqKey(fr.InitiatorIP, fr.InitiatorPort, fr.ResponderIP, fr.ResponderPort, fr.Proto)
+			window := seqHist.push(key, fr.Features.Values, fr.LastSeen)
+			st.SeqWindowsEvicted = seqHist.evicted
+			res = rt.ScoreSequence(fr.Features, window)
+		} else {
+			res = rt.Score(fr.Features)
+		}
 		opt.Metrics.ObserveScore(res.ClassID, time.Since(scoreStart))
 		cl := storage.Classification{
 			FlowID:        fr.ID,

@@ -57,6 +57,69 @@ func (fixedAnomaly) ScoreAnomaly(features.Vector) inference.AnomalyOutput {
 	}
 }
 
+// fixedSequence is a stand-in SequenceScorer: always predicts SCAN, and records
+// the largest window length it saw so a test can prove the ring filled.
+type fixedSequence struct{ maxLen int }
+
+func (s *fixedSequence) ID() string           { return "seq-test" }
+func (s *fixedSequence) Family() string       { return "flow-sequence-v1" }
+func (s *fixedSequence) Role() inference.Role { return inference.RoleSequence }
+func (s *fixedSequence) ScoreSequence(w [][features.Size]float64) inference.Scores {
+	if len(w) > s.maxLen {
+		s.maxLen = len(w)
+	}
+	var sc inference.Scores
+	sc[1] = 1 // scan
+	return sc
+}
+
+func TestPipelineRunsSequenceModelWithAWindow(t *testing.T) {
+	pf, err := capture.OpenPCAPFile(fixture("portscan.pcap"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	src := capture.NewReplay(pf, capture.SpeedMax)
+	store := storage.NewMem(2000, 2000)
+	rt := inference.NewRuntime(inference.NewHeuristic("h", inference.RolePrimary))
+	seq := &fixedSequence{}
+	rt.SetSequenceModels(seq)
+
+	if _, err := pipeline.Run(context.Background(), src, rt, events.New(), store, pipeline.Options{
+		Flow:   flow.Options{IdleTimeout: 30 * time.Second, MaxLifetime: 5 * time.Minute},
+		Sensor: "test",
+	}); err != nil {
+		t.Fatalf("pipeline.Run: %v", err)
+	}
+
+	cls := store.RecentClassifications(2000)
+	if len(cls) == 0 {
+		t.Fatal("no classifications")
+	}
+	sawSeqPeer := false
+	for _, c := range cls {
+		for _, m := range c.Result.Models {
+			if m.Role == inference.RoleSequence {
+				sawSeqPeer = true
+				if m.ModelID != "seq-test" || m.Class != "scan" {
+					t.Fatalf("sequence peer output wrong: %+v", m)
+				}
+			}
+		}
+		if c.Result.Class == "" {
+			t.Fatalf("flow %d: supervised verdict missing", c.FlowID)
+		}
+	}
+	if !sawSeqPeer {
+		t.Fatal("no RoleSequence entry in any stored Result.Models")
+	}
+	// portscan.pcap is a sweep — every flow is a distinct 5-tuple, so each
+	// window is length 1. The ring's accumulate/wrap/prune behaviour is covered
+	// directly in seqwindow_test.go.
+	if seq.maxLen < 1 {
+		t.Fatal("sequence model was never handed a window")
+	}
+}
+
 func TestPipelineRecordsAnomalyWhenModelActive(t *testing.T) {
 	pf, err := capture.OpenPCAPFile(fixture("portscan.pcap"))
 	if err != nil {

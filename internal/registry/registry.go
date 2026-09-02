@@ -61,18 +61,23 @@ func validStatus(s Status) bool {
 // Ensemble roles a registered model can occupy. They mirror inference.Role; the
 // registry keeps its own copies so it takes no dependency on internal/inference.
 const (
-	rolePrimary = "primary"
-	roleAnomaly = "anomaly"
+	rolePrimary  = "primary"
+	roleAnomaly  = "anomaly"
+	roleSequence = "sequence"
 )
 
-// roleForFamily maps a model family to the role it occupies when activated: the
-// flow-anomaly-v1 autoencoder is the anomaly role, everything else is primary
-// (ADR 0037).
+// roleForFamily maps a model family to the role it occupies when activated:
+// flow-anomaly-v1 → anomaly, flow-sequence-v1 → sequence, everything else →
+// primary (ADR 0037, ADR 0040).
 func roleForFamily(family string) string {
-	if family == schema.FamilyAnomalyV1 {
+	switch family {
+	case schema.FamilyAnomalyV1:
 		return roleAnomaly
+	case schema.FamilySequenceV1:
+		return roleSequence
+	default:
+		return rolePrimary
 	}
-	return rolePrimary
 }
 
 // entryRole is e.Role with the empty-value default applied: a registry.json

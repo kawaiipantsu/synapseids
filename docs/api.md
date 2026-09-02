@@ -1352,12 +1352,21 @@ recursively, each level newest registration first. `404` if `id` is unknown.
 
 ### POST /api/v1/models/{id}/activate
 
-Explicitly make a registered model the live primary classifier (PROJECT.md §28.10,
-§29 steps 16–18). No body. The daemon re-loads the bundle from disk, re-runs the
-validation gate, compiles the ONNX graph, atomically swaps it into the inference
-runtime, records the status change and writes a `ModelActivated` audit line. Any
-previously active model is demoted to `deactivated`. `200` returns
-`{ "entry": { /* … */ } }` with `status: active` and `runtime.loaded: true`.
+Explicitly make a registered model live (PROJECT.md §28.10, §29 steps 16–18). No
+body. The daemon re-loads the bundle from disk, re-runs the validation gate,
+compiles the ONNX graph, atomically swaps it into the inference runtime, records
+the status change and writes a `ModelActivated` audit line.
+
+Activation is **role-aware**: the role is derived from the bundle family —
+`flow-classifier-v1` → `primary`, `flow-anomaly-v1` → `anomaly` (ADR 0037),
+`flow-sequence-v1` → `sequence` (ADR 0040) — and activating a model only demotes
+the previously-active model **in the same role**. A primary classifier, an
+anomaly autoencoder and a temporal sequence peer can all be Active at once. The
+`sequence` peer's verdict joins `models[]` and the disagreement flag but never
+drives `class`/`score`; the `anomaly` model stays out of both.
+
+`200` returns `{ "entry": { /* … */ } }` with `status: active` and
+`runtime.loaded: true`.
 
 - `404` — `id` is not a registered model.
 - `409` — the bundle no longer loads, no longer passes the gate, or its
@@ -1371,8 +1380,10 @@ as issue #58.
 
 ### POST /api/v1/models/{id}/deactivate
 
-Turn a model off and restore the heuristic as the live primary. No body. Records
-the status change and writes a `ModelDeactivated` audit line. `200` returns
+Turn a model off. No body. The role is taken from the registry entry: a
+`primary` deactivation restores the heuristic; an `anomaly` or `sequence`
+deactivation drops that peer (the other roles are untouched). Records the status
+change and writes a `ModelDeactivated` audit line. `200` returns
 `{ "entry": { /* … */ } }` with `status: deactivated`.
 
 - `404` — `id` is not a registered model.
