@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`flow-sequence-v1` — a temporal model family** (issue #62, EPIC Phase 7,
+  [ADR 0040](docs/adr/0040-temporal-flow-sequence-model.md)). A third model
+  family that scores the last **16** flow-features-v1 vectors of one
+  conversation (a `[T, 48]` window, oldest-first, left-padded) into a
+  `traffic-classes-v1` distribution — a supervised peer **with memory**: its top
+  class joins `models[]` and the disagreement flag, but it never drives the
+  verdict, and it coexists with an active primary and anomaly model (role-aware
+  activation). This release ships the Go runtime as a **windowed FFN** (the
+  window flattened, no `internal/nn` change): `schema` gains `SeqLen` on the
+  bundle/architecture; `inference.SequenceScorer` + `ONNXSequenceModel`;
+  `internal/pipeline` keeps a bounded, lock-free per-conversation feature-vector
+  ring (`Stats.seq_windows_evicted`). Follow-ups: a trained TCN/GRU that keeps
+  the time axis (needs 1-D `Conv`/`GRU` in `internal/nn`) and the
+  `synapse-trainer` `objective: "sequence"` — both behind the same interface; the
+  runtime is exercised with `modeltest` sequence bundles until then.
+
 - **Per-host behavioural fingerprint + similarity search** (issue #63, EPIC
   Phase 7, [ADR 0039](docs/adr/0039-per-host-behavioural-fingerprint.md)).
   `GET /api/v1/hosts/{ip}/similar` returns a host's behavioural fingerprint — a

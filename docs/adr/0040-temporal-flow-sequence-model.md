@@ -1,6 +1,9 @@
 # 0040 — Design for a temporal model over flow sequences (`flow-sequence-v1`)
 
-**Status:** Proposed, 2026-09-02
+**Status:** Accepted, 2026-09-02 — Go runtime implemented as a windowed FFN
+(the `[T, 48]` history flattened, no `internal/nn` change); the trained
+`Conv`/`GRU` model that keeps the time axis, and the `synapse-trainer`
+`objective: "sequence"`, are follow-ups behind the interfaces below.
 
 ## Context
 
@@ -95,16 +98,44 @@ row's), `train.py` builds a torch `Conv1d`/`GRU` net, `export.py` writes the
 `architecture.py` family table gains `flow-sequence-v1` with a `seq_len`
 parameter alongside the hidden stack.
 
+## What shipped (the windowed-FFN cut)
+
+The Go runtime for `flow-sequence-v1` is done and does not touch `internal/nn`:
+the graph is a plain `[T*48] -> … -> [7]` softmax MLP (the `[T, 48]` window
+flattened, oldest-first, left-padded with the zero vector).
+
+- `schema`: `FamilySequenceV1`, frozen `SequenceLenV1 = 16`; `BundleMeta.SeqLen`
+  and `Architecture.SeqLen` (additive, `omitempty`). `ValidateBundle` /
+  `ValidateArchitectureForFamily` branch on the family; the param-math funcs use
+  `effectiveInputSize() = SeqLen*InputSize` (768) for the first Dense.
+- `inference`: `SequenceScorer` + `RoleSequence`; `ONNXSequenceModel` does the
+  pad/flatten/per-step-normalise/run. `Runtime.ScoreSequence(v, window)` folds
+  the peer into `Result.Models` and the disagreement set — never the verdict
+  driver. `ActivateRole(role, any)` grows a sequence slot alongside
+  primary + anomaly.
+- `internal/pipeline`: a bounded, lock-free per-conversation feature-vector ring
+  (`seqWindows`, capped off the flow-table size, least-recent-quarter eviction
+  counted in `Stats.SeqWindowsEvicted`); `publish` feeds `ScoreSequence` a
+  window whenever a sequence model is loaded.
+- `modelrun.BuildLive`, `registry.roleForFamily`, the `/api/v1/models` list and
+  activation route all recognise the family.
+
+## Still a follow-up
+
+- The trained model that keeps the time axis: add **1-D `Conv`** to
+  `internal/nn` (smallest, reusable; a TCN architecture) and, if a recurrent
+  cell proves necessary, `GRU` — each with a hand-computed golden test like
+  `evalGemm` / `evalSoftmax`.
+- `synapse-trainer` `objective: "sequence"`: `[N, T, 48]` windows per key, a
+  torch `Conv1d`/`GRU` net, `[1, T, 48]` → `[1, 7]` ONNX. Until then the
+  runtime is exercised with `internal/modeltest` sequence bundles.
+- Surfacing `Stats.SeqWindowsEvicted` on `/api/v1/status`.
+
 ## Consequences
 
-- This is **Phase-9-scale**: a new frozen family, an `internal/nn` op-set
-  expansion with its own golden tests, per-key ring plumbing on the packet path
-  (with its own eviction counters on `/api/v1/status`), a trainer objective, and
-  a windowed dataset. It is not a follow-up commit.
-- Until it is built, issue #62 stays open as the one deferred Phase-7 item; the
-  other six leaves (#47, #48, #49, #63, #65, plus this design) are done. Per
-  PROJECT.md §30 this is explicitly acceptable — "keep in mind but do not
-  block".
-- The `[T, 48]` input and the `traffic-classes-v1` output are the only frozen
-  choices here; the model architecture (TCN vs GRU vs attention) is the
-  trainer's to pick within the family, exactly like the hidden stack today.
+- Issue #62's runtime is in; the remaining work is a trained model and its
+  trainer support — tracked as a follow-up. Per PROJECT.md §30 this cadence is
+  explicitly acceptable.
+- The `[T, 48]` input, `T = 16`, and the `traffic-classes-v1` output are the
+  frozen choices; the model architecture (flatten-MLP now, TCN/GRU later) is the
+  trainer's to pick within the family, like the hidden stack.
