@@ -7,7 +7,7 @@
 # package imports, `inspect-arch` runs, and the non-torch tests pass with only
 # numpy present.
 
-numpy==1.26.*
+numpy>=1.26,<2.5
 torch==2.2.*
 onnx==1.16.*
 onnxruntime==1.17.*

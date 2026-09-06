@@ -21,7 +21,7 @@ classifiers = [
 # Pinned hard in requirements.txt; kept as compatible ranges here so an editable
 # install resolves. CI installs these; this dev box may not have torch/onnx.
 dependencies = [
-    "numpy>=1.26,<2.0",
+    "numpy>=1.26,<3.0",
     "torch>=2.2,<2.3",
     "onnx>=1.16,<1.17",
     "onnxruntime>=1.17,<1.18",
