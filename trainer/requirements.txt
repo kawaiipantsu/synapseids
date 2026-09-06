@@ -10,7 +10,7 @@
 numpy==1.26.*
 torch==2.2.*
 onnx==1.16.*
-onnxruntime==1.17.*
+onnxruntime>=1.17,<1.30
 scikit-learn==1.4.*
 
 # dev / test
