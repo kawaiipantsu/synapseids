@@ -171,7 +171,7 @@ func empty(ip netip.Addr, status string) Record {
 // A full queue returns busy without allocating another goroutine or cache entry.
 func (s *Service) Get(ip netip.Addr) Record {
 	ip = ip.Unmap()
-	if s == nil || !s.opts.Enabled {
+	if s == nil || !s.opts.Enabled || s.ctx.Err() != nil {
 		return empty(ip, "disabled")
 	}
 	s.mu.Lock()
