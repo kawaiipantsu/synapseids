@@ -423,3 +423,12 @@ Please report what breaks — especially anything a selftest `interface` line sa
 and the value of `synapseids_sensor_iface_src` in
 `/usr/local/etc/synapseids/instances/<name>.conf`, which records *which* of the
 two interface lookups succeeded.
+
+
+## Enabling temporal input coverage
+
+Deploy matching preview daemon and sensor binaries plus the updated plugin model/form before selecting **Flow rich**. Save and apply the instance with both capture directions enabled. The new SYNPOIP v2 mode is `flow-rich` (mode byte `0x03`), with `flow-record-v2` payloads. Older `flow` and `feature` layouts are unchanged; older peers do not understand the new mode.
+
+A compatible live appliance was upgraded with configuration/binary backups, then its sensor service was restarted and self-tested. The collector received rich records and 160-value inputs after automatic reconnection. Only the sensor service was restarted.
+
+Check `sensor_mode: "flow-rich"` in retained flow records and `synapseids_behavior_inputs_total{coverage="rich"}` in metrics. Complete-packet coverage is a separate feature: a short snap length can truncate application metadata even though timing sketches are present. DNS/HTTP/TLS parsing is bounded, without TCP reassembly or decryption. Protect rich transport with TLS because associated hostnames are operational evidence.

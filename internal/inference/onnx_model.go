@@ -102,3 +102,16 @@ func normalFallback() Scores {
 	s[classNormal] = 1
 	return s
 }
+
+// Trace replays the exact fitted input through a diagnostic forward pass.
+func (o *ONNXModel) Trace(v features.Vector) (nn.Trace, error) {
+	in := v.Values
+	if o.norm != nil {
+		in = o.norm(v)
+	}
+	values := make([]float32, len(in))
+	for i, x := range in {
+		values[i] = float32(x)
+	}
+	return o.net.RunTrace(values)
+}

@@ -69,6 +69,8 @@ func (m Metadata) BundleMeta() schema.BundleMeta {
 // NormalizerSpec is normalizer.json: a method plus, for a fitted method, one
 // entry per feature in flow-features-v1 order.
 type NormalizerSpec struct {
+	Transform     string        `json:"transform,omitempty"`
+	Clip          float64       `json:"clip,omitempty"`
 	Method        string        `json:"method"` // "standard" | "minmax" | "identity"
 	FeatureSchema string        `json:"feature_schema"`
 	PerFeature    []NormFeature `json:"per_feature"`

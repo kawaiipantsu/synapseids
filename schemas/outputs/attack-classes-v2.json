@@ -1,0 +1,104 @@
+{
+  "schema": "attack-classes-v2",
+  "version": 2,
+  "frozen": true,
+  "description": "Attack classification independent of application type; untrained labels are unavailable.",
+  "output_size": 19,
+  "classes": [
+    {
+      "index": 0,
+      "name": "normal",
+      "description": "normal"
+    },
+    {
+      "index": 1,
+      "name": "scan",
+      "description": "scan"
+    },
+    {
+      "index": 2,
+      "name": "host_sweep",
+      "description": "host sweep"
+    },
+    {
+      "index": 3,
+      "name": "dos_ddos",
+      "description": "dos ddos"
+    },
+    {
+      "index": 4,
+      "name": "syn_flood",
+      "description": "syn flood"
+    },
+    {
+      "index": 5,
+      "name": "udp_flood",
+      "description": "udp flood"
+    },
+    {
+      "index": 6,
+      "name": "icmp_flood",
+      "description": "icmp flood"
+    },
+    {
+      "index": 7,
+      "name": "dns_exhaustion",
+      "description": "dns exhaustion"
+    },
+    {
+      "index": 8,
+      "name": "brute_force",
+      "description": "brute force"
+    },
+    {
+      "index": 9,
+      "name": "botnet_c2",
+      "description": "botnet c2"
+    },
+    {
+      "index": 10,
+      "name": "malware",
+      "description": "malware"
+    },
+    {
+      "index": 11,
+      "name": "web_attack",
+      "description": "web attack"
+    },
+    {
+      "index": 12,
+      "name": "rce",
+      "description": "rce"
+    },
+    {
+      "index": 13,
+      "name": "phishing",
+      "description": "phishing"
+    },
+    {
+      "index": 14,
+      "name": "dga_dns",
+      "description": "dga dns"
+    },
+    {
+      "index": 15,
+      "name": "suspicious_download",
+      "description": "suspicious download"
+    },
+    {
+      "index": 16,
+      "name": "malformed",
+      "description": "malformed"
+    },
+    {
+      "index": 17,
+      "name": "suspicious",
+      "description": "suspicious"
+    },
+    {
+      "index": 18,
+      "name": "unknown",
+      "description": "unknown"
+    }
+  ]
+}

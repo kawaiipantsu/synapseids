@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -42,6 +43,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
 	"github.com/kawaiipantsu/synapseids/internal/version"
+	"github.com/kawaiipantsu/synapseids/internal/workbench"
 )
 
 // multiFlag collects a repeatable string flag (--capture eth0 --capture lo).
@@ -350,6 +352,12 @@ func run(args []string) int {
 	srv.SetEnrichment(contextCache)
 	srv.SetPolicy(pol, rep)
 	srv.SetMetrics(metrics)
+	wb, err := workbench.Open(filepath.Join(cfg.Training.Directory, "workbench"))
+	if err != nil {
+		log.Printf("workbench: cannot open durable queue: %v", err)
+		return 1
+	}
+	srv.SetWorkbench(wb)
 	if err := srv.SetAuth(cfg.Auth); err != nil {
 		log.Printf("config: auth: %v", err)
 		return 1
@@ -379,9 +387,9 @@ func run(args []string) int {
 		st, err := pipeline.Run(ctx, capMgr, rt, bus, store, pipeline.Options{
 			Flow: flowOpt, Sensor: "local",
 			IDGen:    func() uint64 { return flowID.Add(1) },
-			Observer: ins,
-			Alerts:   alerts,
-			Records:  sensorRecords,
+			Observer: ins, Names: contextCache.ObserveBindings,
+			Alerts:  alerts,
+			Records: sensorRecords,
 			// This is the table that serves live NICs and every raw-mode sensor.
 			// Leaving it unreported was issue #125.
 			OnStats: flowStats.Reporter("capture"),

@@ -3,7 +3,7 @@
 
 MODULE   := github.com/kawaiipantsu/synapseids
 PKG      := $(MODULE)/internal/version
-BINARIES := synapsed synapse synapse-sensor
+BINARIES := synapsed synapse synapse-sensor synapse-extract
 
 VERSION ?= $(shell sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md 2>/dev/null | head -1)
 VERSION := $(if $(VERSION),$(VERSION),0.1.0-dev)

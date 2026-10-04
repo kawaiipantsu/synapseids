@@ -7,6 +7,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/netip"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
+	"github.com/kawaiipantsu/synapseids/internal/packet"
 	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
@@ -42,6 +44,7 @@ type Observer interface {
 
 // Options configure a pipeline run.
 type Options struct {
+	Names  func([]packet.NameBinding, time.Time)
 	Policy *policy.Store
 	Flow   flow.Options
 	Sensor string
@@ -135,6 +138,7 @@ func Run(
 		seqCap = 4096
 	}
 	seqHist := newSeqWindows(seqCap)
+	hostWindow := features.NewHostWindow()
 
 	// extract times features.Extract for GET /metrics (issue #55). It runs when
 	// a flow closes, on this goroutine, never on the packet loop.
@@ -162,7 +166,17 @@ func Run(
 			opt.Policy.ExcludedRecords.Add(1)
 			return
 		}
+		if opt.Names != nil && fr.Telemetry != nil {
+			opt.Names(fr.Telemetry.Bindings, fr.LastSeen)
+		}
 		fr.Sensor = sensor
+		if fr.Behavior == nil {
+			v := features.BehaviorVector{Schema: features.BehaviorSchemaID}
+			copy(v.Values[:48], fr.Features.Values[:])
+			fr.Behavior = &v
+		}
+		identity := fmt.Sprintf("%s/%s/%d/%s/%d/%d", fr.Proto, fr.InitiatorIP, fr.InitiatorPort, fr.ResponderIP, fr.ResponderPort, fr.FirstSeen.UnixNano())
+		hostWindow.Apply(fr.Behavior, features.HostSample{Sensor: sensor, Initiator: fr.InitiatorIP, Responder: fr.ResponderIP, Identity: identity, Port: fr.ResponderPort, At: fr.LastSeen, Started: fr.FirstSeen, SYNOnly: fr.Features.Values[26] > 0 && fr.Features.Values[27] == 0, OneWay: fr.BwdPackets == 0, Bytes: float64(fr.FwdBytes + fr.BwdBytes), Telemetry: fr.Telemetry})
 		store.PutFlow(fr)
 		st.Flows++
 		if fr.CloseReason == string(flow.ReasonSnapshot) {
@@ -179,11 +193,19 @@ func Run(
 			key := seqKey(fr.InitiatorIP, fr.InitiatorPort, fr.ResponderIP, fr.ResponderPort, fr.Proto)
 			window := seqHist.push(key, fr.Features.Values, fr.LastSeen)
 			st.SeqWindowsEvicted = seqHist.evicted
-			res = rt.ScoreSequence(fr.Features, window)
+			res = rt.ScoreContext(fr.Features, window, *fr.Behavior)
 		} else {
-			res = rt.Score(fr.Features)
+			res = rt.ScoreContext(fr.Features, nil, *fr.Behavior)
 		}
 		opt.Metrics.ObserveScore(res.ClassID, time.Since(scoreStart))
+		attack, app := -1, -1
+		if res.Detail != nil && res.Detail.Available {
+			attack = res.Detail.ClassID
+		}
+		if res.Application != nil && res.Application.Available {
+			app = res.Application.ClassID
+		}
+		opt.Metrics.ObserveBehavior(attack, app, fr.Behavior.Values[127] > 0)
 		cl := storage.Classification{
 			FlowID:        fr.ID,
 			TS:            fr.LastSeen,
@@ -196,6 +218,9 @@ func Run(
 			Result:        res,
 		}
 		cl.AlertSuppressed = opt.Policy.Suppress(fr.InitiatorIP, res.Class)
+		if res.Detail != nil {
+			cl.AlertSuppressed = cl.AlertSuppressed || opt.Policy.Suppress(fr.InitiatorIP, res.Detail.Class)
+		}
 		if cl.AlertSuppressed {
 			opt.Policy.SuppressedAlerts.Add(1)
 		}
@@ -265,6 +290,9 @@ func Run(
 			r.ID = nextID()
 			fr := storage.FlowRecordFrom(r, extract(r))
 			fr.SensorMode = pcapoverip.ModeFlow.String()
+			if r.Telemetry != nil {
+				fr.SensorMode = pcapoverip.ModeRichFlow.String()
+			}
 			fr.SensorFlowID = sensorFlowID
 			st.FlowRecords++
 			publish(fr, sensor)

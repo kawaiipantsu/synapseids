@@ -71,6 +71,17 @@ func (r recordRoute) deliver(ctx context.Context, c *recordCounters,
 		}
 		rec.Flow = &fr
 
+	case pcapoverip.FrameRichFlow:
+		if r.mode != pcapoverip.ModeRichFlow {
+			atomic.AddUint64(&c.decodeErr, 1)
+			return false
+		}
+		fr, err := pcapoverip.DecodeRichFlowRecord(payload)
+		if err != nil {
+			atomic.AddUint64(&c.decodeErr, 1)
+			return false
+		}
+		rec.Flow = &fr
 	case pcapoverip.FrameFeatureRecord:
 		if r.mode != pcapoverip.ModeFeature {
 			atomic.AddUint64(&c.decodeErr, 1)

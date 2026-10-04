@@ -68,8 +68,10 @@ type Registration struct {
 
 // AssociatedName describes a non-PTR association and its provenance.
 type AssociatedName struct {
-	Name   string `json:"name"`
-	Source string `json:"source"`
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	Name       string    `json:"name"`
+	Source     string    `json:"source"`
 }
 
 // Record is a cached composite lookup with explicit freshness and provider states.
@@ -94,6 +96,8 @@ type entry struct {
 
 // Service manages a bounded cache and asynchronous provider workers.
 type Service struct {
+	namesQueue chan bindingBatch
+	observed   map[netip.Addr][]AssociatedName
 	opts       Options
 	localNames map[netip.Addr][]AssociatedName
 	mu         sync.Mutex
@@ -126,7 +130,7 @@ func New(opts Options) *Service {
 		opts.GeoURL = "https://api.country.is"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{opts: opts, cache: make(map[netip.Addr]*entry), backoff: make(map[string]time.Time), queue: make(chan netip.Addr, 128),
+	s := &Service{namesQueue: make(chan bindingBatch, 128), observed: map[netip.Addr][]AssociatedName{}, opts: opts, cache: make(map[netip.Addr]*entry), backoff: make(map[string]time.Time), queue: make(chan netip.Addr, 128),
 		ctx: ctx, cancel: cancel, localNames: readLocalNames(), lookupAddr: func(ctx context.Context, address string) ([]string, error) {
 			return dnswire.Reverse(ctx, address, opts.Resolver)
 		}, now: time.Now,
@@ -147,6 +151,8 @@ func New(opts Options) *Service {
 			}
 		}}}
 	if opts.Enabled {
+		s.wg.Add(1)
+		go s.nameWorker()
 		// A shared ticker limits new jobs to two/second, across four workers.
 		ticker := time.NewTicker(500 * time.Millisecond)
 		for range 4 {
@@ -192,7 +198,7 @@ func empty(ip netip.Addr, status string) Record {
 func (s *Service) Get(ip netip.Addr) (result Record) {
 	defer func() {
 		if s != nil {
-			result.AssociatedNames = append([]AssociatedName{}, s.localNames[ip.Unmap()]...)
+			result.AssociatedNames = s.names(ip.Unmap())
 		}
 	}()
 	ip = ip.Unmap()

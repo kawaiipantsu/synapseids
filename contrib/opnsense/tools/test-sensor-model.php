@@ -405,6 +405,12 @@ namespace {
     check('inbound-only capture feeding on-sensor flow records', [], ['direction', 'bidirectional'], false, [
         inst('wan', ['direction' => 'in', 'send_mode' => 'flow']),
     ]);
+    check('inbound-only rich flow capture is refused', [], ['direction', 'bidirectional'], false, [
+        inst('wan', ['direction' => 'in', 'send_mode' => 'flow-rich']),
+    ]);
+    check('bidirectional rich flow capture is supported', [], [], true, [
+        inst('wan', ['direction' => 'inout', 'send_mode' => 'flow-rich']),
+    ]);
     check('outbound-only capture feeding on-sensor feature vectors', [], ['direction', 'bidirectional'], false, [
         inst('wan', ['direction' => 'out', 'send_mode' => 'feature']),
     ]);

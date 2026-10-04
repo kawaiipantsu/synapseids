@@ -108,3 +108,12 @@ the console does not infer geography from address ownership or PTR suffixes.
 PTR names and external provider text are untrusted advisory context. The UI
 renders them as text, not executable markup. Public documentation uses
 synthetic examples, never cached live names.
+
+
+## Names observed in traffic
+
+Rich or local packet capture can add **Associated names** from observed DNS A/AAAA answers, TLS ClientHello SNI and plaintext HTTP Host headers. Each entry keeps its source, observation time and expiry. Local hosts-file aliases are also separate. None replaces the reverse-DNS PTR field, changes geolocation or becomes a raw numeric neural input.
+
+The association cache is bounded by the configured host limit and 16 names per address. TTLs are capped at 24 hours; expired entries disappear. SNI and HTTP Host mean a client requested that name at the destination, not that the server successfully served it. Observed DNS mappings are not a complete passive-DNS database or a proof of ownership. Private addresses can have locally observed names without external lookup.
+
+A short or encrypted handshake can leave the name unknown. DNS over HTTPS/TLS, QUIC and split TCP headers are not decoded into these associations. The graph still represents observed conversations rather than physical routes or confirmed hosted websites.

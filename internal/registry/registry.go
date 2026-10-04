@@ -71,6 +71,8 @@ const (
 // primary (ADR 0037, ADR 0040).
 func roleForFamily(family string) string {
 	switch family {
+	case schema.FamilyApplicationV1:
+		return "application"
 	case schema.FamilyAnomalyV1:
 		return roleAnomaly
 	case schema.FamilySequenceV1:

@@ -9,7 +9,7 @@ export interface IPContext {
   stale: boolean
   updated_at: string
   expires_at: string
-  associated_names?: { name: string; source: string }[]
+  associated_names?: { name: string; source: string; observed_at?: string; expires_at?: string }[]
   dns: { source?: string; status: string; names: string[] }
   geo: { status: string; source?: string; country?: string; city?: string; continent?: string; subdivision?: string; latitude?: number; longitude?: number; accuracy_km?: number; timezone?: string; asn?: number; organization?: string }
   whois: { status: string; source?: string; handle?: string; name?: string; start?: string; end?: string; type?: string; country?: string; updated?: string }

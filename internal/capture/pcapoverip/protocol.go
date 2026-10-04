@@ -94,6 +94,8 @@ const (
 	// flow identity needed to render and store a row — and no packet content at
 	// all. v2 and ModeFeature only; see records.go for the layout.
 	FrameFeatureRecord FrameType = 0x05
+	// FrameRichFlow carries independently versioned rich flow telemetry.
+	FrameRichFlow FrameType = 0x06
 )
 
 func (t FrameType) String() string {
@@ -108,6 +110,8 @@ func (t FrameType) String() string {
 		return "flow-record"
 	case FrameFeatureRecord:
 		return "feature-record"
+	case FrameRichFlow:
+		return "rich-flow"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", uint8(t))
 	}
@@ -130,6 +134,8 @@ const (
 	// streams FrameFeatureRecord: only the 48 derived numbers plus the flow
 	// identity needed to render a row. No packet content crosses the wire.
 	ModeFeature Mode = 0x02
+	// ModeRichFlow carries packet timing sketches and protocol metadata without raw payloads.
+	ModeRichFlow Mode = 0x03
 )
 
 func (m Mode) String() string {
@@ -140,6 +146,8 @@ func (m Mode) String() string {
 		return "flow"
 	case ModeFeature:
 		return "feature"
+	case ModeRichFlow:
+		return "flow-rich"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", uint8(m))
 	}
@@ -154,8 +162,10 @@ func ParseMode(s string) (Mode, error) {
 		return ModeFlow, nil
 	case "feature":
 		return ModeFeature, nil
+	case "flow-rich":
+		return ModeRichFlow, nil
 	default:
-		return ModeRaw, fmt.Errorf("pcapoverip: unknown sensor mode %q (want raw, flow or feature)", s)
+		return ModeRaw, fmt.Errorf("pcapoverip: unknown sensor mode %q (want raw, flow, flow-rich or feature)", s)
 	}
 }
 
@@ -175,6 +185,8 @@ func (m Mode) PayloadSchema() string {
 		return FlowRecordSchema
 	case ModeFeature:
 		return FeatureRecordSchema
+	case ModeRichFlow:
+		return RichFlowSchema
 	default:
 		return ""
 	}
@@ -531,7 +543,7 @@ func ValidateAccept(a ServerAccept) error {
 		return protoErr("server negotiated protocol version %d, this build speaks 1..%d", a.Version, VersionMax)
 	}
 	switch a.Mode {
-	case ModeRaw, ModeFlow, ModeFeature:
+	case ModeRaw, ModeFlow, ModeFeature, ModeRichFlow:
 	default:
 		return protoErr("server declared unknown mode 0x%02x", uint8(a.Mode))
 	}

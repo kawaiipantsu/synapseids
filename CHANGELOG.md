@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Neural workbench with labeled PCAP import, reviewed-flow export, durable worker
+  jobs, cost-sensitive training, evaluation reports and explicit shadow/promotion.
+- Independent 160-input temporal threat and application model families, preserving
+  existing 48-input contracts; native ONNX activation traces in the live graph.
+- Rich OPNsense sensor mode with ordered packet timing, bounded protocol metadata
+  and separately attributed DNS / TLS / HTTP associated names.
+- Advisory scan/sweep, DNS pressure/DGA-like, download and periodicity evidence;
+  detailed threat/application, input-coverage and training-worker metrics.
+- Offline `synapse-extract` utility and documented public starter data provenance.
+
+
 - Editable CIDR ownership/exclusions and per-class alert suppression; cached Spamhaus/CINS reputation with optional AbuseIPDB and DNS RBL providers.
 - Reverse DNS now queries PTR records directly and shows local hosts mappings separately with provenance.
 
@@ -651,7 +664,7 @@ network access.
     outline for model disagreement — with the pair list beneath it and
     click-through to Investigate for either endpoint. The scoped Flow Log shows a
     "scoped to X" strip with a clear button. Verified against
-    `nmap_scan.pcap`: `10.10.10.22 → 10.10.10.21` is the hot cell at 426 flows /
+    `nmap_scan.pcap`: `192.0.2.22 → 10.10.10.21` is the hot cell at 426 flows /
     9.4 MB / 304 `brute_force` verdicts, every one to `:3306`.
 - **The Flow Inspector explains the verdict, and shows a flow's history** (issue
   #38, EPIC Phase 5;

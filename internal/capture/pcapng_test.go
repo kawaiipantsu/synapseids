@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestPCAPNGTwinMatchesClassic(t *testing.T) {
 			t.Errorf("packet %d timestamp: classic %s, pcapng %s", i, a.TS, b.TS)
 		}
 		a.TS, b.TS = time.Time{}, time.Time{}
-		if a != b {
+		if !reflect.DeepEqual(a, b) {
 			t.Errorf("packet %d differs:\n classic %+v\n pcapng  %+v", i, a, b)
 		}
 	}

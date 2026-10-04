@@ -66,6 +66,8 @@ const (
 
 // Packet is one decoded packet reduced to what the flow engine needs.
 type Packet struct {
+	Truncated  bool
+	Metadata   *Metadata
 	TS         time.Time
 	SrcIP      netip.Addr
 	DstIP      netip.Addr
@@ -163,10 +165,12 @@ func decodeIPv4(ts time.Time, b []byte) (Packet, error) {
 	if total < ihl {
 		total = len(b) // captured length is the best we have
 	}
+	truncated := total > len(b)
 	if total > len(b) {
 		total = len(b)
 	}
 	p := Packet{
+		Truncated: truncated,
 		TS:        ts,
 		Proto:     Proto(b[9]),
 		IPVersion: 4,
@@ -188,10 +192,12 @@ func decodeIPv6(ts time.Time, b []byte) (Packet, error) {
 	}
 	payLen := int(uint16(b[4])<<8 | uint16(b[5]))
 	total := 40 + payLen
+	truncated := total > len(b)
 	if total > len(b) || total < 40 {
 		total = len(b)
 	}
 	p := Packet{
+		Truncated: truncated,
 		TS:        ts,
 		Proto:     Proto(b[6]),
 		IPVersion: 6,
@@ -254,6 +260,7 @@ func decodeL4(p Packet, l4 []byte) (Packet, error) {
 		p.TCPWindow = uint16(l4[14])<<8 | uint16(l4[15])
 		p.TCPFlags = l4[13] & 0x3f
 		p.PayloadLen = len(l4) - dataOff
+		p.Metadata = metadata(p, l4[dataOff:])
 	case ProtoUDP:
 		if len(l4) < 8 {
 			return Packet{}, ErrShortPacket
@@ -261,6 +268,7 @@ func decodeL4(p Packet, l4 []byte) (Packet, error) {
 		p.SrcPort = uint16(l4[0])<<8 | uint16(l4[1])
 		p.DstPort = uint16(l4[2])<<8 | uint16(l4[3])
 		p.PayloadLen = len(l4) - 8
+		p.Metadata = metadata(p, l4[8:])
 	case ProtoICMP, ProtoICMPv6:
 		p.PayloadLen = len(l4)
 	default:

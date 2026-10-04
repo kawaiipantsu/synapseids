@@ -5,6 +5,7 @@
 
 /** inference.ModelOutput — one model's verdict for one flow. */
 export interface ModelOutput {
+ detail?: DetailedOutput
   model_id: string
   role: string
   class: string
@@ -15,6 +16,9 @@ export interface ModelOutput {
 
 /** inference.Result — the ensemble verdict for one flow. */
 export interface Result {
+ application?: DetailedOutput
+ detail?: DetailedOutput
+ signals?: Array<{kind:string;evidence:string;severity:string}>
   flow_id: number
   class: string
   class_id: number
@@ -46,6 +50,7 @@ export interface FeatureVector {
 
 /** storage.FlowRecord — a stored flow plus its raw feature vector. */
 export interface FlowRecord {
+ behavior?: {schema:string;values:number[]}
   id: number
   proto: string
   initiator_ip: string
@@ -605,6 +610,10 @@ export interface TrainingPerClass {
 
 /** The terminal "done" metrics block (pass-through). */
 export interface TrainingFinal {
+ class_names?: string[]
+ supported_classes?: string[]
+ unsupported_classes?: string[]
+ split?: {limitation:string;purged_rows:number;embargo_exempt_small_captures:number}
   accuracy?: number
   macro_precision?: number
   macro_recall?: number
@@ -1132,7 +1141,15 @@ export interface ModelInput {
 }
 
 /** internal/api.explainModel — one model's inputs and rationale. */
+export interface NeuralTrace {
+  nodes: { name: string; op: string; inputs: string[]; values: number[]; shape: number[]; sample: number[]; connections?: { from: number; to: number; weight: number; contribution: number }[] }[]
+  output: number[]
+  note: string
+}
 export interface ExplainModel {
+ detail?: DetailedOutput
+  trace?: NeuralTrace
+  trace_note?: string
   model_id: string
   role: string
   class: string
@@ -1510,3 +1527,12 @@ export type DetectionResult =
   | { state: 'ok'; detection: Detection }
   | { state: 'unavailable'; message: string }
   | { state: 'error'; message: string }
+
+export interface DetailedOutput { model_id: string; schema: string; available: boolean; class: string; class_id: number; score: number; scores: number[]; note?: string }
+export interface WorkbenchState {
+ worker_online: boolean
+ corpora: Array<{id:string;name:string;task:string;rows:number;classes:Record<string,number>;source:string;limitations:string}>
+ jobs: Array<{id:string;request:{name:string;kind:string;task:string};status:string;message?:string;run_id?:string;model_id?:string}>
+ attack_classes: ClassSchema
+ application_classes: ClassSchema
+}

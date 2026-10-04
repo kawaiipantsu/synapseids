@@ -1,6 +1,7 @@
 import { IPLabel } from '../components/IPContext'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  getBehaviorSchema, getAttackSchema, getApplicationSchema,
   getClassifications,
   getFeatureSchema,
   getFlow,
@@ -10,6 +11,7 @@ import {
 import { useStream } from '../api/stream'
 import type { Classification } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
+import { ActivationGraph } from '../components/ActivationGraph'
 import { NeuralDiagram } from '../components/NeuralDiagram'
 import { CLASS_NAMES, classColor } from '../lib/classes'
 import { fmtNum, fmtPct } from '../lib/format'
@@ -22,6 +24,9 @@ export function Inference() {
   const recent = usePoll(loadRecent, 2000, !follow)
   const registry = usePoll(getModels, 10000)
   const schema = usePoll(getFeatureSchema, 60000)
+ const richSchema=usePoll(getBehaviorSchema,60000)
+ const attacks=usePoll(getAttackSchema,60000)
+ const applications=usePoll(getApplicationSchema,60000)
   const [flowID, setFlowID] = useState<number | null>(null)
   const [modelID, setModelID] = useState('')
   const [inspect, setInspect] = useState<Classification | null>(null)
@@ -43,7 +48,7 @@ export function Inference() {
     if (flowID == null) return null
     const [flow, explanation] = await Promise.allSettled([
       getFlow(flowID),
-      getFlowExplain(flowID),
+      getFlowExplain(flowID, true),
     ])
     return {
       id: flowID,
@@ -57,9 +62,9 @@ export function Inference() {
   }, [flowID])
   const detail = usePoll(loadDetail, 5000)
   const snapshot = detail.data?.id === flowID ? detail.data : null
-  const output =
-    cls?.result.models.find((m) => m.model_id === modelID) ??
-    cls?.result.models[0]
+  const modelOutputs = [...(cls?.result.models ?? [])]
+  if(cls?.result.application) {const a=cls.result.application;modelOutputs.push({model_id:a.model_id,role:'application',class:a.class,class_id:a.class_id,score:a.score,scores:a.scores,detail:a})}
+  const output = modelOutputs.find(m => m.model_id === modelID) ?? modelOutputs.find(m => !!m.detail) ?? modelOutputs[0]
   const model = registry.data?.models.find(
     (m) => m.model_id === output?.model_id,
   )
@@ -79,10 +84,11 @@ export function Inference() {
   const explanation = snapshot?.explanation?.models.find(
     (m) => m.model_id === output?.model_id,
   )
-  const features = schema.data?.features ?? []
-  const validScores =
-    output?.scores?.length === CLASS_NAMES.length &&
-    output.scores.every((v) => Number.isFinite(v) && v >= 0 && v <= 1)
+  const rich = model?.feature_schema === 'traffic-behavior-v1'
+  const features = (rich ? richSchema : schema).data?.features ?? []
+  const scores = output?.detail?.scores ?? output?.scores
+  const scoreNames = output?.detail ? (output.detail.schema === 'application-classes-v1' ? applications : attacks).data?.classes.map(c => c.name) ?? [] : CLASS_NAMES.slice()
+  const validScores = scores?.length === scoreNames.length && scores.every(v => Number.isFinite(v) && v >= 0 && v <= 1)
   return (
     <div className="visual-page">
       <div className="page-h">
@@ -165,7 +171,7 @@ export function Inference() {
           <b>02</b> Behavioral features
           <small>
             {snapshot?.flow
-              ? `${snapshot.flow.features.values.length} recorded inputs`
+              ? `${(rich ? snapshot.flow.behavior?.values.length ?? 0 : snapshot.flow.features.values.length)} recorded inputs`
               : 'Waiting for flow record'}
           </small>
         </span>
@@ -184,6 +190,7 @@ export function Inference() {
           </small>
         </span>
       </div>
+      {cls?.result.signals?.length ? <section className="viz-panel" style={{padding:20,marginBottom:20}}><h2>Observed patterns</h2><p className="viz-caption">Heuristic evidence, independent of the neural prediction.</p>{cls.result.signals.map(s => <p key={s.kind}><b>{s.kind.replace(/_/g,' ')}</b> · {s.evidence}</p>)}</section> : null}
       <div className="inference-layout">
         <section className="viz-panel feature-panel">
           <div className="panel-heading">
@@ -200,7 +207,7 @@ export function Inference() {
           </p>
           <div className="feature-grid">
             {features.map((feature) => {
-              const value = snapshot?.flow?.features.values[feature.index]
+              const value = (rich ? snapshot?.flow?.behavior : snapshot?.flow?.features)?.values[feature.index]
               const normalized = explanation?.input.features?.find(
                 (f) => f.index === feature.index,
               )?.normalized
@@ -221,7 +228,7 @@ export function Inference() {
             <div className="panel-heading">
               <div>
                 <div className="eyebrow">MODEL STRUCTURE</div>
-                <h2>{output?.model_id ?? 'Waiting for a model result'}</h2>
+                <h2>{model?.name || output?.model_id || 'Waiting for a model result'}</h2>{output?.role === 'experimental' && <small>Shadow comparison · this network does not drive alerts</small>}
               </div>
               {cls && (
                 <select
@@ -229,22 +236,22 @@ export function Inference() {
                   value={output?.model_id ?? ''}
                   onChange={(e) => setModelID(e.target.value)}
                 >
-                  {cls.result.models.map((m) => (
+                  {modelOutputs.map((m) => (
                     <option key={m.model_id} value={m.model_id}>
-                      {m.model_id} · {m.role}
+                      {registry.data?.models.find(entry => entry.model_id === m.model_id)?.name || m.model_id} · {m.role}
                     </option>
                   ))}
                 </select>
               )}
             </div>
-            {architecture ? (
+            {explanation?.trace ? (<ActivationGraph outputNames={scoreNames} trace={explanation.trace} flowID={flowID ?? 0} playing={follow} />) : architecture ? (
               <NeuralDiagram
                 widths={[
                   model?.input_size ?? 48,
                   ...architecture.hidden!.map((h) => h.width),
                   model?.output_size ?? 7,
                 ]}
-                active={follow && connected && !!snapshot}
+                active={false}
               />
             ) : (
               <div className="model-fallback">
@@ -260,9 +267,7 @@ export function Inference() {
               </div>
             )}
             <p className="viz-caption">
-              Topology schematic; circles sample each layer’s width.
-              Hidden-neuron activations and connection weights are not exposed
-              by the inference API.
+              {explanation?.trace ? explanation.trace.note : (explanation?.trace_note || 'Waiting for a trained model with retained input and output. The fallback schematic shows architecture only.') }
             </p>
           </section>
           <section className="viz-panel">
@@ -277,24 +282,24 @@ export function Inference() {
             </div>
             {validScores ? (
               <div className="score-bars">
-                {CLASS_NAMES.map((name, i) => (
+                {scoreNames.map((name, i) => (
                   <div key={name}>
                     <span>{name.replace(/_/g, ' ')}</span>
                     <div className="score-track">
                       <i
                         style={{
-                          width: `${output!.scores[i]! * 100}%`,
+                          width: `${scores![i]! * 100}%`,
                           background: classColor(name),
                         }}
                       />
                     </div>
-                    <b>{fmtPct(output!.scores[i]!, 1)}</b>
+                    <b>{fmtPct(scores![i]!, 1)}</b>
                   </div>
                 ))}
               </div>
             ) : (
               <p className="viz-caption">
-                A seven-class score vector is not available for this model.
+                A complete score vector is not available for this model.
               </p>
             )}
             {explanation?.explanation.kind === 'rules' && (

@@ -31,11 +31,13 @@
 > The development branch includes live capture and distributed sensors, ONNX
 > inference, versioned datasets, offline training, investigations, and metrics.
 > This feature branch adds the visual traffic workspace, cached DNS/geo/RDAP
-> context and training/Grafana observability. Dedicated Model Compare, Drift,
+> context, editable network policy, a 160-input temporal neural workbench, measured
+> activation graphs and training/Grafana observability. Dedicated Model Compare, Drift,
 > Performance, Storage and Settings screens remain planned.
 >
 > Start with the **[product documentation and screenshot gallery](https://github.com/kawaiipantsu/synapseids/wiki)**.
 > Implementation guides: [visual workspace](docs/visual-workspace.md),
+> [neural training](docs/neural-workbench.md), [training data sources](docs/training-data-sources.md),
 > [IP context](docs/ip-context.md), [Prometheus & Grafana](docs/prometheus.md).
 > Flow/classification history remains bounded in memory; model activation is an
 > explicit operator action. The historical roadmap below is a planning reference.

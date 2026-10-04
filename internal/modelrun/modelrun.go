@@ -74,6 +74,16 @@ func BuildLive(id string, b *model.Bundle) (Live, error) {
 		return Live{}, fmt.Errorf("modelrun: nil bundle")
 	}
 	switch b.Meta().Family {
+	case schema.FamilyBehaviorV1, schema.FamilyApplicationV1:
+		net, err := nn.LoadFile(b.ONNXPath())
+		if err != nil {
+			return Live{}, err
+		}
+		m, err := inference.NewBehaviorModel(id, b.Meta().Family, net, b.NormalizeValues)
+		if err != nil {
+			return Live{}, err
+		}
+		return Live{Role: m.Role(), Model: m, Classifier: m}, nil
 	case schema.FamilyAnomalyV1:
 		a, err := BuildAnomaly(id, b)
 		if err != nil {

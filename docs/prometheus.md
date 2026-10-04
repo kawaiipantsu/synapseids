@@ -113,3 +113,30 @@ and recorded values; auth tests cover route roles.
 
 Prometheus's [configuration reference](https://prometheus.io/docs/prometheus/latest/configuration/configuration/)
 describes scrape jobs, authorization files, and TLS settings.
+
+
+## Temporal neural workbench metrics
+
+All series share the existing `/metrics` scrape endpoint. Fixed class/state labels bound cardinality; raw IPs, observed names and neuron IDs do not become labels.
+
+| Series | Type | Meaning |
+| --- | --- | --- |
+| `synapseids_neural_threat_classifications_total{class}` | counter | Primary detailed threat classification events, across 19 fixed classes |
+| `synapseids_neural_application_classifications_total{application}` | counter | Independent application classification events, across 14 fixed classes |
+| `synapseids_behavior_inputs_total{coverage}` | counter | Rich or legacy input observations |
+| `synapseids_training_worker_online` | gauge | 1 while an external worker has claimed/polled within 45 seconds |
+| `synapseids_training_jobs{status}` | gauge | Queue/job history counts by lifecycle state |
+
+An experimental threat shadow does not increment primary detailed-threat counters. An inactive application model produces no application classifications. Zero reflects that role's activity, not proof that no such traffic exists. Classification events include snapshots; do not label them unique sessions.
+
+Examples:
+
+```promql
+sum by (class) (rate(synapseids_neural_threat_classifications_total[5m]))
+sum by (application) (rate(synapseids_neural_application_classifications_total[5m]))
+sum by (coverage) (rate(synapseids_behavior_inputs_total[5m]))
+synapseids_training_worker_online
+synapseids_training_jobs{status="queued"}
+```
+
+The worker also reports epochs, loss, validation accuracy/precision/recall/F1, learning rate, batches and elapsed seconds through the existing training series. The console retains every reported epoch; Prometheus samples at its scrape interval, so a very short training run can complete between two scrapes.

@@ -470,9 +470,10 @@
                     <OptionValues>
                         <raw>Raw packets - stream every frame (most bandwidth)</raw>
                         <flow>Flow records - aggregate flows here (least bandwidth)</flow>
+                        <flow-rich>Rich flow records - timing, DNS and application hints</flow-rich>
                         <feature>Feature vectors only - no packet content leaves this host</feature>
                     </OptionValues>
-                    <ValidationMessage>Choose raw, flow or feature.</ValidationMessage>
+                    <ValidationMessage>Choose raw, flow, flow-rich or feature.</ValidationMessage>
                 </send_mode>
 
                 <!-- ========================= identity ====================== -->

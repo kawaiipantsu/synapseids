@@ -81,8 +81,8 @@ export function getFlow(id: number): Promise<FlowRecord> {
  * (§19.3, issue #38). A sibling of the flow-detail route rather than part of it,
  * so `getFlow`'s shape is unchanged.
  */
-export function getFlowExplain(id: number): Promise<FlowExplain> {
-  return getJSON<FlowExplain>(`/api/v1/flows/${id}/explain`)
+export function getFlowExplain(id: number, trace = false): Promise<FlowExplain> {
+  return getJSON<FlowExplain>(`/api/v1/flows/${id}/explain${trace ? "?trace=1" : ""}`)
 }
 
 /** GET /api/v1/flows/{id}/snapshots — the retained version history of a flow. */
@@ -742,3 +742,15 @@ export async function getDetection(id: number): Promise<DetectionResult> {
     return { state: 'error', message: e instanceof Error ? e.message : String(e) }
   }
 }
+
+export function getWorkbench(): Promise<import('./types').WorkbenchState> {return getJSON('/api/v1/workbench')}
+export async function workbenchRequest<T = unknown>(path: string, body: unknown): Promise<T> {
+ const res = await fetch('/api/v1/workbench'+(path ? '/'+path : ''),{method:'POST',headers:body instanceof Blob ? {'Content-Type':'application/octet-stream'} : {'Content-Type':'application/json'},body:body instanceof Blob ? body : JSON.stringify(body)})
+ if(!res.ok) throw new Error(await res.text())
+ return res.status===204 ? undefined as T : res.json() as Promise<T>
+}
+export const getBehaviorSchema = (): Promise<FeatureSchema> => getJSON('/api/v1/schemas/behavior')
+export const getAttackSchema = (): Promise<ClassSchema> => getJSON('/api/v1/schemas/attacks')
+export const getApplicationSchema = (): Promise<ClassSchema> => getJSON('/api/v1/schemas/applications')
+
+export function shadowModel(id:string):Promise<unknown>{return getJSON('/api/v1/models/'+encodeURIComponent(id)+'/shadow',{method:'POST'})}

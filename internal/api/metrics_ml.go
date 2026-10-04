@@ -7,6 +7,7 @@ import (
 
 	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/training"
 )
 
@@ -15,13 +16,38 @@ const metricDetailCap = 100
 // writeMLMetrics reads in-memory stores only. It never loads a bundle, scans a
 // dataset CSV, or parses training history beyond the latest reported epoch.
 func (s *Server) writeMLMetrics(p *obs.Writer) {
-	loaded := map[string]int{"classifier": 0, "anomaly": 0, "sequence": 0}
+	if s.workbench != nil {
+		jobs, online := s.workbench.List()
+		p.GaugeInt("synapseids_training_worker_online", "1 when the workbench worker has a fresh heartbeat.", boolToInt(online))
+		counts := map[string]int64{}
+		for _, j := range jobs {
+			counts[j.Status]++
+		}
+		for _, state := range []string{"queued", "running", "completed", "failed", "cancelled"} {
+			p.GaugeInt("synapseids_training_jobs", "Workbench job count by bounded lifecycle state.", counts[state], obs.Label{Name: "status", Value: state})
+		}
+	}
+	{
+		attacks, apps, rich, legacy := s.metrics.BehaviorSnapshot()
+		for i, c := range schema.AttackV2().Classes {
+			p.Counter("synapseids_neural_threat_classifications_total", "Detailed neural threat classifications; snapshot updates count separately.", attacks[i], obs.Label{Name: "class", Value: c.Name})
+		}
+		for i, c := range schema.ApplicationV1().Classes {
+			p.Counter("synapseids_neural_application_classifications_total", "Independent neural application classifications; absent application models increment nothing.", apps[i], obs.Label{Name: "application", Value: c.Name})
+		}
+		p.Counter("synapseids_behavior_inputs_total", "Classified vectors by packet-metadata availability.", rich, obs.Label{Name: "coverage", Value: "rich"})
+		p.Counter("synapseids_behavior_inputs_total", "Classified vectors by packet-metadata availability.", legacy, obs.Label{Name: "coverage", Value: "legacy"})
+	}
+	loaded := map[string]int{"classifier": 0, "anomaly": 0, "sequence": 0, "application": 0}
 	if s.rt != nil {
 		loaded["classifier"] = len(s.rt.Models())
 		loaded["anomaly"] = len(s.rt.AnomalyModels())
 		loaded["sequence"] = len(s.rt.SequenceModels())
+		if s.rt.ApplicationModel() != nil {
+			loaded["application"] = 1
+		}
 	}
-	for _, family := range []string{"classifier", "anomaly", "sequence"} {
+	for _, family := range []string{"classifier", "anomaly", "sequence", "application"} {
 		p.GaugeInt("synapseids_models_loaded", "Models loaded in the inference runtime, by scoring role.", int64(loaded[family]), obs.Label{Name: "role", Value: family})
 	}
 	entries := []registry.Entry{}

@@ -417,7 +417,7 @@ export function FlowLog() {
                   <td className="dim">{c.proto}</td>
                   <td>
                     <span className={`cls ${r.class}`} style={{ background: classColor(r.class) }}>
-                      {r.class.toUpperCase()}{c.alert_suppressed && <span title="Alert suppressed by owned-asset policy; original classification retained"> · muted</span>}
+                      {r.class.toUpperCase()}{r.detail?.available && r.detail.class !== r.class && <small title="Detailed neural threat class"> · {r.detail.class}</small>}{r.application?.available && <small title="Independent application model"> · {r.application.class}</small>}{c.alert_suppressed && <span title="Alert suppressed by owned-asset policy; original classification retained"> · muted</span>}
                     </span>
                   </td>
                   <td className="mono">

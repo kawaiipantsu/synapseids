@@ -1,0 +1,79 @@
+{
+  "schema": "application-classes-v1",
+  "version": 1,
+  "frozen": true,
+  "description": "Application classification independent of attack class; encrypted applications require representative labeled captures.",
+  "output_size": 14,
+  "classes": [
+    {
+      "index": 0,
+      "name": "unknown",
+      "description": "unknown"
+    },
+    {
+      "index": 1,
+      "name": "dns",
+      "description": "dns"
+    },
+    {
+      "index": 2,
+      "name": "web",
+      "description": "web"
+    },
+    {
+      "index": 3,
+      "name": "email",
+      "description": "email"
+    },
+    {
+      "index": 4,
+      "name": "file_transfer",
+      "description": "file transfer"
+    },
+    {
+      "index": 5,
+      "name": "remote_access",
+      "description": "remote access"
+    },
+    {
+      "index": 6,
+      "name": "streaming",
+      "description": "streaming"
+    },
+    {
+      "index": 7,
+      "name": "irc",
+      "description": "irc"
+    },
+    {
+      "index": 8,
+      "name": "teams",
+      "description": "teams"
+    },
+    {
+      "index": 9,
+      "name": "slack",
+      "description": "slack"
+    },
+    {
+      "index": 10,
+      "name": "whatsapp",
+      "description": "whatsapp"
+    },
+    {
+      "index": 11,
+      "name": "signal",
+      "description": "signal"
+    },
+    {
+      "index": 12,
+      "name": "other_chat",
+      "description": "other chat"
+    },
+    {
+      "index": 13,
+      "name": "voip",
+      "description": "voip"
+    }
+  ]
+}

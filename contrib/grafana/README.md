@@ -33,3 +33,9 @@ separate concepts. No firewall allow/block counts or hidden activations are
 invented by these panels.
 
 The JSON contains no alert rules, notification routes or contact points.
+
+The Neural Network dashboard also includes a temporal-input coverage section,
+independent application and detailed threat rates, workbench queue states and
+worker heartbeat. These metrics count classification events; they are not live
+accuracy measurements. Shadow threat output does not increment primary threat
+counters. See [the neural workbench guide](../../docs/neural-workbench.md).

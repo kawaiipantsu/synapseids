@@ -116,14 +116,14 @@ func compile(d Document) (*snapshot, error) {
 			return nil, fmt.Errorf("rule %d: exclusion already bypasses every class", i+1)
 		}
 		r.SuppressClasses = append([]string{}, r.SuppressClasses...)
-		if len(r.SuppressClasses) > schema.TrafficClassesV1().OutputSize {
+		if len(r.SuppressClasses) > schema.AttackV2().OutputSize+schema.TrafficClassesV1().OutputSize {
 			return nil, fmt.Errorf("too many suppressed classes")
 		}
 		seen := map[string]bool{}
 		for j, c := range r.SuppressClasses {
 			c = strings.ToLower(strings.TrimSpace(c))
 			valid := false
-			for _, cl := range schema.TrafficClassesV1().Classes {
+			for _, cl := range append(append([]schema.Class{}, schema.TrafficClassesV1().Classes...), schema.AttackV2().Classes...) {
 				if c == cl.Name && c != "normal" {
 					valid = true
 				}

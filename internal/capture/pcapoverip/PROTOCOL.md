@@ -508,3 +508,34 @@ across the daemon's lifetime). The vector's `flow_id` is restamped to match;
   today each client gets an independent replay/stream.
 - Switching the client decode loop to the shared
   `capture.decodePCAPStream` helper once the tcpdump/SSH branch lands it.
+
+## Rich flow extension (`flow-record-v2`)
+
+SYNPOIP v2 additionally supports mode `0x03`, named `flow-rich`, with payload
+schema `flow-record-v2`. Its record frame is type `0x06`. Existing v1 flow and
+feature layouts are unchanged. Both peers must understand this mode; a peer
+that does not must reject the declared mode/schema rather than interpret it as
+legacy flow data. Upgrade the collector before switching the sensor mode.
+
+Payload:
+
+| Field | Encoding |
+| --- | --- |
+| layout version | one byte, `2` |
+| legacy length | big-endian uint16 |
+| legacy flow | exactly that many bytes of `flow-record-v1` |
+| telemetry length | big-endian uint32 |
+| telemetry | exactly that many UTF-8 JSON bytes of `flow.Telemetry` |
+
+The JSON object contains a 32-entry packet-gap/signed-size ring and sample count,
+DNS/HTTP/TLS/IRC counters, bounded name-shape statistics, up to eight observed DNS
+questions, eight download extensions and sixteen name/address associations.
+`truncated_samples` counts incomplete captured IP packets and may be absent at
+zero. Unknown fields, extra JSON values, invalid lengths, nonfinite statistics,
+inconsistent counters and oversized collections are rejected. Metadata is at
+most 16,384 bytes and the complete payload at most 18,000 bytes.
+
+This mode sends bounded observed names, including DNS answers, TLS SNI and HTTP
+Host, with provenance and TTL. It sends no raw payload, HTTP query strings or
+authorization headers. It is richer than feature-only mode and is not an
+anonymization guarantee. Association names never become PTR records.

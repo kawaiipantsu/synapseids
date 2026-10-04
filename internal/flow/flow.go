@@ -83,6 +83,7 @@ const (
 // Record is an immutable snapshot of a flow handed to feature extraction and
 // storage. Rates are left to the feature layer; Record carries raw accumulators.
 type Record struct {
+	Telemetry     *Telemetry
 	ID            uint64
 	Key           Key
 	Reason        CloseReason
