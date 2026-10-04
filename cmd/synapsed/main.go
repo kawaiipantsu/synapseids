@@ -35,7 +35,9 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/reputation"
 	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
@@ -218,6 +220,13 @@ func run(args []string) int {
 	// One-shot load at startup, off every packet path.
 	trs := training.Open(cfg.Training.Directory, aud, log.Printf)
 
+	pol, err := policy.Open(cfg.PolicyFile)
+	if err != nil {
+		log.Printf("policy: unable to load validated policy: %v", err)
+		return 1
+	}
+	rep := reputation.New(pol, cfg.Reputation.AbuseIPDBKeyFile, cfg.Reputation.DNSBLFile)
+	defer rep.Close()
 	flowOpt := flow.Options{
 		IdleTimeout:      cfg.Capture.FlowIdleTimeout.D(),
 		MaxLifetime:      cfg.Capture.FlowMaxLifetime.D(),
@@ -230,6 +239,7 @@ func run(args []string) int {
 	// rather than whichever one happened to be wired (issue #125).
 	flowStats := newFlowStatsHub(flowOpt.MaxFlows)
 	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID, flowStats, metrics)
+	rc.policy = pol
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -338,6 +348,7 @@ func run(args []string) int {
 	})
 	defer contextCache.Close()
 	srv.SetEnrichment(contextCache)
+	srv.SetPolicy(pol, rep)
 	srv.SetMetrics(metrics)
 	if err := srv.SetAuth(cfg.Auth); err != nil {
 		log.Printf("config: auth: %v", err)
@@ -375,6 +386,7 @@ func run(args []string) int {
 			// Leaving it unreported was issue #125.
 			OnStats: flowStats.Reporter("capture"),
 			Metrics: metrics,
+			Policy:  pol,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)

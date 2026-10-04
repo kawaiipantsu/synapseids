@@ -1,13 +1,16 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
 export interface IPContext {
+  asset?: { owned: boolean; excluded: boolean; label?: string; cidr?: string; suppress_classes: string[] }
+  reputation?: { status: string; findings: { tag: string; provider: string; reason: string; score?: number; cidr?: string; checked_at: string; expires_at: string; stale: boolean }[] }
   ip: string
   scope: string
   status: string
   stale: boolean
   updated_at: string
   expires_at: string
-  dns: { status: string; names: string[] }
+  associated_names?: { name: string; source: string }[]
+  dns: { source?: string; status: string; names: string[] }
   geo: { status: string; source?: string; country?: string; city?: string; continent?: string; subdivision?: string; latitude?: number; longitude?: number; accuracy_km?: number; timezone?: string; asn?: number; organization?: string }
   whois: { status: string; source?: string; handle?: string; name?: string; start?: string; end?: string; type?: string; country?: string; updated?: string }
 }
@@ -38,7 +41,7 @@ async function flush() {
         if (!value) continue
         row.value = value
         row.next = ['pending', 'refreshing', 'busy', 'unobserved'].includes(value.status)
-          ? now + 2000 : Math.max(now + 30000, Date.parse(value.expires_at) || 0)
+          ? now + 2000 : now + (value.reputation?.status === 'pending' ? 2000 : 30000)
         row.listeners.forEach((notify) => notify())
       }
     } catch {

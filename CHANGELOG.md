@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Editable CIDR ownership/exclusions and per-class alert suppression; cached Spamhaus/CINS reputation with optional AbuseIPDB and DNS RBL providers.
+- Reverse DNS now queries PTR records directly and shows local hosts mappings separately with provenance.
+
+
 ### Added
 
 - Visual traffic workspace: refreshed console, Dashboard charts, interactive asset

@@ -133,6 +133,19 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	s.writeMLMetrics(p)
+	if s.policy != nil {
+		p.Counter("synapseids_policy_excluded_packets_total", "Packets bypassed by an explicit CIDR exclusion; not firewall drops.", s.policy.ExcludedPackets.Load())
+		p.Counter("synapseids_policy_excluded_records_total", "Flow or feature records bypassed by an explicit CIDR exclusion.", s.policy.ExcludedRecords.Load())
+		p.Counter("synapseids_policy_suppressed_alerts_total", "Classifications retained with alert delivery suppressed by an owned-asset class filter.", s.policy.SuppressedAlerts.Load())
+	}
+	for _, f := range s.reputation.Status() {
+		ls := []obs.Label{{Name: "provider", Value: f.ID}}
+		p.GaugeInt("synapseids_reputation_feed_entries", "Entries held in a downloaded reputation feed.", int64(f.Entries), ls...)
+		if !f.UpdatedAt.IsZero() {
+			p.GaugeInt("synapseids_reputation_feed_updated_timestamp_seconds", "Last successful feed download.", f.UpdatedAt.Unix(), ls...)
+		}
+		p.GaugeInt("synapseids_reputation_provider_ready", "One when a reputation provider is ready.", boolToInt(f.Status == "ok" || f.Status == "cached" || f.Status == "configured"), ls...)
+	}
 	s.writeSensorMetrics(p)
 	if err := p.Err(); err != nil {
 		// The header and some body are already on the wire; nothing useful to do

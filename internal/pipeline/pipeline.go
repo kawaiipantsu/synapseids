@@ -18,6 +18,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/flow"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
@@ -41,6 +42,7 @@ type Observer interface {
 
 // Options configure a pipeline run.
 type Options struct {
+	Policy *policy.Store
 	Flow   flow.Options
 	Sensor string
 	// Observer, when non-nil, is handed every flow record and its verdict. See
@@ -154,6 +156,12 @@ func Run(
 		// deliberate denormalization — the rolling log renders a verdict without a
 		// join, and `sensor=` has to select the same flows as classifications
 		// (issue #126).
+		a, _ := netip.ParseAddr(fr.InitiatorIP)
+		b, _ := netip.ParseAddr(fr.ResponderIP)
+		if opt.Policy.Excludes(a, b) {
+			opt.Policy.ExcludedRecords.Add(1)
+			return
+		}
 		fr.Sensor = sensor
 		store.PutFlow(fr)
 		st.Flows++
@@ -187,6 +195,10 @@ func Run(
 			ResponderPort: fr.ResponderPort,
 			Result:        res,
 		}
+		cl.AlertSuppressed = opt.Policy.Suppress(fr.InitiatorIP, res.Class)
+		if cl.AlertSuppressed {
+			opt.Policy.SuppressedAlerts.Add(1)
+		}
 		store.PutClassification(cl)
 		st.Classifications++
 		bus.Publish(events.ClassificationCreated, cl)
@@ -201,7 +213,7 @@ func Run(
 		// dedup needs state the packet path must not own or lock. So the verdict is
 		// handed off with one non-blocking send and the alert store publishes from
 		// its own goroutine (PROJECT.md §22; issue #117, ADR 0027).
-		if opt.Alerts != nil {
+		if opt.Alerts != nil && !cl.AlertSuppressed {
 			opt.Alerts.Observe(&fr, &cl)
 		}
 	}
@@ -324,7 +336,11 @@ loop:
 				break loop
 			}
 			st.Packets++
-			tbl.Observe(p)
+			if opt.Policy.Excludes(p.SrcIP, p.DstIP) {
+				opt.Policy.ExcludedPackets.Add(1)
+			} else {
+				tbl.Observe(p)
+			}
 			if pacer.Due(p.TS) {
 				tbl.Tick(p.TS)
 				if opt.OnStats != nil {

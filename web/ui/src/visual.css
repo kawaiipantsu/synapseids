@@ -1118,3 +1118,28 @@ button.primary:hover:not(:disabled),
 .context-facts dd { margin:0; overflow-wrap:anywhere; }
 .context-footer { border-top:1px solid var(--edge); padding:12px 22px; }
 @media (max-width:1000px) { .context-columns { grid-template-columns:1fr; } .context-columns > div + div { border-left:0; border-top:1px solid var(--edge); padding:18px 0 0; } }
+
+/* Editable network policy and advisory evidence. */
+.policy-rule{padding:18px 0;border-bottom:1px solid var(--edge)}
+.policy-fields{display:grid;grid-template-columns:1fr 1.2fr 1fr auto;gap:14px;align-items:end}
+.policy-fields label{display:grid;gap:7px;font-size:12px;color:var(--dim)}
+.policy-fields input,.policy-fields select{width:100%;min-width:0}
+.policy-classes{display:flex;flex-wrap:wrap;gap:14px;border:0;padding:15px 0 0;margin:0}
+.policy-classes legend{padding:12px 0 0;font-size:12px;color:var(--dim)}
+.policy-classes label{display:flex;align-items:center;gap:7px;font-size:11px}
+.policy-providers{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.policy-provider{display:flex;align-items:flex-start;gap:12px;padding:18px;border:1px solid var(--edge);border-radius:10px}
+.policy-provider p{margin:7px 0 0;font-size:12px;line-height:1.6}
+.policy-actions{display:flex;flex-wrap:wrap;gap:15px;align-items:center;padding:18px 0}
+.policy-caution{color:#f4c678;font-size:12px}.policy-success{color:#50d9bc;padding:12px;border:1px solid #216e60;border-radius:8px}
+.asset-badge,.reputation-badge{display:inline-block;font:9px/1.6 var(--font-mono,monospace);letter-spacing:.06em;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle}
+.asset-badge{color:#64ddc2;border:1px solid #236c5c;background:#12372f}.reputation-badge{color:#ffb8a7;border:1px solid #925146;background:#421f22}
+.policy-context{padding:5px 0 18px;border-bottom:1px solid var(--edge);margin-bottom:18px}
+@media(max-width:800px){.policy-fields,.policy-providers{grid-template-columns:1fr}.policy-classes{gap:12px}.policy-actions>*{max-width:100%}}
+
+.policy-page .viz-panel{padding:0 22px 20px;margin-bottom:20px}
+.policy-page .panel-heading{padding-left:0;padding-right:0}
+.policy-page table{border-collapse:collapse;width:100%;font-size:12px;margin-top:18px;text-align:left}
+.policy-page th,.policy-page td{padding:10px 12px;border-bottom:1px solid var(--edge)}
+.policy-page th{color:var(--dim);font-size:11px;font-weight:500}
+.policy-page .table-wrap{overflow-x:auto}

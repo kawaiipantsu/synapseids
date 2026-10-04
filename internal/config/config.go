@@ -66,6 +66,8 @@ type Config struct {
 	Live       Live       `json:"live"`
 	Retention  Retention  `json:"retention"`
 	Enrichment Enrichment `json:"enrichment"`
+	PolicyFile string     `json:"policy_file"`
+	Reputation Reputation `json:"reputation"`
 }
 
 // Auth is the API access-control block (issue #58, PROJECT.md §21: "authenticate
@@ -353,6 +355,7 @@ func Default() Config {
 		Training:   Training{Directory: "./data/training"},
 		Review:     Review{Directory: "./data/review"},
 		Enrichment: DefaultEnrichment(),
+		PolicyFile: "./data/policy.json",
 		Alerts: Alerts{
 			Enabled:               true,
 			MinConfidence:         0.70,
@@ -536,6 +539,9 @@ func (c Config) validate() error {
 	}
 	if err := ValidateLogging(c.Logging); err != nil {
 		return fmt.Errorf("config: logging: %w", err)
+	}
+	if strings.TrimSpace(c.PolicyFile) == "" {
+		return fmt.Errorf("policy_file must not be empty")
 	}
 	if err := ValidateEnrichment(c.Enrichment); err != nil {
 		return fmt.Errorf("config: enrichment: %w", err)
@@ -884,4 +890,10 @@ func hostIsLoopback(hostport string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// Reputation names local secret files for optional authenticated providers.
+type Reputation struct {
+	AbuseIPDBKeyFile string `json:"abuseipdb_key_file"`
+	DNSBLFile        string `json:"dnsbl_file"`
 }

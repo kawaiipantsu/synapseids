@@ -11,11 +11,14 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/kawaiipantsu/synapseids/internal/dnswire"
 )
 
 // Options controls provider access, lookup timeouts and bounded cache retention.
@@ -29,6 +32,7 @@ type Options struct {
 
 // DNS is the status and sanitized PTR names for one address.
 type DNS struct {
+	Source string   `json:"source,omitempty"`
 	Status string   `json:"status"`
 	Names  []string `json:"names"`
 }
@@ -62,17 +66,24 @@ type Registration struct {
 	Updated string `json:"updated,omitempty"`
 }
 
+// AssociatedName describes a non-PTR association and its provenance.
+type AssociatedName struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
 // Record is a cached composite lookup with explicit freshness and provider states.
 type Record struct {
-	IP        string       `json:"ip"`
-	Scope     string       `json:"scope"`
-	Status    string       `json:"status"`
-	UpdatedAt time.Time    `json:"updated_at"`
-	ExpiresAt time.Time    `json:"expires_at"`
-	Stale     bool         `json:"stale"`
-	DNS       DNS          `json:"dns"`
-	Geo       Geo          `json:"geo"`
-	WHOIS     Registration `json:"whois"`
+	IP              string           `json:"ip"`
+	Scope           string           `json:"scope"`
+	Status          string           `json:"status"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	ExpiresAt       time.Time        `json:"expires_at"`
+	Stale           bool             `json:"stale"`
+	DNS             DNS              `json:"dns"`
+	Geo             Geo              `json:"geo"`
+	WHOIS           Registration     `json:"whois"`
+	AssociatedNames []AssociatedName `json:"associated_names"`
 }
 
 type entry struct {
@@ -84,6 +95,7 @@ type entry struct {
 // Service manages a bounded cache and asynchronous provider workers.
 type Service struct {
 	opts       Options
+	localNames map[netip.Addr][]AssociatedName
 	mu         sync.Mutex
 	cache      map[netip.Addr]*entry
 	backoff    map[string]time.Time
@@ -114,14 +126,10 @@ func New(opts Options) *Service {
 		opts.GeoURL = "https://api.country.is"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	resolver := net.DefaultResolver
-	if opts.Resolver != "" {
-		resolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, opts.Resolver)
-		}}
-	}
 	s := &Service{opts: opts, cache: make(map[netip.Addr]*entry), backoff: make(map[string]time.Time), queue: make(chan netip.Addr, 128),
-		ctx: ctx, cancel: cancel, lookupAddr: resolver.LookupAddr, now: time.Now,
+		ctx: ctx, cancel: cancel, localNames: readLocalNames(), lookupAddr: func(ctx context.Context, address string) ([]string, error) {
+			return dnswire.Reverse(ctx, address, opts.Resolver)
+		}, now: time.Now,
 		client: &http.Client{Timeout: opts.Timeout, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			// RDAP bootstrap redirects only to the five regional registries. Geo
 			// redirects are refused. Remote JSON can never select a request URL.
@@ -181,7 +189,12 @@ func empty(ip netip.Addr, status string) Record {
 
 // Get returns immediately. Concurrent requests for one address share one job.
 // A full queue returns busy without allocating another goroutine or cache entry.
-func (s *Service) Get(ip netip.Addr) Record {
+func (s *Service) Get(ip netip.Addr) (result Record) {
+	defer func() {
+		if s != nil {
+			result.AssociatedNames = append([]AssociatedName{}, s.localNames[ip.Unmap()]...)
+		}
+	}()
 	ip = ip.Unmap()
 	if s == nil || !s.opts.Enabled || s.ctx.Err() != nil {
 		return empty(ip, "disabled")
@@ -259,6 +272,7 @@ func (s *Service) worker(ticks <-chan time.Time) {
 
 func (s *Service) lookup(ip netip.Addr) Record {
 	r := empty(ip, "ready")
+	r.DNS.Source = "DNS PTR response"
 	r.DNS.Status = "disabled"
 	r.Geo.Status = "disabled"
 	r.WHOIS.Status = "disabled"
@@ -474,4 +488,37 @@ func (s *Service) registration(ip netip.Addr) Registration {
 		}
 	}
 	return r
+}
+
+// Read only local mappings once at startup, independently of DNS lookup results.
+func readLocalNames() map[netip.Addr][]AssociatedName {
+	out := map[netip.Addr][]AssociatedName{}
+	f, e := os.Open("/etc/hosts")
+	if e != nil {
+		return out
+	}
+	defer func() { _ = f.Close() }()
+	b, e := io.ReadAll(io.LimitReader(f, 1<<20))
+	if e != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ip, e := netip.ParseAddr(fields[0])
+		if e != nil {
+			continue
+		}
+		ip = ip.Unmap()
+		for _, name := range fields[1:] {
+			if len(out[ip]) >= 16 {
+				break
+			}
+			out[ip] = append(out[ip], AssociatedName{Name: clean(name), Source: "local hosts file"})
+		}
+	}
+	return out
 }

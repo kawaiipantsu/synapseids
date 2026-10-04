@@ -69,15 +69,16 @@ type FlowRecord struct {
 // Classification is a stored ensemble verdict for a flow, denormalized with just
 // enough of the tuple to render the rolling log without a join.
 type Classification struct {
-	FlowID        uint64           `json:"flow_id"`
-	TS            time.Time        `json:"ts"`
-	Sensor        string           `json:"sensor"`
-	Proto         string           `json:"proto"`
-	InitiatorIP   string           `json:"initiator_ip"`
-	InitiatorPort uint16           `json:"initiator_port"`
-	ResponderIP   string           `json:"responder_ip"`
-	ResponderPort uint16           `json:"responder_port"`
-	Result        inference.Result `json:"result"`
+	AlertSuppressed bool             `json:"alert_suppressed,omitempty"`
+	FlowID          uint64           `json:"flow_id"`
+	TS              time.Time        `json:"ts"`
+	Sensor          string           `json:"sensor"`
+	Proto           string           `json:"proto"`
+	InitiatorIP     string           `json:"initiator_ip"`
+	InitiatorPort   uint16           `json:"initiator_port"`
+	ResponderIP     string           `json:"responder_ip"`
+	ResponderPort   uint16           `json:"responder_port"`
+	Result          inference.Result `json:"result"`
 }
 
 // Stats is a persistence-layer counter snapshot.

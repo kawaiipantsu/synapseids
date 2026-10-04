@@ -19,6 +19,7 @@ import { ReviewQueue } from './Review'
 import { Sensors } from './Sensors'
 import { Timeline } from './Timeline'
 import { Training } from './Training'
+import { Policy } from './Policy'
 
 export type NavGroup = 'LIVE' | 'CAPTURE' | 'ML' | 'SYSTEM'
 
@@ -170,6 +171,7 @@ export const ROUTES: RouteDef[] = [
     ),
   },
 
+  { group: 'SYSTEM', path: '/policy', label: 'Network policy', tag: 'live', live: true, element: <Policy /> },
   // ---- SYSTEM ------------------------------------------------------
   // System Performance is §19.16 work tracked by #55 (structured logging +
   // /metrics), not by the Advanced-ML epic it used to cite.

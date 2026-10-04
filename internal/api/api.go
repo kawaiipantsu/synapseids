@@ -29,7 +29,9 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/reputation"
 	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
@@ -123,6 +125,8 @@ type Server struct {
 	// every counter it can still reach and empty latency histograms.
 	metrics    *obs.Metrics
 	enrichment *enrichment.Service
+	policy     *policy.Store
+	reputation *reputation.Service
 
 	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
 	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
@@ -202,6 +206,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/detections/{id}", s.handleDetection)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
 	mux.HandleFunc("GET /api/v1/enrichment", s.handleEnrichment)
+	mux.HandleFunc("GET /api/v1/policy", s.handlePolicy)
+	mux.HandleFunc("PUT /api/v1/policy", s.handlePolicyWrite)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/similar", s.handleHostSimilar)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)

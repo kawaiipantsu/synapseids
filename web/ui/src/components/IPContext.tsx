@@ -11,7 +11,7 @@ export function IPLabel({ ip, port }: { ip: string; port?: number }) {
   const country = info?.geo.country
   const address = port === undefined ? ip : `${ip.includes(':') ? `[${ip}]` : ip}:${port}`
   return <span className="ip-label" title={[name, countryName(country), info?.geo.organization, info?.stale ? 'Cached context is being refreshed' : ''].filter(Boolean).join(' · ')}>
-    <span className="ip-address"><CountryFlag code={country} />{address}</span>
+    <span className="ip-address"><CountryFlag code={country} />{address}{info?.asset?.owned && <span className="asset-badge" title={info.asset.label}>OWNED</span>}{info?.asset?.excluded && <span className="asset-badge">EXCLUDED</span>}{[...new Set(info?.reputation?.findings?.map(f => f.tag) ?? [])].map(tag => <span className="reputation-badge" key={tag} title={info?.reputation?.findings.filter(f => f.tag === tag).map(f => f.provider + ": " + f.reason).join(" · ")}>{tag}</span>)}</span>
     {name && <small className="ip-rdns">{name}</small>}
   </span>
 }
@@ -27,17 +27,24 @@ export function IPNodeLabel({ ip, y = 44 }: { ip: string; y?: number }) {
   </text></g>
 }
 
-const statusLabel = (status?: string) => ({ ok: 'Available', pending: 'Looking up…', refreshing: 'Refreshing cached data…', busy: 'Lookup queue busy; retrying', not_found: 'No record found', not_applicable: 'Private or special-use address', disabled: 'Disabled in configuration', unobserved: 'Waiting for an observed host', error: 'Lookup unavailable; cached retry scheduled', rate_limited: 'Provider rate limit; cached retry scheduled' }[status ?? ''] ?? 'Loading context…')
+const statusLabel = (status?: string) => ({ excluded: 'Excluded by network policy', ok: 'Available', pending: 'Looking up…', refreshing: 'Refreshing cached data…', busy: 'Lookup queue busy; retrying', not_found: 'No record found', not_applicable: 'Private or special-use address', disabled: 'Disabled in configuration', unobserved: 'Waiting for an observed host', error: 'Lookup unavailable; cached retry scheduled', rate_limited: 'Provider rate limit; cached retry scheduled' }[status ?? ''] ?? 'Loading context…')
 const date = (value?: string) => value && !value.startsWith('0001-') ? fmtDateTime(value) : '—'
 
 export function HostContext({ ip }: { ip: string }) {
   const info = useIPContext(ip)
   return <section className="viz-panel host-context" aria-label="Host identity and location">
     <div className="panel-heading"><div><div className="eyebrow">IP CONTEXT</div><h2>Identity & location</h2></div><span className="context-cache">{info?.stale ? 'Refreshing cached context' : info?.status === 'ready' ? 'Cached lookup' : statusLabel(info?.status)}</span></div>
+    <div className="policy-context">
+      {info?.asset?.owned && <p><strong className="asset-badge">OWNED</strong> {info.asset.label} · {info.asset.cidr} · Suppressed alerts: {info.asset.suppress_classes?.join(', ') || 'none'} (initiated traffic). <a href="#/policy">Manage policy</a></p>}
+      {info?.asset?.excluded && <p>Excluded from new IDS inspection by {info.asset.cidr}. <a href="#/policy">Manage policy</a></p>}
+      <h3>Associated names</h3>{info?.associated_names?.length ? info.associated_names.map((n, i) => <p key={i}><span className="mono">{n.name}</span> <span className="dim">· {n.source}</span></p>) : <p className="dim">No associated names recorded.</p>}<p className="foot">Associations can indicate names hosted by or mapped to an address; they are not reverse DNS or proof of ownership.</p>
+      <h3>Reputation</h3><p className="dim">{info?.reputation?.status?.replace(/_/g, ' ') ?? 'Loading'} · advisory evidence</p>
+      {info?.reputation?.findings?.map((f, i) => <p key={i}><span className="reputation-badge">{f.tag}</span> <strong>{f.provider}</strong> · {f.reason} {f.cidr && ('· ' + f.cidr)} · checked {date(f.checked_at)} · expires {date(f.expires_at)} {f.stale && '· stale cache'}</p>)}
+    </div>
     <div className="context-columns">
-      <div><h3>Reverse DNS</h3><p className="context-status">{statusLabel(info?.dns.status)}</p>
+      <div><h3>Reverse DNS · PTR</h3><p className="context-status">{statusLabel(info?.dns.status)}</p>
         {info?.dns.names?.map((name) => <div className="mono context-name" key={name}>{name}</div>)}
-        <p className="foot">PTR records from the configured DNS resolver. A name is advisory and does not establish ownership.</p>
+        <p className="foot">PTR responses queried directly from the configured DNS resolver. Local mappings and observed domain names are listed separately.</p>
       </div>
       <div><h3><CountryFlag code={info?.geo.country} /> Geolocation</h3><p className="context-status">{statusLabel(info?.geo.status)}</p>
         {info?.geo.status === 'ok' && <dl className="context-facts">

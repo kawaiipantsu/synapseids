@@ -25,6 +25,7 @@ export interface Result {
 
 /** storage.Classification — a denormalized rolling-log row. */
 export interface Classification {
+  alert_suppressed?: boolean
   flow_id: number
   ts: string
   sensor: string

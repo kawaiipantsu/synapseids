@@ -417,7 +417,7 @@ export function FlowLog() {
                   <td className="dim">{c.proto}</td>
                   <td>
                     <span className={`cls ${r.class}`} style={{ background: classColor(r.class) }}>
-                      {r.class.toUpperCase()}
+                      {r.class.toUpperCase()}{c.alert_suppressed && <span title="Alert suppressed by owned-asset policy; original classification retained"> · muted</span>}
                     </span>
                   </td>
                   <td className="mono">
