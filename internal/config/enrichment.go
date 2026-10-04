@@ -23,11 +23,13 @@ type Enrichment struct {
 	MaxEntries  int      `json:"max_entries"`
 }
 
+// DefaultEnrichment returns bounded provider defaults with enrichment disabled.
 func DefaultEnrichment() Enrichment {
 	return Enrichment{ReverseDNS: true, Geo: true, WHOIS: true, GeoURL: "https://api.country.is",
 		CacheTTL: Duration(6 * time.Hour), NegativeTTL: Duration(15 * time.Minute), Timeout: Duration(4 * time.Second), MaxEntries: 4096}
 }
 
+// ValidateEnrichment checks provider URLs, resolver addresses and resource bounds.
 func ValidateEnrichment(e Enrichment) error {
 	if !e.Enabled {
 		return nil

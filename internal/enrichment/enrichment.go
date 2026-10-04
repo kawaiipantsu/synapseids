@@ -18,6 +18,7 @@ import (
 	"unicode"
 )
 
+// Options controls provider access, lookup timeouts and bounded cache retention.
 type Options struct {
 	Enabled, ReverseDNS, Geo, WHOIS bool
 	GeoURL                          string
@@ -26,10 +27,13 @@ type Options struct {
 	MaxEntries                      int
 }
 
+// DNS is the status and sanitized PTR names for one address.
 type DNS struct {
 	Status string   `json:"status"`
 	Names  []string `json:"names"`
 }
+
+// Geo contains approximate geography and network context supplied by a provider.
 type Geo struct {
 	Status       string   `json:"status"`
 	Source       string   `json:"source,omitempty"`
@@ -44,6 +48,8 @@ type Geo struct {
 	ASN          int      `json:"asn,omitempty"`
 	Organization string   `json:"organization,omitempty"`
 }
+
+// Registration contains network-allocation metadata, excluding contact records.
 type Registration struct {
 	Status  string `json:"status"`
 	Source  string `json:"source,omitempty"`
@@ -55,6 +61,8 @@ type Registration struct {
 	Country string `json:"country,omitempty"`
 	Updated string `json:"updated,omitempty"`
 }
+
+// Record is a cached composite lookup with explicit freshness and provider states.
 type Record struct {
 	IP        string       `json:"ip"`
 	Scope     string       `json:"scope"`
@@ -72,6 +80,8 @@ type entry struct {
 	pending bool
 	used    time.Time
 }
+
+// Service manages a bounded cache and asynchronous provider workers.
 type Service struct {
 	opts       Options
 	mu         sync.Mutex
@@ -86,6 +96,7 @@ type Service struct {
 	now        func() time.Time
 }
 
+// New creates a service; disabled services do not start workers or make requests.
 func New(opts Options) *Service {
 	if opts.TTL <= 0 {
 		opts.TTL = 6 * time.Hour
@@ -140,6 +151,7 @@ func New(opts Options) *Service {
 	return s
 }
 
+// Close cancels pending work, joins workers and closes idle HTTP connections.
 func (s *Service) Close() { s.cancel(); s.wg.Wait(); s.client.CloseIdleConnections() }
 
 // Public excludes private, link-local, documentation, benchmarking, translation
@@ -347,7 +359,7 @@ func (s *Service) getJSON(raw string, dst any) (string, string) {
 	if err != nil {
 		return "error", ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 404 {
 		return "not_found", ""
 	}

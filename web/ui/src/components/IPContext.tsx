@@ -20,7 +20,7 @@ export function IPLabel({ ip, port }: { ip: string; port?: number }) {
 export function IPNodeLabel({ ip, y = 44 }: { ip: string; y?: number }) {
   const info = useIPContext(ip)
   const name = info?.dns.names?.[0]
-  return <g>{info?.geo.country && /^[A-Z]{2}$/.test(info.geo.country) && <image x="18" y="-28" width="18" height="14" href={'/flags/' + info.geo.country.toLowerCase() + '.svg'} aria-label={countryName(info.geo.country)} />}
+  return <g>{info?.geo.country && /^[A-Z]{2}$/.test(info.geo.country) && <image x="18" y="14" width="18" height="14" href={'/flags/' + info.geo.country.toLowerCase() + '.svg'} aria-label={countryName(info.geo.country)} />}
   <text y={y} textAnchor="middle" fill="var(--ink)" fontSize="11">
     <title>{[ip, name, countryName(info?.geo.country)].filter(Boolean).join(' · ')}</title>
     {name ? (name.length > 24 ? name.slice(0, 22) + '…' : name) : ip}
