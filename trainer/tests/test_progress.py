@@ -157,3 +157,32 @@ def test_progress_failure_after_a_good_start_is_swallowed(daemon):
     r.done({"accuracy": 1.0})
     # Only the register call reached the stub.
     assert rec.paths() == ["/api/v1/training"]
+
+
+def test_reporting_token_is_sent_only_to_daemon_origin(daemon, monkeypatch):
+    import io
+    url, _ = daemon
+    reporter = ProgressReporter(url, token="synthetic-test-token")
+    seen = []
+
+    def open_request(request, timeout):
+        seen.append(request)
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(reporter._opener, "open", open_request)
+    reporter._post(url + "/api/v1/training", {}, expect_json=True)
+    assert seen[0].get_header("Authorization") == "Bearer synthetic-test-token"
+    assert reporter._post("https://example.invalid/progress", {}, expect_json=True) is None
+    assert len(seen) == 1
+
+
+def test_token_can_come_from_worker_environment(daemon, monkeypatch):
+    url, _ = daemon
+    monkeypatch.setenv("SYNAPSE_API_TOKEN", "synthetic-env-token")
+    assert ProgressReporter(url)._token == "synthetic-env-token"
+    assert ProgressReporter(url, token="")._token == ""
+
+
+def test_reporter_refuses_redirects():
+    from synapse_trainer.progress import _NoRedirect
+    assert _NoRedirect().redirect_request(None, None, 302, "", {}, "https://example.invalid") is None

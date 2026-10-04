@@ -134,6 +134,8 @@ func runPCAPOverIPCtx(ctx context.Context, args []string, ready func(net.Addr)) 
 	switch opts.mode {
 	case pcapoverip.ModeRaw:
 		logInfof("pcap-over-ip: mode raw — every captured frame is streamed to the daemon (SYNPOIP v1 compatible)")
+	case pcapoverip.ModeRichFlow:
+		logInfof("pcap-over-ip: flow-rich — ordered packet timing, protocol metadata and name evidence; requires a compatible collector")
 	case pcapoverip.ModeFlow:
 		logInfof("pcap-over-ip: mode flow — flows are aggregated here and shipped as %s records; the daemon does not rebuild them (needs SYNPOIP v2)",
 			pcapoverip.FlowRecordSchema)
@@ -170,7 +172,7 @@ func parseSensorFlags(args []string) (*sensorOpts, int) {
 	fs.StringVar(&o.sensorID, "sensor-id", "", "sensor identifier, shown in the daemon's capture-sources view")
 	fs.StringVar(&o.location, "location", "", "sensor location label, shown in the daemon's capture-sources view")
 
-	fs.StringVar(&modeStr, "mode", "", "what to send: raw (every frame), flow (locally aggregated flow records) "+
+	fs.StringVar(&modeStr, "mode", "", "what to send: raw (every frame), flow-rich (timing and protocol metadata), flow (legacy records) "+
 		"or feature (only the 48 computed features — no packet content leaves this host); default raw, or $SYNAPSE_SENSOR_MODE")
 	fs.DurationVar(&o.flowIdle, "flow-idle-timeout", 30*time.Second, "--mode flow/feature: close a flow after this much inactivity")
 	fs.DurationVar(&o.flowMaxLife, "flow-max-lifetime", 5*time.Minute, "--mode flow/feature: close a flow after this long")

@@ -24,22 +24,24 @@ import (
 // FlowRecord is a stored flow: its identity and accumulators plus the raw
 // feature vector that was extracted from it.
 type FlowRecord struct {
-	ID            uint64          `json:"id"`
-	Proto         string          `json:"proto"`
-	InitiatorIP   string          `json:"initiator_ip"`
-	InitiatorPort uint16          `json:"initiator_port"`
-	ResponderIP   string          `json:"responder_ip"`
-	ResponderPort uint16          `json:"responder_port"`
-	FirstSeen     time.Time       `json:"first_seen"`
-	LastSeen      time.Time       `json:"last_seen"`
-	DurationSec   float64         `json:"duration_sec"`
-	FwdPackets    uint64          `json:"fwd_packets"`
-	BwdPackets    uint64          `json:"bwd_packets"`
-	FwdBytes      uint64          `json:"fwd_bytes"`
-	BwdBytes      uint64          `json:"bwd_bytes"`
-	CloseReason   string          `json:"close_reason"`
-	SnapshotIndex int             `json:"snapshot_index"`
-	Features      features.Vector `json:"features"`
+	Behavior      *features.BehaviorVector `json:"behavior,omitempty"`
+	Telemetry     *flow.Telemetry          `json:"telemetry,omitempty"`
+	ID            uint64                   `json:"id"`
+	Proto         string                   `json:"proto"`
+	InitiatorIP   string                   `json:"initiator_ip"`
+	InitiatorPort uint16                   `json:"initiator_port"`
+	ResponderIP   string                   `json:"responder_ip"`
+	ResponderPort uint16                   `json:"responder_port"`
+	FirstSeen     time.Time                `json:"first_seen"`
+	LastSeen      time.Time                `json:"last_seen"`
+	DurationSec   float64                  `json:"duration_sec"`
+	FwdPackets    uint64                   `json:"fwd_packets"`
+	BwdPackets    uint64                   `json:"bwd_packets"`
+	FwdBytes      uint64                   `json:"fwd_bytes"`
+	BwdBytes      uint64                   `json:"bwd_bytes"`
+	CloseReason   string                   `json:"close_reason"`
+	SnapshotIndex int                      `json:"snapshot_index"`
+	Features      features.Vector          `json:"features"`
 
 	// Sensor is the observation point this flow was built at: the id of the
 	// sensor whose traffic produced it, or the daemon's own configured sensor
@@ -51,7 +53,8 @@ type FlowRecord struct {
 	Sensor string `json:"sensor,omitempty"`
 	// SensorMode records how this row reached the daemon: "" for a record built
 	// locally from packets (the `raw` path, and every local capture), "flow" for a
-	// remotely-aggregated flow record, "feature" for a record whose 48 values were
+	// remotely-aggregated flow record, "flow-rich" when timing/protocol telemetry
+	// accompanies it, "feature" for a record whose 48 values were
 	// computed on the sensor and whose packet content never crossed the wire
 	// (issue #45, PROJECT.md §5.3).
 	//
@@ -69,15 +72,16 @@ type FlowRecord struct {
 // Classification is a stored ensemble verdict for a flow, denormalized with just
 // enough of the tuple to render the rolling log without a join.
 type Classification struct {
-	FlowID        uint64           `json:"flow_id"`
-	TS            time.Time        `json:"ts"`
-	Sensor        string           `json:"sensor"`
-	Proto         string           `json:"proto"`
-	InitiatorIP   string           `json:"initiator_ip"`
-	InitiatorPort uint16           `json:"initiator_port"`
-	ResponderIP   string           `json:"responder_ip"`
-	ResponderPort uint16           `json:"responder_port"`
-	Result        inference.Result `json:"result"`
+	AlertSuppressed bool             `json:"alert_suppressed,omitempty"`
+	FlowID          uint64           `json:"flow_id"`
+	TS              time.Time        `json:"ts"`
+	Sensor          string           `json:"sensor"`
+	Proto           string           `json:"proto"`
+	InitiatorIP     string           `json:"initiator_ip"`
+	InitiatorPort   uint16           `json:"initiator_port"`
+	ResponderIP     string           `json:"responder_ip"`
+	ResponderPort   uint16           `json:"responder_port"`
+	Result          inference.Result `json:"result"`
 }
 
 // Stats is a persistence-layer counter snapshot.
@@ -135,7 +139,9 @@ type Purger interface {
 // a record the daemon built from its own capture; the pipeline resolves that to
 // the daemon's configured sensor name before storing.
 func FlowRecordFrom(r flow.Record, fv features.Vector) FlowRecord {
+	behavior := features.Behavior(r, fv)
 	return FlowRecord{
+		Behavior: &behavior, Telemetry: r.Telemetry,
 		ID:            r.ID,
 		Sensor:        r.Sensor(),
 		Proto:         r.Proto.String(),

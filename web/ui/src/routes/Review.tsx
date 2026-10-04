@@ -1,3 +1,4 @@
+import { IPLabel } from '../components/IPContext'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getReviewQueue, getReviews, putReview } from '../api/client'
@@ -11,7 +12,7 @@ import type {
 } from '../api/types'
 import { REVIEW_STATES } from '../api/types'
 import { CLASS_NAMES, classColor } from '../lib/classes'
-import { endpoint, fmtAgo, fmtClock, fmtInt, fmtPct } from '../lib/format'
+import { fmtAgo, fmtClock, fmtInt, fmtPct } from '../lib/format'
 import { usePersistedState, writePersisted } from '../lib/persist'
 import { DATASETS_DRAFT_KEY, EMPTY_DRAFT } from './Datasets'
 
@@ -464,8 +465,8 @@ export function ReviewQueue() {
                         <div className="dim">{it.sensor || '—'}</div>
                       </td>
                       <td className="mono rv-tuple">
-                        {endpoint(it.initiator_ip, it.initiator_port)}
-                        <div className="dim">→ {endpoint(it.responder_ip, it.responder_port)}</div>
+                        <IPLabel ip={it.initiator_ip} port={it.initiator_port} />
+                        <div className="dim">→ <IPLabel ip={it.responder_ip} port={it.responder_port} /></div>
                         <div className="dim">{it.proto}</div>
                       </td>
                       <td>

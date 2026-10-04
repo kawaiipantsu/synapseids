@@ -101,7 +101,7 @@
         <style>selectpicker</style>
         <help>
             How much of the analysis runs here on the firewall for this interface, and therefore how much
-            crosses the link (--mode). "Raw packets" streams every frame. "Flow records" aggregates flows here
+            crosses the link (--mode). "Raw packets" streams every frame. "Rich flow records" adds packet timing sketches and bounded DNS / TLS / HTTP name hints to aggregated flows. "Flow records" aggregates flows here
             and sends one record per flow — around 1.5% of the raw bandwidth on ordinary traffic. "Feature
             vectors only" also computes the 48 features here and sends nothing else, so &lt;b&gt;no packet
             content from this segment ever leaves the firewall&lt;/b&gt; — around 1.9% of the raw bandwidth.

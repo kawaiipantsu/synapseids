@@ -1,3 +1,4 @@
+import { IPLabel } from '../components/IPContext'
 import { useEffect, useState } from 'react'
 
 import { getDetections, getModels, getTimeline } from '../api/client'
@@ -5,6 +6,8 @@ import { useStream, type Ingest } from '../api/stream'
 import type { Detection, ModelList, SensorTopology, TimelineSeries } from '../api/types'
 import { IssueLink, IssueLinks } from '../components/IssueLink'
 import { Sparkline } from '../components/Sparkline'
+import { TrafficAnalytics } from '../components/TrafficAnalytics'
+import { TrafficNetwork } from '../components/TrafficNetwork'
 import { classColor, severityColor } from '../lib/classes'
 import { endpoint, fmtAgo, fmtBytes, fmtInt, fmtNum, fmtPct } from '../lib/format'
 import { Link } from '../lib/hashRouter'
@@ -339,7 +342,7 @@ function RecentDetectionsCard() {
                 {d.class.toUpperCase()}
               </span>
               <span className="mono pair" title={`${d.src_ip} → ${endpoint(d.dst_ip, d.dst_port)}`}>
-                {d.src_ip} → {endpoint(d.dst_ip, d.dst_port)}
+                <IPLabel ip={d.src_ip} /> → <IPLabel ip={d.dst_ip} port={d.dst_port} />
               </span>
               <span className="dim meta">
                 {d.count > 1 ? `×${fmtInt(d.count)} · ` : ''}
@@ -432,14 +435,12 @@ export function Dashboard() {
 
   return (
     <div>
-      <div className="page-h">
-        <h1>Dashboard</h1>
-        <span className="sub">
-          live counters from <code>/api/v1/status</code>, <code>/api/v1/captures</code>,{' '}
-          <code>/api/v1/sensors/topology</code> and <code>/api/v1/models</code>, plus client-side
-          aggregation of the classification stream
-        </span>
+      <div className="page-h dashboard-heading">
+        <div><div className="eyebrow">OPERATIONS / OVERVIEW</div><h1>Your network, in focus.</h1><p className="sub">Traffic, connected assets, and the decisions behind every detection.</p></div>
+        <div className="heading-actions"><Link className="button-link" to="/inference">Live inference ↗</Link><Link className="primary-link" to="/training">Train a model</Link></div>
       </div>
+      <TrafficAnalytics><TrafficNetwork compact /></TrafficAnalytics>
+      <div className="section-heading"><h2>Operational detail</h2><span>Collection, classification, and sensor health</span></div>
 
       <div className="cards">
         <div className="card">
@@ -583,13 +584,11 @@ export function Dashboard() {
 
         <AnomalyRateCard />
 
-        {/* Still genuinely unbuilt. Cites an open issue, and shows no number —
-            PROJECT.md §16 makes the labelled gap the correct render. */}
-        <Gap
-          title="Inference latency p50/p95/p99"
-          issues={[55]}
-          note="needs the /metrics + latency-histogram work (§19.16)"
-        />
+        <div className="card">
+          <h3>Inference latency · p50 / p95 / p99</h3>
+          <div className="big">{status.raw?.inference?.latency_p95_ms == null ? '—' : `${fmtNum(status.raw.inference.latency_p95_ms, 2)} ms`}</div>
+          <div className="foot">{status.raw?.inference ? `${fmtNum(status.raw.inference.latency_p50_ms ?? 0, 2)} / ${fmtNum(status.raw.inference.latency_p95_ms ?? 0, 2)} / ${fmtNum(status.raw.inference.latency_p99_ms ?? 0, 2)} ms · ${fmtInt(status.raw.inference.failures ?? 0)} failures` : 'Inference telemetry unavailable'}</div>
+        </div>
       </div>
     </div>
   )

@@ -1,3 +1,4 @@
+import { IPLabel } from '../components/IPContext'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getHosts, hostReportURL } from '../api/client'
 import type { HostProfile } from '../api/types'
@@ -210,7 +211,7 @@ export function Hosts() {
                 onClick={() => navigateWith('/investigate', { host: h.ip })}
                 style={{ cursor: 'pointer' }}
               >
-                <td className="mono">{h.ip}</td>
+                <td className="mono"><IPLabel ip={h.ip} /></td>
                 <td className="dim">{fmtAgo(h.first_seen)}</td>
                 <td className="dim">{fmtAgo(h.last_seen)}</td>
                 <td className="num">{fmtInt(h.flows)}</td>

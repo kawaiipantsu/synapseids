@@ -27,6 +27,7 @@ package api
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/model"
+	"github.com/kawaiipantsu/synapseids/internal/nn"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
@@ -100,12 +102,15 @@ type modelInput struct {
 
 // explainModel is one model's account of one flow.
 type explainModel struct {
-	ModelID string           `json:"model_id"`
-	Role    inference.Role   `json:"role"`
-	Class   string           `json:"class"`
-	ClassID int              `json:"class_id"`
-	Score   float64          `json:"score"`
-	Scores  inference.Scores `json:"scores"`
+	Detail    *inference.DetailOutput `json:"detail,omitempty"`
+	Trace     *nn.Trace               `json:"trace,omitempty"`
+	TraceNote string                  `json:"trace_note,omitempty"`
+	ModelID   string                  `json:"model_id"`
+	Role      inference.Role          `json:"role"`
+	Class     string                  `json:"class"`
+	ClassID   int                     `json:"class_id"`
+	Score     float64                 `json:"score"`
+	Scores    inference.Scores        `json:"scores"`
 
 	// Loaded reports whether the model that produced this verdict is still in
 	// the live runtime. When false its inputs and rationale cannot be
@@ -199,9 +204,13 @@ func (s *Server) handleFlowExplain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	live := s.liveModels()
-	for _, mo := range cl.Result.Models {
+	outputs := append([]inference.ModelOutput{}, cl.Result.Models...)
+	if a := cl.Result.Application; a != nil {
+		outputs = append(outputs, inference.ModelOutput{ModelID: a.ModelID, Role: inference.RoleApplication, Class: a.Class, ClassID: a.ClassID, Score: a.Score, Detail: a})
+	}
+	for _, mo := range outputs {
 		em := explainModel{
-			ModelID: mo.ModelID, Role: mo.Role,
+			ModelID: mo.ModelID, Role: mo.Role, Detail: mo.Detail,
 			Class: mo.Class, ClassID: mo.ClassID, Score: mo.Score, Scores: mo.Scores,
 		}
 		c, loaded := live[mo.ModelID]
@@ -213,7 +222,55 @@ func (s *Server) handleFlowExplain(w http.ResponseWriter, r *http.Request) {
 			em.Explanation = inference.UnavailableExplanation(mo.ModelID, mo.Role, why)
 		} else {
 			em.Input = s.modelInputFor(c, rec.Features)
+			if bm, ok := c.(*inference.BehaviorModel); ok && rec.Behavior != nil {
+				values := bm.InputValues(*rec.Behavior)
+				input := modelInput{Kind: inputNormalized, Note: "Recorded temporal inputs transformed by this model’s fitted normalizer."}
+				for i, f := range schema.BehaviorV1().Features {
+					input.Features = append(input.Features, normFeature{Index: i, Name: f.Name, Unit: f.Unit, Raw: rec.Behavior.Values[i], Normalized: float64(values[i])})
+				}
+				em.Input = input
+			}
 			em.Explanation = explanationFor(c, rec.Features)
+			if r.URL.Query().Get("trace") == "1" {
+				em.TraceNote = "This model has no neural forward trace."
+				if bm, ok := c.(*inference.BehaviorModel); ok && rec.Behavior != nil && mo.Detail != nil {
+					tr, e := bm.TraceBehavior(*rec.Behavior)
+					match := e == nil && rec.LastSeen.Equal(cl.TS) && len(tr.Output) == len(mo.Detail.Scores)
+					if match {
+						for i, x := range tr.Output {
+							if math.Abs(float64(x)-mo.Detail.Scores[i]) > 1e-5 {
+								match = false
+								break
+							}
+						}
+					}
+					if match {
+						em.Trace = &tr
+						em.TraceNote = "Actual activations reproduce the recorded distribution."
+					} else {
+						em.TraceNote = "The retained inputs and loaded model cannot reproduce this distribution."
+					}
+				} else if tr, ok := c.(interface {
+					Trace(features.Vector) (nn.Trace, error)
+				}); ok {
+					trace, e := tr.Trace(rec.Features)
+					match := e == nil && rec.LastSeen.Equal(cl.TS) && len(trace.Output) == len(mo.Scores)
+					if match {
+						for i, v := range trace.Output {
+							if math.Abs(float64(v)-mo.Scores[i]) > 1e-5 {
+								match = false
+								break
+							}
+						}
+					}
+					if match {
+						em.Trace = &trace
+						em.TraceNote = "Replayed activations match the recorded output."
+					} else {
+						em.TraceNote = "Trace unavailable: the retained input / loaded model does not reproduce this recorded output, or the graph exceeds diagnostic limits."
+					}
+				}
+			}
 		}
 		out.Models = append(out.Models, em)
 	}
@@ -376,6 +433,9 @@ func (s *Server) liveModels() map[string]inference.Classifier {
 	out := map[string]inference.Classifier{}
 	if s.rt == nil {
 		return out
+	}
+	if m := s.rt.ApplicationModel(); m != nil {
+		out[m.ID()] = m
 	}
 	for _, c := range s.rt.Models() {
 		out[c.ID()] = c

@@ -1,3 +1,4 @@
+import { Icon } from './Icon'
 import { useStream } from '../api/stream'
 import { fmtInt } from '../lib/format'
 
@@ -8,7 +9,8 @@ export function Header() {
   return (
     <header className="appbar">
       <span className="mark">
-        Synapse<b>&#9642;</b>IDS
+        <Icon name="network" size={27} />
+        Synapse<b>IDS</b>
       </span>
       <span className="stat">
         flows <b>{fmtInt(status.flows)}</b>

@@ -355,7 +355,7 @@ func (p *PCAPOverIP) readLoop(ctx context.Context, sess *pcapoverip.Session, lin
 				return nil
 			}
 
-		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord:
+		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord, pcapoverip.FrameRichFlow:
 			if gone := p.route.deliver(ctx, &p.rc, ft, payload); gone {
 				return nil
 			}

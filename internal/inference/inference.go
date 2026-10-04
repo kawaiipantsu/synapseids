@@ -17,6 +17,7 @@ type Role string
 
 // Model roles.
 const (
+	RoleApplication  Role = "application"
 	RolePrimary      Role = "primary"
 	RoleLocation     Role = "location"
 	RoleGlobal       Role = "global"
@@ -58,12 +59,13 @@ type Classifier interface {
 
 // ModelOutput is one model's verdict for one flow.
 type ModelOutput struct {
-	ModelID string  `json:"model_id"`
-	Role    Role    `json:"role"`
-	Class   string  `json:"class"`
-	ClassID int     `json:"class_id"`
-	Score   float64 `json:"score"`
-	Scores  Scores  `json:"scores"`
+	Detail  *DetailOutput `json:"detail,omitempty"`
+	ModelID string        `json:"model_id"`
+	Role    Role          `json:"role"`
+	Class   string        `json:"class"`
+	ClassID int           `json:"class_id"`
+	Score   float64       `json:"score"`
+	Scores  Scores        `json:"scores"`
 }
 
 // AnomalyScorer is a novelty detector: it reconstructs the feature vector and
@@ -132,6 +134,9 @@ type AnomalyResult struct {
 
 // Result is the ensemble verdict for one flow.
 type Result struct {
+	Signals      []Signal       `json:"signals,omitempty"`
+	Application  *DetailOutput  `json:"application,omitempty"`
+	Detail       *DetailOutput  `json:"detail,omitempty"`
 	FlowID       uint64         `json:"flow_id"`
 	Class        string         `json:"class"`
 	ClassID      int            `json:"class_id"`
@@ -145,6 +150,7 @@ type Result struct {
 // safe for concurrent use: the packet path calls Score while an operator's
 // activate/deactivate request swaps the model set (PROJECT.md §22, §28.10).
 type Runtime struct {
+	application     *BehaviorModel
 	mu              sync.RWMutex
 	models          []Classifier    // the live supervised set Score iterates
 	fallback        []Classifier    // restored by Deactivate — the models NewRuntime was given
@@ -253,6 +259,10 @@ func (r *Runtime) ActivateRole(role Role, model any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch role {
+	case RoleApplication:
+		if m, ok := model.(*BehaviorModel); ok && m.Role() == RoleApplication {
+			r.application = m
+		}
 	case RoleAnomaly:
 		if m, ok := model.(AnomalyScorer); ok && m != nil {
 			r.anomaly = []AnomalyScorer{m}
@@ -276,6 +286,8 @@ func (r *Runtime) DeactivateRole(role Role) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch role {
+	case RoleApplication:
+		r.application = nil
 	case RoleAnomaly:
 		r.anomaly = r.fallbackAnomaly
 	case RoleSequence:
@@ -313,18 +325,32 @@ func (r *Runtime) DeactivateRole(role Role) {
 // Disagreement is true when the alert-driving models — every role except
 // experimental and anomaly — predict more than one distinct top class.
 func (r *Runtime) Score(v features.Vector) Result {
-	return r.score(v, nil)
+	return r.score(v, nil, nil)
 }
 
 // ScoreSequence is Score plus the temporal (flow-sequence-v1) peers, given the
 // flow's recent feature-vector history (oldest first, length 1..T). The pipeline
 // supplies the window from its per-flow ring; every other caller uses Score.
 func (r *Runtime) ScoreSequence(v features.Vector, window [][features.Size]float64) Result {
-	return r.score(v, window)
+	return r.score(v, window, nil)
 }
 
-func (r *Runtime) score(v features.Vector, window [][features.Size]float64) Result {
+// ScoreContext adds packet timing and cross-flow context without altering v1 inputs.
+func (r *Runtime) ScoreContext(v features.Vector, window [][features.Size]float64, b features.BehaviorVector) Result {
+	return r.score(v, window, &b)
+}
+
+// ApplicationModel returns the independent application network, if active.
+func (r *Runtime) ApplicationModel() *BehaviorModel {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.application
+}
+func (r *Runtime) score(v features.Vector, window [][features.Size]float64, behavior *features.BehaviorVector) Result {
 	res := Result{FlowID: v.FlowID}
+	if behavior != nil {
+		res.Signals = BehaviorSignals(*behavior)
+	}
 	var driver *ModelOutput
 	primaryLocked := false
 	seen := map[int]int{}
@@ -332,10 +358,18 @@ func (r *Runtime) score(v features.Vector, window [][features.Size]float64) Resu
 	models := r.live()
 	for i := range models {
 		m := models[i]
-		sc := m.Classify(v)
+		var sc Scores
+		var detail *DetailOutput
+		if bm, ok := m.(*BehaviorModel); ok && behavior != nil {
+			var d DetailOutput
+			sc, d = bm.ClassifyBehavior(*behavior)
+			detail = &d
+		} else {
+			sc = m.Classify(v)
+		}
 		id, p := sc.Top()
 		mo := ModelOutput{
-			ModelID: m.ID(), Role: m.Role(),
+			ModelID: m.ID(), Role: m.Role(), Detail: detail,
 			Class: schema.ClassName(id), ClassID: id, Score: p, Scores: sc,
 		}
 		res.Models = append(res.Models, mo)
@@ -375,6 +409,7 @@ func (r *Runtime) score(v features.Vector, window [][features.Size]float64) Resu
 	}
 	if driver != nil {
 		res.Class, res.ClassID, res.Score = driver.Class, driver.ClassID, driver.Score
+		res.Detail = driver.Detail
 	}
 	// Disagreement: more than one distinct top class among the alert-driving
 	// models (experimental and anomaly excluded; sequence peers included).
@@ -395,6 +430,10 @@ func (r *Runtime) score(v features.Vector, window [][features.Size]float64) Resu
 		break
 	}
 
+	if app := r.ApplicationModel(); app != nil && behavior != nil {
+		_, d := app.ClassifyBehavior(*behavior)
+		res.Application = &d
+	}
 	sort.SliceStable(res.Models, func(i, j int) bool {
 		return roleRank(res.Models[i].Role) < roleRank(res.Models[j].Role)
 	})
@@ -418,4 +457,30 @@ func roleRank(r Role) int {
 	default:
 		return 6
 	}
+}
+
+// ActivateShadow keeps the alert-driving models and replaces the one shadow slot.
+func (r *Runtime) ActivateShadow(m *BehaviorModel) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []Classifier{}
+	for _, c := range r.models {
+		if c.Role() != RoleExperimental {
+			out = append(out, c)
+		}
+	}
+	r.models = append(out, m.AsShadow())
+}
+
+// DeactivateShadow removes only an experimental model with this identity.
+func (r *Runtime) DeactivateShadow(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []Classifier{}
+	for _, c := range r.models {
+		if c.Role() != RoleExperimental || c.ID() != id {
+			out = append(out, c)
+		}
+	}
+	r.models = out
 }

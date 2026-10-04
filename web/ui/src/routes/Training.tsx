@@ -5,6 +5,8 @@ import type { TrainingEpoch, TrainingFinal, TrainingPerClass, TrainingRun } from
 import { CLASS_NAMES } from '../lib/classes'
 import { fmtAgo, fmtDateTime, fmtDuration, fmtNum, fmtPct } from '../lib/format'
 import { usePersistedState } from '../lib/persist'
+import { TrainingWorkbench } from '../components/TrainingWorkbench'
+import { TrainingSetup } from '../components/TrainingSetup'
 import { TrainingChart, type Series } from '../components/TrainingChart'
 
 // ML ▸ Training — the live training dashboard (PROJECT.md §19.8, issue #35).
@@ -292,6 +294,7 @@ function RunDetail({ run }: { run: TrainingRun }) {
         </div>
       </div>
 
+      {final?.supported_classes && <div className="card wide"><h3>Training coverage</h3><p>Trained: {final.supported_classes.join(', ')}</p><p>Unsupported (masked): {final.unsupported_classes?.join(', ') || 'none'}</p><p>{final.split?.limitation} · {final.split?.purged_rows} rows removed near time boundaries.</p></div>}
       <div className="card wide">
         <h3>Per-class metrics {perClass.length ? '' : <span className="dim">— on completion</span>}</h3>
         {perClass.length ? (
@@ -307,7 +310,7 @@ function RunDetail({ run }: { run: TrainingRun }) {
       <div className="card wide">
         <h3>Confusion matrix {confusion.length ? '' : <span className="dim">— on completion</span>}</h3>
         {confusion.length ? (
-          <ConfusionMatrix matrix={confusion} classes={CLASS_NAMES.slice()} />
+          <ConfusionMatrix matrix={confusion} classes={final?.class_names ?? CLASS_NAMES.slice()} />
         ) : (
           <div className="foot">
             a {CLASS_NAMES.length}×{CLASS_NAMES.length} <code>traffic-classes-v1</code> grid appears here
@@ -410,14 +413,9 @@ export function Training() {
 
   return (
     <div className="tr">
-      <div className="page-h">
-        <h1>Training</h1>
-        <span className="sub">
-          live view of <code>synapse-trainer</code> runs reported to the daemon over HTTP —{' '}
-          <code>GET /api/v1/training</code> (§19.8, ADR 0019). The daemon mirrors progress; it does not
-          launch training.
-        </span>
-      </div>
+      <div className="page-h"><div><div className="eyebrow">ML / TRAINING STUDIO</div><h1>Turn traffic into understanding.</h1><p className="sub">Prepare a dataset, train a classifier, and evaluate its results before activation.</p></div></div>
+      <TrainingWorkbench onSelectRun={setSelectedId} /><details><summary>Advanced: legacy trainer recipes</summary><TrainingSetup /></details>
+      <div className="section-heading"><h2>Training runs</h2><span>Live loss, accuracy, and evaluation metrics</span></div>
 
       {listErr ? <div className="src-msg err">run list unavailable — {listErr}</div> : null}
 

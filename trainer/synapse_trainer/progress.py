@@ -13,10 +13,19 @@ continues regardless.  stdlib + numpy only: this uses ``urllib.request``.
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
+import urllib.parse
 from typing import Any, Callable
 
 _LogF = Callable[[str], None]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward a reporting credential through an HTTP redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class ProgressReporter:
@@ -34,6 +43,7 @@ class ProgressReporter:
         timeout: float = 3.0,
         logf: _LogF | None = None,
         enabled: bool = True,
+        token: str | None = None,
     ) -> None:
         self.base = (daemon_url or "").rstrip("/")
         self.timeout = timeout
@@ -41,6 +51,9 @@ class ProgressReporter:
         self.enabled = bool(enabled and self.base)
         self.run_id: str | None = None
         self.progress_url: str | None = None
+        # The token stays outside recipes, command arguments and model bundles.
+        self._token = token if token is not None else os.environ.get("SYNAPSE_API_TOKEN", "")
+        self._opener = urllib.request.build_opener(_NoRedirect())
 
     # ------------------------------------------------------------------ lifecycle
     def start(
@@ -112,14 +125,24 @@ class ProgressReporter:
     # ------------------------------------------------------------------- transport
     def _post(self, url: str, obj: Any, *, expect_json: bool) -> dict[str, Any] | None:
         try:
+            target = urllib.parse.urlsplit(url)
+            base = urllib.parse.urlsplit(self.base)
+            def origin(value):
+                return (value.scheme, value.hostname, value.port or (443 if value.scheme == "https" else 80))
+            if target.scheme not in ("http", "https") or origin(target) != origin(base) or target.username or target.password:
+                self._log("progress: refused a reporting URL outside the configured daemon origin")
+                return None
             data = json.dumps(obj).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+            if self._token:
+                headers["Authorization"] = "Bearer " + self._token
             req = urllib.request.Request(  # noqa: S310 - operator-supplied daemon URL
                 url,
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
+            with self._opener.open(req, timeout=self.timeout) as r:
                 raw = r.read()
             if expect_json and raw:
                 return json.loads(raw.decode("utf-8"))

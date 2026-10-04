@@ -24,11 +24,23 @@
 <br/>
 
 > [!IMPORTANT]
-> **SynapseIDS is in early development — this is Phase 1 of an [8-phase plan](#roadmap).** No release is tagged yet; build from source today.
+> **SynapseIDS is under active development.** Published releases and development
+> previews can have different capabilities; see the
+> [release notes](https://github.com/kawaiipantsu/synapseids/releases).
 >
-> **Working now:** PCAP replay → the flow engine → the frozen `flow-features-v1` vector (48 features) → a transparent rule-based classifier → the `/api/v1` REST surface → a React operator console at `/` (Dashboard, full-screen Flow Log, Flow Inspector, Hosts, Investigate, Timeline, Replay control) fed by a live WebSocket. Replay runs the *exact* pipeline live capture will.
+> The development branch includes live capture and distributed sensors, ONNX
+> inference, versioned datasets, offline training, investigations, and metrics.
+> This feature branch adds the visual traffic workspace, cached DNS/geo/RDAP
+> context, editable network policy, a 160-input temporal neural workbench, measured
+> activation graphs and training/Grafana observability. Dedicated Model Compare, Drift,
+> Performance, Storage and Settings screens remain planned.
 >
-> **Not here yet:** live NIC / tcpdump / SSH capture, trained ONNX models wired into the daemon, SQLite persistence (storage is in-memory only), and the sensor-topology view (a `synapse-sensor` agent **does** work, in both directions and in all three `raw` / `flow` / `feature` modes — see [ADR 0018](docs/adr/0018-daemon-side-synpoip-collector-and-sensor-identity.md) and [ADR 0024](docs/adr/0024-sensor-modes-and-synpoip-record-frames.md)), and the rest of the [§19](PROJECT.md) UI beyond the four Phase-1 views (every route in the SPA that is not built renders a "Not built yet" panel naming the **open** issue that tracks it — never a development phase, which goes stale the moment its epic closes). The offline Python trainer that produces model bundles now lives in [`trainer/`](trainer/) (Phase 2, not yet wired to the daemon). See [the roadmap](#roadmap).
+> Start with the **[product documentation and screenshot gallery](https://github.com/kawaiipantsu/synapseids/wiki)**.
+> Implementation guides: [visual workspace](docs/visual-workspace.md),
+> [neural training](docs/neural-workbench.md), [training data sources](docs/training-data-sources.md),
+> [IP context](docs/ip-context.md), [Prometheus & Grafana](docs/prometheus.md).
+> Flow/classification history remains bounded in memory; model activation is an
+> explicit operator action. The historical roadmap below is a planning reference.
 
 <br/>
 

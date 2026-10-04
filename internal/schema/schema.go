@@ -203,6 +203,8 @@ func (a Architecture) effectiveInputSize() int {
 // need is a new family, never an edit to a released one (PROJECT.md §10, §28.5-6,
 // ADR 0037).
 const (
+	FamilyBehaviorV1    = "traffic-behavior-v1"
+	FamilyApplicationV1 = "traffic-application-v1"
 	// FamilyClassifierV1 is the supervised traffic classifier: flow-features-v1
 	// in, traffic-classes-v1 (7 classes) out.
 	FamilyClassifierV1 = "flow-classifier-v1"
@@ -236,6 +238,10 @@ type familyEdges struct {
 // familyEdgesFor returns the locked edge contract for a known model family.
 func familyEdgesFor(family string) (familyEdges, bool) {
 	switch family {
+	case FamilyBehaviorV1:
+		return familyEdges{featureSchema: behaviorV1.Schema, inputSize: 160, outputSchema: attackV2.Schema, outputSize: 19}, true
+	case FamilyApplicationV1:
+		return familyEdges{featureSchema: behaviorV1.Schema, inputSize: 160, outputSchema: applicationV1.Schema, outputSize: 14}, true
 	case FamilyClassifierV1:
 		return familyEdges{
 			featureSchema: flowFeaturesV1.Schema, inputSize: flowFeaturesV1.InputSize,

@@ -419,7 +419,7 @@ class Sensor extends BaseModel
             $direction = $this->inst($node, 'direction');
             $sendMode  = $this->inst($node, 'send_mode');
             if (($direction === 'in' || $direction === 'out')
-                && ($sendMode === 'flow' || $sendMode === 'feature')) {
+                && ($sendMode === 'flow' || $sendMode === 'flow-rich' || $sendMode === 'feature')) {
                 $this->addError($messages, $this->ref($node, 'direction'), sprintf(
                     gettext(
                         'Instance "%s" captures one direction only (%s) but builds flow %s on the sensor. ' .

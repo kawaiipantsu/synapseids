@@ -1,0 +1,1450 @@
+{
+  "schema": "traffic-behavior-v1",
+  "version": 1,
+  "frozen": true,
+  "description": "Behavior model inputs: frozen v1 flow statistics, ordered 32-packet timing/size sketch, protocol metadata and bounded host context. No IP, domain, ownership or reputation identifiers enter the vector.",
+  "input_size": 160,
+  "default_missing": 0.0,
+  "features": [
+    {
+      "index": 0,
+      "name": "flow_duration",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "last_seen - first_seen",
+      "missing": "0 for a flow with a single packet",
+      "norm": "log1p"
+    },
+    {
+      "index": 1,
+      "name": "packets_forward",
+      "type": "float",
+      "unit": "count",
+      "calc": "packet count initiator->responder",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 2,
+      "name": "packets_backward",
+      "type": "float",
+      "unit": "count",
+      "calc": "packet count responder->initiator",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 3,
+      "name": "bytes_forward",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "sum of IP datagram lengths forward (IP header included)",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 4,
+      "name": "bytes_backward",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "sum of IP datagram lengths backward (IP header included)",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 5,
+      "name": "packet_size_mean",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "mean total packet size over the flow",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 6,
+      "name": "packet_size_min",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "min total packet size",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 7,
+      "name": "packet_size_max",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "max total packet size",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 8,
+      "name": "packet_size_stddev",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "population stddev of packet size",
+      "missing": "0 for <2 packets",
+      "norm": "standard"
+    },
+    {
+      "index": 9,
+      "name": "forward_packet_size_mean",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "mean packet size forward",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 10,
+      "name": "backward_packet_size_mean",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "mean packet size backward",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 11,
+      "name": "packets_per_second",
+      "type": "float",
+      "unit": "1/s",
+      "calc": "total packets / max(flow_duration, 1e-6)",
+      "missing": "total packets when duration is 0",
+      "norm": "log1p"
+    },
+    {
+      "index": 12,
+      "name": "bytes_per_second",
+      "type": "float",
+      "unit": "bytes/s",
+      "calc": "total bytes / max(flow_duration, 1e-6)",
+      "missing": "total bytes when duration is 0",
+      "norm": "log1p"
+    },
+    {
+      "index": 13,
+      "name": "forward_packets_per_second",
+      "type": "float",
+      "unit": "1/s",
+      "calc": "packets_forward / max(flow_duration, 1e-6)",
+      "missing": "packets_forward when duration is 0",
+      "norm": "log1p"
+    },
+    {
+      "index": 14,
+      "name": "backward_packets_per_second",
+      "type": "float",
+      "unit": "1/s",
+      "calc": "packets_backward / max(flow_duration, 1e-6)",
+      "missing": "packets_backward when duration is 0",
+      "norm": "log1p"
+    },
+    {
+      "index": 15,
+      "name": "interarrival_mean",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "mean inter-arrival gap over all packets",
+      "missing": "0 for <2 packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 16,
+      "name": "interarrival_min",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "min inter-arrival gap",
+      "missing": "0 for <2 packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 17,
+      "name": "interarrival_max",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "max inter-arrival gap",
+      "missing": "0 for <2 packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 18,
+      "name": "interarrival_stddev",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "population stddev of inter-arrival gaps",
+      "missing": "0 for <3 packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 19,
+      "name": "forward_interarrival_mean",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "mean forward inter-arrival gap",
+      "missing": "0 for <2 forward packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 20,
+      "name": "backward_interarrival_mean",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "mean backward inter-arrival gap",
+      "missing": "0 for <2 backward packets",
+      "norm": "log1p"
+    },
+    {
+      "index": 21,
+      "name": "source_port",
+      "type": "float",
+      "unit": "port",
+      "calc": "initiator L4 port (0 for ICMP)",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 22,
+      "name": "destination_port",
+      "type": "float",
+      "unit": "port",
+      "calc": "responder L4 port (0 for ICMP)",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 23,
+      "name": "protocol_tcp",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if transport is TCP",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 24,
+      "name": "protocol_udp",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if transport is UDP",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 25,
+      "name": "protocol_icmp",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if transport is ICMPv4/ICMPv6",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 26,
+      "name": "tcp_syn_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with SYN set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 27,
+      "name": "tcp_ack_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with ACK set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 28,
+      "name": "tcp_fin_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with FIN set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 29,
+      "name": "tcp_rst_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with RST set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 30,
+      "name": "tcp_psh_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with PSH set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 31,
+      "name": "tcp_urg_count",
+      "type": "float",
+      "unit": "count",
+      "calc": "packets with URG set",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 32,
+      "name": "syn_ack_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "tcp_syn_count / max(tcp_ack_count, 1)",
+      "missing": "tcp_syn_count when ack is 0",
+      "norm": "log1p"
+    },
+    {
+      "index": 33,
+      "name": "packet_direction_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "packets_forward / max(total packets, 1)",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 34,
+      "name": "byte_direction_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "bytes_forward / max(total bytes, 1)",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 35,
+      "name": "initial_tcp_window",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "TCP window of the first forward segment",
+      "missing": "0 for non-TCP",
+      "norm": "standard"
+    },
+    {
+      "index": 36,
+      "name": "average_tcp_window",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "mean advertised TCP window over the flow",
+      "missing": "0 for non-TCP",
+      "norm": "standard"
+    },
+    {
+      "index": 37,
+      "name": "down_up_bytes_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "bytes_backward / max(bytes_forward, 1)",
+      "missing": "0",
+      "norm": "log1p"
+    },
+    {
+      "index": 38,
+      "name": "small_packet_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "fraction of packets <= 100 bytes total",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 39,
+      "name": "large_packet_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "fraction of packets >= 1000 bytes total",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 40,
+      "name": "average_payload_length",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "mean L4 payload length over all packets",
+      "missing": "0",
+      "norm": "standard"
+    },
+    {
+      "index": 41,
+      "name": "bidirectional_flag",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if both directions carried >=1 packet",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 42,
+      "name": "internal_to_internal",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if both endpoints are RFC1918 / ULA / link-local",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 43,
+      "name": "internal_to_external",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if initiator internal, responder external",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 44,
+      "name": "external_to_internal",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if initiator external, responder internal",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 45,
+      "name": "external_to_external",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if neither endpoint is internal",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 46,
+      "name": "dest_port_is_wellknown",
+      "type": "bool",
+      "unit": "flag",
+      "calc": "1 if destination_port in [1, 1023]",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 47,
+      "name": "snapshot_index",
+      "type": "float",
+      "unit": "count",
+      "calc": "nth periodic snapshot of a long-lived flow; 0 on close",
+      "missing": "0",
+      "norm": "identity"
+    },
+    {
+      "index": 48,
+      "name": "packet_gap_00",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 49,
+      "name": "packet_gap_01",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 50,
+      "name": "packet_gap_02",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 51,
+      "name": "packet_gap_03",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 52,
+      "name": "packet_gap_04",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 53,
+      "name": "packet_gap_05",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 54,
+      "name": "packet_gap_06",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 55,
+      "name": "packet_gap_07",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 56,
+      "name": "packet_gap_08",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 57,
+      "name": "packet_gap_09",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 58,
+      "name": "packet_gap_10",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 59,
+      "name": "packet_gap_11",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 60,
+      "name": "packet_gap_12",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 61,
+      "name": "packet_gap_13",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 62,
+      "name": "packet_gap_14",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 63,
+      "name": "packet_gap_15",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 64,
+      "name": "packet_gap_16",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 65,
+      "name": "packet_gap_17",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 66,
+      "name": "packet_gap_18",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 67,
+      "name": "packet_gap_19",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 68,
+      "name": "packet_gap_20",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 69,
+      "name": "packet_gap_21",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 70,
+      "name": "packet_gap_22",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 71,
+      "name": "packet_gap_23",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 72,
+      "name": "packet_gap_24",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 73,
+      "name": "packet_gap_25",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 74,
+      "name": "packet_gap_26",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 75,
+      "name": "packet_gap_27",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 76,
+      "name": "packet_gap_28",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 77,
+      "name": "packet_gap_29",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 78,
+      "name": "packet_gap_30",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 79,
+      "name": "packet_gap_31",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Latest 32 captured inter-packet gaps, oldest first, left padded; first packet gap is zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 80,
+      "name": "packet_size_direction_00",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 81,
+      "name": "packet_size_direction_01",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 82,
+      "name": "packet_size_direction_02",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 83,
+      "name": "packet_size_direction_03",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 84,
+      "name": "packet_size_direction_04",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 85,
+      "name": "packet_size_direction_05",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 86,
+      "name": "packet_size_direction_06",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 87,
+      "name": "packet_size_direction_07",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 88,
+      "name": "packet_size_direction_08",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 89,
+      "name": "packet_size_direction_09",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 90,
+      "name": "packet_size_direction_10",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 91,
+      "name": "packet_size_direction_11",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 92,
+      "name": "packet_size_direction_12",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 93,
+      "name": "packet_size_direction_13",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 94,
+      "name": "packet_size_direction_14",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 95,
+      "name": "packet_size_direction_15",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 96,
+      "name": "packet_size_direction_16",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 97,
+      "name": "packet_size_direction_17",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 98,
+      "name": "packet_size_direction_18",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 99,
+      "name": "packet_size_direction_19",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 100,
+      "name": "packet_size_direction_20",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 101,
+      "name": "packet_size_direction_21",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 102,
+      "name": "packet_size_direction_22",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 103,
+      "name": "packet_size_direction_23",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 104,
+      "name": "packet_size_direction_24",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 105,
+      "name": "packet_size_direction_25",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 106,
+      "name": "packet_size_direction_26",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 107,
+      "name": "packet_size_direction_27",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 108,
+      "name": "packet_size_direction_28",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 109,
+      "name": "packet_size_direction_29",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 110,
+      "name": "packet_size_direction_30",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 111,
+      "name": "packet_size_direction_31",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Latest 32 IP lengths, positive initiator direction, negative responder direction; left padded",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 112,
+      "name": "timing_sample_fraction",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "min(packet samples,32)/32",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 113,
+      "name": "timing_gap_mean",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Mean of valid recent gaps",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 114,
+      "name": "timing_gap_stddev",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Population standard deviation of valid recent gaps",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 115,
+      "name": "timing_gap_cv",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Gap standard deviation / mean; zero if no positive mean",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 116,
+      "name": "timing_lag1_correlation",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Pearson correlation of overlapping gap series offset 1; zero if insufficient/constant",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 117,
+      "name": "timing_lag2_correlation",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Pearson correlation of overlapping gap series offset 2",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 118,
+      "name": "timing_lag4_correlation",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Pearson correlation of overlapping gap series offset 4",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 119,
+      "name": "timing_lag8_correlation",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Pearson correlation of overlapping gap series offset 8",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 120,
+      "name": "timing_gap_median",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Median of valid recent gaps",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 121,
+      "name": "timing_gap_p90",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Nearest-rank 90th percentile",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 122,
+      "name": "timing_repeated_gap_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Adjacent gaps within 5 percent of mean; mean must be positive",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 123,
+      "name": "timing_burst_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Share of gaps at most 10 milliseconds",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 124,
+      "name": "timing_direction_switch_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Direction changes between adjacent recent samples",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 125,
+      "name": "timing_forward_sample_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Positive size samples / sample count",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 126,
+      "name": "payload_byte_fraction",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Flow L4 payload bytes / IP bytes",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 127,
+      "name": "rich_telemetry_available",
+      "type": "float",
+      "unit": "boolean",
+      "calc": "1 when rich packet telemetry is present",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 128,
+      "name": "dns_queries",
+      "type": "float",
+      "unit": "count",
+      "calc": "DNS request packets observed in flow",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 129,
+      "name": "dns_responses",
+      "type": "float",
+      "unit": "count",
+      "calc": "DNS response packets observed in flow",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 130,
+      "name": "dns_nxdomain",
+      "type": "float",
+      "unit": "count",
+      "calc": "NXDOMAIN response packets observed in flow",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 131,
+      "name": "dns_malformed",
+      "type": "float",
+      "unit": "count",
+      "calc": "Invalid complete DNS messages on port 53",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 132,
+      "name": "dns_entropy_max",
+      "type": "float",
+      "unit": "bits",
+      "calc": "Maximum leftmost query-label Shannon entropy",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 133,
+      "name": "dns_entropy_mean",
+      "type": "float",
+      "unit": "bits",
+      "calc": "Mean leftmost query-label Shannon entropy",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 134,
+      "name": "dns_name_length_max",
+      "type": "float",
+      "unit": "characters",
+      "calc": "Maximum observed query name length",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 135,
+      "name": "dns_label_length_max",
+      "type": "float",
+      "unit": "characters",
+      "calc": "Maximum query label length",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 136,
+      "name": "dns_unique_names_sample",
+      "type": "float",
+      "unit": "count",
+      "calc": "Distinct flow query names retained, capped at 8",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 137,
+      "name": "http_requests",
+      "type": "float",
+      "unit": "count",
+      "calc": "Complete single-packet HTTP request headers",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 138,
+      "name": "suspicious_download_hints",
+      "type": "float",
+      "unit": "count",
+      "calc": "Executable extension or content-type indicators; not proof of malware",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 139,
+      "name": "tls_client_hellos",
+      "type": "float",
+      "unit": "count",
+      "calc": "Complete single-packet TLS client hellos",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 140,
+      "name": "irc_message_hints",
+      "type": "float",
+      "unit": "count",
+      "calc": "Observed plaintext IRC command prefixes",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 141,
+      "name": "tls_sni_observed",
+      "type": "float",
+      "unit": "boolean",
+      "calc": "Server name seen in TLS client hello",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 142,
+      "name": "http_host_observed",
+      "type": "float",
+      "unit": "boolean",
+      "calc": "Host name seen in HTTP request",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 143,
+      "name": "application_metadata_available",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Fraction of captured packets whose IP length fit within the capture. Truncated packets are not interpreted as malformed application messages. Complete capture does not imply TLS decryption.",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 144,
+      "name": "host_window_flows",
+      "type": "float",
+      "unit": "count",
+      "calc": "Up to 64 latest observed source-host conversations within 60 seconds",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 145,
+      "name": "host_window_ports",
+      "type": "float",
+      "unit": "count",
+      "calc": "Distinct destination ports in host window",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 146,
+      "name": "host_window_destinations",
+      "type": "float",
+      "unit": "count",
+      "calc": "Distinct destination addresses in host window; addresses themselves are never model inputs",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 147,
+      "name": "host_window_syn_only_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Share with SYN and no ACK in host window",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 148,
+      "name": "host_window_one_way_ratio",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Share with no responder packets",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 149,
+      "name": "host_gap_mean",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Mean consecutive flow-start interval in bounded host window",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 150,
+      "name": "host_gap_cv",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "Population deviation / mean flow-start interval",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 151,
+      "name": "host_gap_lag1",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Flow-start gap correlation offset 1",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 152,
+      "name": "host_gap_lag2",
+      "type": "float",
+      "unit": "coefficient",
+      "calc": "Flow-start gap correlation offset 2",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 153,
+      "name": "host_window_dns_queries",
+      "type": "float",
+      "unit": "count",
+      "calc": "Cumulative query counts of retained distinct conversations",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 154,
+      "name": "host_window_nxdomain",
+      "type": "float",
+      "unit": "count",
+      "calc": "Cumulative NXDOMAIN counts of retained distinct conversations",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 155,
+      "name": "host_window_dns_names",
+      "type": "float",
+      "unit": "count",
+      "calc": "Distinct retained query-name hashes in host window",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 156,
+      "name": "host_window_span",
+      "type": "float",
+      "unit": "seconds",
+      "calc": "Range of observed conversation starts within host window",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 157,
+      "name": "host_window_bytes",
+      "type": "float",
+      "unit": "bytes",
+      "calc": "Sum cumulative bytes of retained distinct conversations",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 158,
+      "name": "host_periodic_strength",
+      "type": "float",
+      "unit": "ratio",
+      "calc": "1/(1+CV) if at least 8 inter-flow gaps and mean gap at least 5 seconds, else zero",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    },
+    {
+      "index": 159,
+      "name": "host_context_available",
+      "type": "float",
+      "unit": "boolean",
+      "calc": "Host-window state was supplied by the pipeline",
+      "missing": "0; inspect rich_telemetry_available and host_context_available",
+      "norm": "standard"
+    }
+  ]
+}

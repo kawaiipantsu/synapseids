@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/capturewire"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/dataset"
+	"github.com/kawaiipantsu/synapseids/internal/enrichment"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
@@ -34,11 +36,14 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/model"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/reputation"
 	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
 	"github.com/kawaiipantsu/synapseids/internal/version"
+	"github.com/kawaiipantsu/synapseids/internal/workbench"
 )
 
 // multiFlag collects a repeatable string flag (--capture eth0 --capture lo).
@@ -217,6 +222,13 @@ func run(args []string) int {
 	// One-shot load at startup, off every packet path.
 	trs := training.Open(cfg.Training.Directory, aud, log.Printf)
 
+	pol, err := policy.Open(cfg.PolicyFile)
+	if err != nil {
+		log.Printf("policy: unable to load validated policy: %v", err)
+		return 1
+	}
+	rep := reputation.New(pol, cfg.Reputation.AbuseIPDBKeyFile, cfg.Reputation.DNSBLFile)
+	defer rep.Close()
 	flowOpt := flow.Options{
 		IdleTimeout:      cfg.Capture.FlowIdleTimeout.D(),
 		MaxLifetime:      cfg.Capture.FlowMaxLifetime.D(),
@@ -229,6 +241,7 @@ func run(args []string) int {
 	// rather than whichever one happened to be wired (issue #125).
 	flowStats := newFlowStatsHub(flowOpt.MaxFlows)
 	rc := newReplayController(bus, store, rt, ins, alerts, flowOpt, "local", &flowID, flowStats, metrics)
+	rc.policy = pol
 
 	// Live capture: open every configured source and hand it to the Manager,
 	// which merges them into one stream for a single pipeline goroutine
@@ -330,7 +343,21 @@ func run(args []string) int {
 	// through an interface, which is exactly what makes them immune to that bug;
 	// every one of *alert.Store's methods is nil-receiver safe as well.
 	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, flowStats, capMgr, ins, trs, sensors, rvs, alerts)
+	contextCache := enrichment.New(enrichment.Options{
+		Enabled: cfg.Enrichment.Enabled, ReverseDNS: cfg.Enrichment.ReverseDNS, Geo: cfg.Enrichment.Geo, WHOIS: cfg.Enrichment.WHOIS,
+		GeoURL: cfg.Enrichment.GeoURL, Resolver: cfg.Enrichment.Resolver, TTL: time.Duration(cfg.Enrichment.CacheTTL),
+		NegativeTTL: time.Duration(cfg.Enrichment.NegativeTTL), Timeout: time.Duration(cfg.Enrichment.Timeout), MaxEntries: cfg.Enrichment.MaxEntries,
+	})
+	defer contextCache.Close()
+	srv.SetEnrichment(contextCache)
+	srv.SetPolicy(pol, rep)
 	srv.SetMetrics(metrics)
+	wb, err := workbench.Open(filepath.Join(cfg.Training.Directory, "workbench"))
+	if err != nil {
+		log.Printf("workbench: cannot open durable queue: %v", err)
+		return 1
+	}
+	srv.SetWorkbench(wb)
 	if err := srv.SetAuth(cfg.Auth); err != nil {
 		log.Printf("config: auth: %v", err)
 		return 1
@@ -360,13 +387,14 @@ func run(args []string) int {
 		st, err := pipeline.Run(ctx, capMgr, rt, bus, store, pipeline.Options{
 			Flow: flowOpt, Sensor: "local",
 			IDGen:    func() uint64 { return flowID.Add(1) },
-			Observer: ins,
-			Alerts:   alerts,
-			Records:  sensorRecords,
+			Observer: ins, Names: contextCache.ObserveBindings,
+			Alerts:  alerts,
+			Records: sensorRecords,
 			// This is the table that serves live NICs and every raw-mode sensor.
 			// Leaving it unreported was issue #125.
 			OnStats: flowStats.Reporter("capture"),
 			Metrics: metrics,
+			Policy:  pol,
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("capture pipeline: %v", err)

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 // "/", so synapsed needs no SPA-fallback handler and internal/api is untouched.
 // A clean-URL history router is deliberately a later issue.
 
-export const DEFAULT_ROUTE = '/flow-log'
+export const DEFAULT_ROUTE = '/dashboard'
 
 export function currentPath(): string {
   const raw = window.location.hash.replace(/^#/, '')

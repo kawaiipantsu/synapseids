@@ -1,3 +1,4 @@
+import { IPLabel } from './IPContext'
 import { useEffect, useState } from 'react'
 
 import {
@@ -12,7 +13,6 @@ import type { Classification, ClassSchema, FeatureSchema, FlowRecord, Review } f
 import type { FlowExplain, FlowSnapshots } from '../api/types'
 import { classColor } from '../lib/classes'
 import {
-  endpoint,
   fmtBytes,
   fmtDateTime,
   fmtDuration,
@@ -160,7 +160,7 @@ export function FlowInspector({ cls, onClose }: Props) {
         <header>
           <span className="id">#{cls.flow_id}</span>
           <span className="mono">
-            {endpoint(cls.initiator_ip, cls.initiator_port)} → {endpoint(cls.responder_ip, cls.responder_port)}
+            <IPLabel ip={cls.initiator_ip} port={cls.initiator_port} /> → <IPLabel ip={cls.responder_ip} port={cls.responder_port} />
           </span>
           <span className="dim">{cls.proto}</span>
           <span className="spacer" />
@@ -247,9 +247,9 @@ export function FlowInspector({ cls, onClose }: Props) {
             <h4>5-tuple &amp; direction</h4>
             <dl className="kv">
               <dt>initiator</dt>
-              <dd className="mono">{endpoint(cls.initiator_ip, cls.initiator_port)}</dd>
+              <dd className="mono"><IPLabel ip={cls.initiator_ip} port={cls.initiator_port} /></dd>
               <dt>responder</dt>
-              <dd className="mono">{endpoint(cls.responder_ip, cls.responder_port)}</dd>
+              <dd className="mono"><IPLabel ip={cls.responder_ip} port={cls.responder_port} /></dd>
               <dt>protocol</dt>
               <dd>{cls.proto}</dd>
               <dt>direction</dt>

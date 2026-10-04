@@ -522,7 +522,7 @@ export function DatasetExplorer() {
           <div className="card wide">
             <h3>Outliers ({fmtInt(stats.outliers.count)})</h3>
             <div className="foot">{stats.outliers.rule} · threshold |z| &gt; {stats.outliers.threshold}.</div>
-            {stats.outliers.rows.length === 0 ? (
+            {(stats.outliers.rows ?? []).length === 0 ? (
               <div className="foot">no row exceeds the threshold.</div>
             ) : (
               <div className="src-scroll">
@@ -536,7 +536,7 @@ export function DatasetExplorer() {
                     </tr>
                   </thead>
                   <tbody>
-                    {stats.outliers.rows.map((o) => (
+                    {(stats.outliers.rows ?? []).map((o) => (
                       <tr key={o.row}>
                         <td className="num mono">{o.row}</td>
                         <td>
@@ -555,7 +555,7 @@ export function DatasetExplorer() {
                 </table>
               </div>
             )}
-            {stats.outliers.count > stats.outliers.rows.length ? (
+            {stats.outliers.count > (stats.outliers.rows ?? []).length ? (
               <div className="foot">list capped at {fmtInt(stats.outliers.cap)}.</div>
             ) : null}
           </div>

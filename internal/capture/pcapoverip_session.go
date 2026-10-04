@@ -187,7 +187,7 @@ func (s *sessionSource) readLoop(ctx context.Context, out chan<- packet.Packet) 
 				return nil
 			}
 
-		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord:
+		case pcapoverip.FrameFlowRecord, pcapoverip.FrameFeatureRecord, pcapoverip.FrameRichFlow:
 			// A flow/feature-mode sensor's records bypass the packet channel
 			// entirely: they enter the pipeline further along (issue #45).
 			if gone := s.route.deliver(ctx, &s.rc, ft, payload); gone {

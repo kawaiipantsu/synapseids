@@ -77,7 +77,7 @@ export function ReplayBar() {
       <span className="dim" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {statusLine(replay, msg)}
       </span>
-      <span className="thugs">&#10214;THUGS&#10215; &#183; (c) 2026</span>
+      <span className="dim">SynapseIDS · Traffic intelligence</span>
     </>
   )
 }

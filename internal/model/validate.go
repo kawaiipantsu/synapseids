@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,9 @@ func (b *Bundle) Validate() error {
 	if err := verifyHash(m.ModelHash, b.hash); err != nil {
 		return err
 	}
+	if b.norm.FeatureSchema != m.FeatureSchema {
+		return errors.New("normalizer.json: feature_schema does not match model")
+	}
 	return b.norm.validate()
 }
 
@@ -81,23 +85,38 @@ func verifyHash(field, got string) error {
 // right feature schema; "standard" and "minmax" must carry one well-formed,
 // in-order entry per feature.
 func (s NormalizerSpec) validate() error {
+	if s.Transform != "" && (s.Transform != "signed_log1p" || s.FeatureSchema != features.BehaviorSchemaID) {
+		return errors.New("normalizer.json: unsupported transform for feature schema")
+	}
+	if math.IsNaN(s.Clip) || math.IsInf(s.Clip, 0) || s.Clip < 0 || s.Clip > 1e6 || (s.Clip > 0 && s.FeatureSchema != features.BehaviorSchemaID) {
+		return errors.New("normalizer.json: invalid clipping bound")
+	}
 	switch s.Method {
 	case "standard", "minmax", "identity":
 	default:
 		return fmt.Errorf("normalizer.json: method %q is not one of standard, minmax, identity", s.Method)
 	}
-	if s.FeatureSchema != features.SchemaID {
-		return fmt.Errorf("normalizer.json: feature_schema %q != %q", s.FeatureSchema, features.SchemaID)
+	fs, ok := schema.FeaturesFor(s.FeatureSchema)
+	if !ok {
+		return fmt.Errorf("normalizer.json: unknown feature_schema %q", s.FeatureSchema)
 	}
 	if s.Method == "identity" {
 		return nil
 	}
-	if len(s.PerFeature) != features.Size {
-		return fmt.Errorf("normalizer.json: per_feature has %d entries, want %d", len(s.PerFeature), features.Size)
+	if len(s.PerFeature) != fs.InputSize {
+		return fmt.Errorf("normalizer.json: per_feature has %d entries, want %d", len(s.PerFeature), fs.InputSize)
 	}
 	for i, pf := range s.PerFeature {
 		if pf.Index != i {
-			return fmt.Errorf("normalizer.json: per_feature[%d] has index %d — entries must be ascending 0..%d with no gaps or duplicates", i, pf.Index, features.Size-1)
+			return fmt.Errorf("normalizer.json: per_feature[%d] has index %d — entries must be ascending 0..%d with no gaps or duplicates", i, pf.Index, fs.InputSize-1)
+		}
+		if pf.Name != "" && pf.Name != fs.Features[i].Name {
+			return fmt.Errorf("normalizer.json: feature name mismatch at %d", i)
+		}
+		for _, x := range []float64{pf.Mean, pf.Std, pf.Min, pf.Max} {
+			if math.IsNaN(x) || math.IsInf(x, 0) {
+				return fmt.Errorf("normalizer.json: non-finite constant")
+			}
 		}
 		switch s.Method {
 		case "standard":

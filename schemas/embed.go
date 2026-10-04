@@ -26,3 +26,18 @@ var ReconstructionV1 []byte
 //
 //go:embed events/event-envelope-v1.json
 var EventEnvelopeV1 []byte
+
+// TrafficBehaviorV1 is the independent temporal and protocol feature contract.
+//
+//go:embed features/traffic-behavior-v1.json
+var TrafficBehaviorV1 []byte
+
+// AttackClassesV2 is the detailed threat output contract.
+//
+//go:embed outputs/attack-classes-v2.json
+var AttackClassesV2 []byte
+
+// ApplicationClassesV1 is the independent application output contract.
+//
+//go:embed outputs/application-classes-v1.json
+var ApplicationClassesV1 []byte

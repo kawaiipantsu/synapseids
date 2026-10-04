@@ -24,17 +24,22 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/dataset"
+	"github.com/kawaiipantsu/synapseids/internal/enrichment"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/registry"
+	"github.com/kawaiipantsu/synapseids/internal/reputation"
 	"github.com/kawaiipantsu/synapseids/internal/review"
 	"github.com/kawaiipantsu/synapseids/internal/schema"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 	"github.com/kawaiipantsu/synapseids/internal/training"
 	"github.com/kawaiipantsu/synapseids/internal/version"
+	"github.com/kawaiipantsu/synapseids/internal/workbench"
 	"github.com/kawaiipantsu/synapseids/internal/wshub"
+	"github.com/kawaiipantsu/synapseids/schemas"
 	"github.com/kawaiipantsu/synapseids/web"
 )
 
@@ -98,29 +103,33 @@ type CaptureStatusProvider interface {
 
 // Server bundles the HTTP handler, the live hub and the event pump.
 type Server struct {
-	cfg     config.Config
-	bus     *events.Bus
-	store   storage.Store
-	rt      *inference.Runtime
-	reg     *registry.Registry
-	audit   *audit.Logger
-	ds      *dataset.Manager
-	rc      ReplayController
-	fs      FlowStatsProvider
-	cap     CaptureStatusProvider
-	sensors SensorStatusProvider
-	insight *insight.Index
-	tr      *training.Store
-	rv      *review.Store
-	alerts  *alert.Store
-	hub     *wshub.Hub
-	auth    *authGuard
-	start   time.Time
+	workbench *workbench.Store
+	cfg       config.Config
+	bus       *events.Bus
+	store     storage.Store
+	rt        *inference.Runtime
+	reg       *registry.Registry
+	audit     *audit.Logger
+	ds        *dataset.Manager
+	rc        ReplayController
+	fs        FlowStatsProvider
+	cap       CaptureStatusProvider
+	sensors   SensorStatusProvider
+	insight   *insight.Index
+	tr        *training.Store
+	rv        *review.Store
+	alerts    *alert.Store
+	hub       *wshub.Hub
+	auth      *authGuard
+	start     time.Time
 
 	// metrics is the daemon's obs.Metrics (issue #55), set by the daemon after
 	// New via SetMetrics. nil in embedded/test use — GET /metrics then renders
 	// every counter it can still reach and empty latency histograms.
-	metrics *obs.Metrics
+	metrics    *obs.Metrics
+	enrichment *enrichment.Service
+	policy     *policy.Store
+	reputation *reputation.Service
 
 	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
 	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
@@ -167,6 +176,9 @@ func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.
 // from the counters it already holds, with empty latency histograms.
 func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
 
+// SetEnrichment attaches the daemon-owned asynchronous context cache.
+func (s *Server) SetEnrichment(e *enrichment.Service) { s.enrichment = e }
+
 // SetAuth installs the RBAC guard from the config auth block (issue #58). Call
 // it once after New; it loads and validates the token file and returns an error
 // the daemon should treat as fatal. A Server without it (embedded/test) leaves
@@ -196,6 +208,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/detections", s.handleDetections)
 	mux.HandleFunc("GET /api/v1/detections/{id}", s.handleDetection)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
+	mux.HandleFunc("GET /api/v1/enrichment", s.handleEnrichment)
+	mux.HandleFunc("GET /api/v1/policy", s.handlePolicy)
+	mux.HandleFunc("PUT /api/v1/policy", s.handlePolicyWrite)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/similar", s.handleHostSimilar)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)
@@ -208,6 +223,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models/comparison", s.handleModelComparison)
 	mux.HandleFunc("GET /api/v1/models/{id}", s.handleModel)
 	mux.HandleFunc("GET /api/v1/models/{id}/lineage", s.handleModelLineage)
+	mux.HandleFunc("POST /api/v1/models/{id}/shadow", s.handleModelShadow)
+	mux.HandleFunc("DELETE /api/v1/models/{id}/shadow", s.handleModelShadow)
 	mux.HandleFunc("POST /api/v1/models/{id}/activate", s.handleModelActivate)
 	mux.HandleFunc("POST /api/v1/models/{id}/deactivate", s.handleModelDeactivate)
 	mux.HandleFunc("GET /api/v1/datasets", s.handleDatasets)
@@ -224,12 +241,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/review/{flow_id}", s.handleReviewWrite)
 	mux.HandleFunc("GET /api/v1/training", s.handleTrainings)
 	mux.HandleFunc("POST /api/v1/training", s.handleTrainingCreate)
+	mux.HandleFunc("GET /api/v1/workbench", s.handleWorkbench)
+	mux.HandleFunc("POST /api/v1/workbench", s.handleWorkbench)
+	mux.HandleFunc("POST /api/v1/workbench/reviews", s.handleWorkbenchReviews)
+	mux.HandleFunc("POST /api/v1/workbench/upload", s.handleWorkbenchUpload)
+	mux.HandleFunc("POST /api/v1/workbench/claim", s.handleWorkbenchClaim)
+	mux.HandleFunc("POST /api/v1/workbench/{id}/update", s.handleWorkbenchUpdate)
+	mux.HandleFunc("POST /api/v1/workbench/{id}/cancel", s.handleWorkbenchCancel)
+	mux.HandleFunc("POST /api/v1/workbench/{id}/register", s.handleWorkbenchRegister)
 	mux.HandleFunc("GET /api/v1/training/{id}", s.handleTraining)
 	mux.HandleFunc("POST /api/v1/training/{id}/progress", s.handleTrainingProgress)
 	mux.HandleFunc("POST /api/v1/training/{id}/fail", s.handleTrainingFail)
 	// Read-only by design: the audit log is append-only forever, so there is
 	// no DELETE or PATCH counterpart to this route (PROJECT.md §21).
 	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
+	mux.HandleFunc("GET /api/v1/schemas/behavior", s.rawJSON(schemas.TrafficBehaviorV1))
+	mux.HandleFunc("GET /api/v1/schemas/attacks", s.rawJSON(schemas.AttackClassesV2))
+	mux.HandleFunc("GET /api/v1/schemas/applications", s.rawJSON(schemas.ApplicationClassesV1))
 	mux.HandleFunc("GET /api/v1/schemas/features", s.rawJSON(schema.FlowFeaturesV1JSON()))
 	mux.HandleFunc("GET /api/v1/schemas/classes", s.rawJSON(schema.TrafficClassesV1JSON()))
 	mux.HandleFunc("GET /api/v1/captures", s.handleCaptures)

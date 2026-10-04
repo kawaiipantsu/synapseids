@@ -170,6 +170,7 @@ func (t *Table) isForward(e *entry, p packet.Packet, fwdFromA bool) bool {
 }
 
 func (t *Table) fold(e *entry, p packet.Packet, forward bool) {
+	e.foldTelemetry(p, forward)
 	size := float64(p.TotalLen)
 	e.pktSizeSum += size
 	e.pktSizeSumSq += size * size
@@ -308,6 +309,7 @@ func (t *Table) evictOldest() {
 
 func (t *Table) emit(_ Key, e *entry, reason CloseReason) {
 	rec := e.Record
+	rec.Telemetry = e.Telemetry.clone()
 	rec.Reason = reason
 	if t.onFlow != nil {
 		t.onFlow(rec)
@@ -316,6 +318,7 @@ func (t *Table) emit(_ Key, e *entry, reason CloseReason) {
 
 func (t *Table) emitSnapshot(e *entry) {
 	rec := e.Record
+	rec.Telemetry = e.Telemetry.clone()
 	rec.Reason = ReasonSnapshot
 	t.stats.Snapshots++
 	if t.onFlow != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/insight"
 	"github.com/kawaiipantsu/synapseids/internal/obs"
 	"github.com/kawaiipantsu/synapseids/internal/pipeline"
+	"github.com/kawaiipantsu/synapseids/internal/policy"
 	"github.com/kawaiipantsu/synapseids/internal/storage"
 )
 
@@ -40,6 +41,7 @@ type replayController struct {
 	// /metrics from the replay pipeline too, so `synapse replay` populates the
 	// same histograms live capture does (issue #55).
 	metrics *obs.Metrics
+	policy  *policy.Store
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -91,6 +93,7 @@ func (c *replayController) Start(path string, speed capture.Speed) (string, erro
 			Observer: c.insight,
 			Alerts:   c.alerts,
 			Metrics:  c.metrics,
+			Policy:   c.policy,
 		})
 		c.mu.Lock()
 		c.status.Running = false

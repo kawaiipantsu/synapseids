@@ -55,3 +55,5 @@ trainer/dist/
 # repo content — it otherwise shows up as an untracked path and fails
 # `make release-check`'s clean-tree gate.
 .claude/
+
+/synapse-extract

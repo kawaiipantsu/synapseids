@@ -16,6 +16,9 @@ import (
 // api.New's metricsProvider for exposition. A nil *Metrics is inert — every
 // method is nil-safe — so replay-only and embedded callers need not wire one.
 type Metrics struct {
+	attacks          [19]atomic.Uint64
+	applications     [14]atomic.Uint64
+	rich, legacy     atomic.Uint64
 	inferenceLatency *Histogram
 	featureLatency   *Histogram
 

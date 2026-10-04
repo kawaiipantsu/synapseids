@@ -56,6 +56,9 @@ func (s *Server) loadedRoles() map[string]string {
 	if s.rt == nil {
 		return out
 	}
+	if m := s.rt.ApplicationModel(); m != nil {
+		out[m.ID()] = string(m.Role())
+	}
 	for _, m := range s.rt.Models() {
 		out[m.ID()] = string(m.Role())
 	}
@@ -112,6 +115,9 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		rtModels = append(rtModels, rm)
 	}
 	if s.rt != nil {
+		if m := s.rt.ApplicationModel(); m != nil {
+			rtModels = append(rtModels, runtimeModel{ID: m.ID(), Family: m.Family(), Role: string(m.Role()), Registered: registered[m.ID()]})
+		}
 		for _, m := range s.rt.AnomalyModels() {
 			rtModels = append(rtModels, runtimeModel{
 				ID: m.ID(), Family: m.Family(), Role: string(m.Role()),
@@ -305,4 +311,50 @@ func (s *Server) handleModelDeactivate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"entry": s.view(updated, s.loadedRoles()),
 	})
+}
+
+// handleModelShadow runs a candidate alongside the existing threat classifier.
+func (s *Server) handleModelShadow(w http.ResponseWriter, r *http.Request) {
+	if s.reg == nil || s.rt == nil {
+		http.Error(w, "Model runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	entry, ok := s.reg.Get(id)
+	if !ok {
+		http.Error(w, "Unknown candidate", http.StatusNotFound)
+		return
+	}
+	if r.Method == "DELETE" {
+		s.rt.DeactivateShadow(id)
+		s.audit.Log("ModelShadowStopped", audit.ActorLocal, id, "experimental inference removed")
+		writeJSON(w, http.StatusOK, map[string]string{"status": "shadow stopped"})
+		return
+	}
+	if entry.Family != "traffic-behavior-v1" {
+		http.Error(w, "Shadow comparison requires a behavior threat model", http.StatusConflict)
+		return
+	}
+	if s.loadedRoles()[id] == "primary" {
+		http.Error(w, "This candidate is already the primary classifier", http.StatusConflict)
+		return
+	}
+	b, e := model.Load(entry.Dir)
+	if e != nil || b.Validate() != nil {
+		http.Error(w, "Candidate failed validation", http.StatusConflict)
+		return
+	}
+	live, e := modelrun.BuildLive(id, b)
+	if e != nil {
+		http.Error(w, "Candidate graph cannot run", http.StatusConflict)
+		return
+	}
+	m, ok := live.Model.(*inference.BehaviorModel)
+	if !ok {
+		http.Error(w, "Unsupported shadow model", http.StatusConflict)
+		return
+	}
+	s.rt.ActivateShadow(m)
+	s.audit.Log("ModelShadowStarted", audit.ActorLocal, id, "experimental inference; primary classifier unchanged")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "shadow running"})
 }

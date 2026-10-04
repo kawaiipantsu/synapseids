@@ -1,3 +1,4 @@
+import { IPLabel } from '../components/IPContext'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { getClassifications, getDetections } from '../api/client'
@@ -5,7 +6,7 @@ import type { Classification, Detection, DetectionList, Severity } from '../api/
 import { SEVERITIES } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
 import { CLASS_NAMES, classColor, severityColor } from '../lib/classes'
-import { endpoint, fmtAgo, fmtDateTime, fmtInt, fmtPct } from '../lib/format'
+import { fmtAgo, fmtDateTime, fmtInt, fmtPct } from '../lib/format'
 import { navigateWith } from '../lib/hashRouter'
 import { usePersistedState } from '../lib/persist'
 
@@ -91,7 +92,7 @@ function Row({
           title={`investigate ${d.src_ip}`}
           onClick={() => navigateWith('/investigate', { host: d.src_ip })}
         >
-          {endpoint(d.src_ip, d.src_port)}
+          <IPLabel ip={d.src_ip} port={d.src_port} />
         </td>
         <td className="dim">→</td>
         <td
@@ -99,7 +100,7 @@ function Row({
           title={`investigate ${d.dst_ip}`}
           onClick={() => navigateWith('/investigate', { host: d.dst_ip })}
         >
-          {endpoint(d.dst_ip, d.dst_port)}
+          <IPLabel ip={d.dst_ip} port={d.dst_port} />
         </td>
         <td className="dim">{(d.protocol || '—').toUpperCase()}</td>
         <td className="mono">

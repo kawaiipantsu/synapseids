@@ -1,11 +1,11 @@
 # HTTP API
 
 `synapsed` serves one versioned REST surface under `/api/v1` and one live
-WebSocket channel at `/api/v1/stream` (PROJECT.md §18). All REST responses are
-`application/json`, pretty-printed with two-space indent. There is **no auth** in
-Phase 1: the listener binds `127.0.0.1:8080` by default, a non-loopback
-`server.listen` only logs a warning, and remote access is expected to sit behind
-an authenticating reverse proxy (PROJECT.md §21).
+WebSocket channel at `/api/v1/stream` (PROJECT.md §18). Successful REST objects
+use JSON; downloads and plain-text errors have separate content types. The
+listener defaults to `127.0.0.1:8080`. Native bearer authentication and roles
+apply when configured; protect remote management with authentication and TLS.
+The role table below describes the current access contract.
 
 Routes come from `Server.Handler()` in `internal/api/api.go`. Field names below
 are taken verbatim from the Go structs in `internal/storage/storage.go`,
@@ -762,7 +762,7 @@ classified flow stream — see `docs/adr/0016-host-and-time-aggregation-for-inve
 ```json
 [
   {
-    "ip": "10.10.10.22",
+    "ip": "192.0.2.22",
     "first_seen": "2026-08-31T08:41:11.052640Z",
     "last_seen": "2026-08-31T08:43:45.874377Z",
     "flows": 1124,
@@ -853,9 +853,9 @@ a verdict (issue #63, [ADR 0039](adr/0039-per-host-behavioural-fingerprint.md)).
 
 ```json
 {
-  "ip": "10.10.10.22",
+  "ip": "192.0.2.22",
   "fingerprint": {
-    "ip": "10.10.10.22",
+    "ip": "192.0.2.22",
     "flow_count": 1124,
     "vector": [0.61, 0.98, …],
     "dims": [ { "name": "flow_volume", "value": 0.61 }, { "name": "initiator_bias", "value": 0.98 }, … ]
@@ -906,7 +906,7 @@ That host's verdicts, newest first, with the same parameters as above.
 
 ```text
 GET /api/v1/hosts/10.10.10.21/classifications?class=brute_force&limit=50
-GET /api/v1/hosts/10.10.10.22/flows?from=2026-08-31T08:42:00Z&to=2026-08-31T08:43:00Z
+GET /api/v1/hosts/192.0.2.22/flows?from=2026-08-31T08:42:00Z&to=2026-08-31T08:43:00Z
 ```
 
 ### GET /api/v1/timeline
@@ -1048,7 +1048,7 @@ Both formats are served as a download:
 ```
 Content-Type: application/json                 (format=json)
 Content-Type: text/html; charset=utf-8         (format=html)
-Content-Disposition: attachment; filename="synapseids-host-10.10.10.22-20260831T131500Z.json"
+Content-Disposition: attachment; filename="synapseids-host-192.0.2.22-20260831T131500Z.json"
 Cache-Control: no-store
 X-Content-Type-Options: nosniff
 ```
@@ -1072,7 +1072,7 @@ traversal when the browser writes the file (§28.11).
     "feature_schema": "flow-features-v1",
     "output_schema": "traffic-classes-v1"
   },
-  "scope": { "kind": "host", "host": "10.10.10.22", "unbounded": true },
+  "scope": { "kind": "host", "host": "192.0.2.22", "unbounded": true },
   "coverage": {
     "partial": true,
     "store_driver": "memory",
@@ -1115,7 +1115,7 @@ traversal when the browser writes the file (§28.11).
       "reasons": ["non_normal_verdict"],
       "ts": "2026-08-31T13:04:52Z",
       "proto": "tcp",
-      "initiator_ip": "10.10.10.22", "initiator_port": 45122,
+      "initiator_ip": "192.0.2.22", "initiator_port": 45122,
       "responder_ip": "10.10.10.21", "responder_port": 3306,
       "class": "brute_force", "class_id": 3, "score": 0.918,
       "disagreement": false,
@@ -1710,7 +1710,7 @@ Query parameters:
       "ts": "2026-08-31T08:41:39Z",
       "sensor": "local",
       "proto": "TCP",
-      "initiator_ip": "10.10.10.22", "initiator_port": 36862,
+      "initiator_ip": "192.0.2.22", "initiator_port": 36862,
       "responder_ip": "160.79.104.10", "responder_port": 443,
       "predicted_class": "web_attack",
       "predicted_score": 0.8366529128376532,
@@ -2517,7 +2517,7 @@ curl -sS 'http://127.0.0.1:8080/api/v1/matrix?limit=5&sort=flows'
 {
   "pairs": [
     {
-      "initiator": "10.10.10.22",
+      "initiator": "192.0.2.22",
       "responder": "10.10.10.21",
       "flows": 426,
       "bytes": 9868837,
@@ -2537,7 +2537,7 @@ curl -sS 'http://127.0.0.1:8080/api/v1/matrix?limit=5&sort=flows'
       "disagreements": 0
     }
   ],
-  "initiators": [{ "ip": "10.10.10.22", "flows": 659, "bytes": 10184458, "pairs": 7 }],
+  "initiators": [{ "ip": "192.0.2.22", "flows": 659, "bytes": 10184458, "pairs": 7 }],
   "responders": [{ "ip": "10.10.10.21", "flows": 426, "bytes": 9868837, "pairs": 1 }],
   "sort": "flows",
   "source": "incremental",
@@ -2860,8 +2860,8 @@ The live channel only ever carries event envelopes whose `data` is a flow
 record, a feature vector, a classification, or a replay-progress object —
 **never packet bytes** (PROJECT.md §18: "Do not send every raw packet to every
 browser"). `packet.Packet` is consumed inside the pipeline goroutine and has no
-serialization path to the API; the decoder discards payload bytes entirely
-(`packet.go` keeps only lengths). Aggregation and server-side filtering happen
+serialization path to the API; the decoder discards payload bytes after extracting bounded protocol metadata
+(names and counters, without URLs, credentials or message bodies). Aggregation and server-side filtering happen
 before anything reaches a socket.
 
 ## Clients
@@ -2881,3 +2881,36 @@ Two clients consume this API in Phase 1, and only these are supported:
 ---
 
 ⟦THUGS⟧ (c) 2026
+
+
+## Neural workbench and measured traces
+
+| Method | Route | Role | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/v1/workbench` | viewer | Bounded job list, worker liveness, prepared corpora and class schemas |
+| POST | `/api/v1/workbench` | admin | Enqueue `prepare` or `train` request |
+| POST | `/api/v1/workbench/upload` | admin | Raw PCAP/PCAPNG request body, maximum 128 MiB; returns `capture_id` |
+| POST | `/api/v1/workbench/reviews` | admin | Create numeric corpus from current-session, retained, explicitly reviewed flows |
+| POST | `/api/v1/workbench/claim` | admin | Worker lease; 204 when no job is available |
+| POST | `/api/v1/workbench/{id}/update` | admin | Heartbeat/status with the claimant's lease |
+| POST | `/api/v1/workbench/{id}/cancel` | admin | Cancel a queued/running job and invalidate its lease |
+| POST | `/api/v1/workbench/{id}/register` | admin | Validate/register a completed candidate, without activation |
+| POST / DELETE | `/api/v1/models/{id}/shadow` | admin | Load/remove an experimental temporal threat model |
+| GET | `/api/v1/schemas/behavior` | viewer | Ordered 160-input schema |
+| GET | `/api/v1/schemas/attacks` | viewer | 19 detailed threat outputs |
+| GET | `/api/v1/schemas/applications` | viewer | 14 independent application outputs |
+
+Add `?trace=1` to `/api/v1/flows/{id}/explain` for a bounded native ONNX trace. It is optional diagnostic work, not performed on every normal score. A trace must reproduce the retained distribution; inspect each model's availability and reason fields.
+
+Example training request (replace corpus IDs with IDs returned by GET workbench):
+
+```json
+{
+  "kind": "train", "task": "attack", "name": "Reviewed temporal candidate",
+  "corpora": ["verified-normal", "verified-attacks"],
+  "epochs": 30, "width": 128, "max_rows": 50000,
+  "false_positive_cost": 2, "missed_attack_cost": 2
+}
+```
+
+Preparation uses `kind: "prepare"`, a returned `capture_id`, `task`, and a verified schema `label`. It applies that label to every extracted flow. Use an offline per-flow label join for mixed captures. The [Training guide](neural-workbench.md) documents worker setup, leases, limits and failure recovery. The daemon stores jobs; the external Python worker executes them.

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { Placeholder } from '../components/Placeholder'
 import { Architecture } from './Architecture'
 import { CaptureSources } from './CaptureSources'
+import { Network } from './Network'
+import { Inference } from './Inference'
 import { Dashboard } from './Dashboard'
 import { DatasetExplorer } from './DatasetExplorer'
 import { Datasets } from './Datasets'
@@ -17,6 +19,7 @@ import { ReviewQueue } from './Review'
 import { Sensors } from './Sensors'
 import { Timeline } from './Timeline'
 import { Training } from './Training'
+import { Policy } from './Policy'
 
 export type NavGroup = 'LIVE' | 'CAPTURE' | 'ML' | 'SYSTEM'
 
@@ -49,6 +52,7 @@ const P = (title: string, issues: number[], note: string, epic?: string) => (
 export const ROUTES: RouteDef[] = [
   // ---- LIVE -------------------------------------------------------------
   { group: 'LIVE', path: '/dashboard', label: 'Dashboard', tag: 'live', live: true, element: <Dashboard /> },
+  { group: 'LIVE', path: '/network', label: 'Network graph', tag: 'live', live: true, element: <Network /> },
   { group: 'LIVE', path: '/flow-log', label: 'Flow Log', tag: 'live', live: true, element: <FlowLog /> },
   { group: 'LIVE', path: '/investigate', label: 'Investigate', tag: 'live', live: true, element: <Investigate /> },
   { group: 'LIVE', path: '/hosts', label: 'Hosts', tag: 'live', live: true, element: <Hosts /> },
@@ -99,6 +103,7 @@ export const ROUTES: RouteDef[] = [
   },
   { group: 'CAPTURE', path: '/replay', label: 'Replay', tag: 'live', live: true, element: <ReplayPage /> },
 
+  { group: 'ML', path: '/inference', label: 'Live inference', tag: 'live', live: true, element: <Inference /> },
   // ---- ML ------------------------------------------------------------
   {
     group: 'ML',
@@ -166,6 +171,7 @@ export const ROUTES: RouteDef[] = [
     ),
   },
 
+  { group: 'SYSTEM', path: '/policy', label: 'Network policy', tag: 'live', live: true, element: <Policy /> },
   // ---- SYSTEM ------------------------------------------------------
   // System Performance is §19.16 work tracked by #55 (structured logging +
   // /metrics), not by the Advanced-ML epic it used to cite.

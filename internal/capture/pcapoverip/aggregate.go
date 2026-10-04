@@ -85,6 +85,13 @@ func Aggregate(cfg AggregateConfig, raw StreamFunc) FrameStreamFunc {
 				switch cfg.Mode {
 				case ModeFlow:
 					f = Frame{Type: FrameFlowRecord, Payload: EncodeFlowRecord(r)}
+				case ModeRichFlow:
+					payload, err := EncodeRichFlowRecord(r)
+					if err != nil {
+						dropped++
+						return
+					}
+					f = Frame{Type: FrameRichFlow, Payload: payload}
 				case ModeFeature:
 					fv := features.Extract(r)
 					f = Frame{Type: FrameFeatureRecord, Payload: EncodeFeatureRecord(FeatureRecord{
