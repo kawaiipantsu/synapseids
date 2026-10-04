@@ -1,6 +1,7 @@
 import pytest
+
+torch = pytest.importorskip("torch")
 from synapse_trainer.workbench import temporal_split, safe_id, evaluate, Network
-import torch
 
 
 def test_conversations_never_cross_partitions_and_embargo():
@@ -38,7 +39,8 @@ def test_bounded_training_exports_onnx_coverage_and_progress(tmp_path):
     import json
     from pathlib import Path
     import numpy as np
-    import onnxruntime as ort
+
+    ort = pytest.importorskip("onnxruntime")
     from synapse_trainer.workbench import train
 
     corpora = tmp_path / "corpora"
