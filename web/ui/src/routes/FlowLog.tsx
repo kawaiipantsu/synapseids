@@ -1,3 +1,4 @@
+import { IPLabel } from '../components/IPContext'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { getClassifications, getSensorTopology } from '../api/client'
@@ -5,7 +6,7 @@ import { useStream } from '../api/stream'
 import type { Classification, WsEvent } from '../api/types'
 import { FlowInspector } from '../components/FlowInspector'
 import { CLASS_NAMES, LOW_CONFIDENCE, classColor, roleInitial } from '../lib/classes'
-import { endpoint, fmtClock, fmtInt, fmtPct } from '../lib/format'
+import { fmtClock, fmtInt, fmtPct } from '../lib/format'
 import { navigateWith, useHashQuery } from '../lib/hashRouter'
 import { usePersistedState } from '../lib/persist'
 
@@ -410,9 +411,9 @@ export function FlowLog() {
                 >
                   <td className="dim">{fmtClock(c.ts)}</td>
                   <td>{c.sensor || '-'}</td>
-                  <td className="mono">{endpoint(c.initiator_ip, c.initiator_port)}</td>
+                  <td className="mono"><IPLabel ip={c.initiator_ip} port={c.initiator_port} /></td>
                   <td className="dim">→</td>
-                  <td className="mono">{endpoint(c.responder_ip, c.responder_port)}</td>
+                  <td className="mono"><IPLabel ip={c.responder_ip} port={c.responder_port} /></td>
                   <td className="dim">{c.proto}</td>
                   <td>
                     <span className={`cls ${r.class}`} style={{ background: classColor(r.class) }}>

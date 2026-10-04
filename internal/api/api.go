@@ -24,6 +24,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/capture"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/dataset"
+	"github.com/kawaiipantsu/synapseids/internal/enrichment"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/inference"
 	"github.com/kawaiipantsu/synapseids/internal/insight"
@@ -120,7 +121,8 @@ type Server struct {
 	// metrics is the daemon's obs.Metrics (issue #55), set by the daemon after
 	// New via SetMetrics. nil in embedded/test use — GET /metrics then renders
 	// every counter it can still reach and empty latency histograms.
-	metrics *obs.Metrics
+	metrics    *obs.Metrics
+	enrichment *enrichment.Service
 
 	// Resolved bundle normalizers for the Flow Inspector's normalized-inputs
 	// view, keyed by "<model id>@<content hash>". model.Load reads and hashes
@@ -167,6 +169,9 @@ func New(cfg config.Config, bus *events.Bus, store storage.Store, rt *inference.
 // from the counters it already holds, with empty latency histograms.
 func (s *Server) SetMetrics(m *obs.Metrics) { s.metrics = m }
 
+// SetEnrichment attaches the daemon-owned asynchronous context cache.
+func (s *Server) SetEnrichment(e *enrichment.Service) { s.enrichment = e }
+
 // SetAuth installs the RBAC guard from the config auth block (issue #58). Call
 // it once after New; it loads and validates the token file and returns an error
 // the daemon should treat as fatal. A Server without it (embedded/test) leaves
@@ -196,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/detections", s.handleDetections)
 	mux.HandleFunc("GET /api/v1/detections/{id}", s.handleDetection)
 	mux.HandleFunc("GET /api/v1/hosts", s.handleHosts)
+	mux.HandleFunc("GET /api/v1/enrichment", s.handleEnrichment)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}", s.handleHost)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/similar", s.handleHostSimilar)
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/flows", s.handleHostFlows)

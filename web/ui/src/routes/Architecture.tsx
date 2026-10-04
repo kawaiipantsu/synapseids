@@ -336,7 +336,7 @@ export function Architecture() {
       <p className="dim" style={{ marginTop: 12 }}>
         Widths &gt; {MAX_SANE_WIDTH} or a total over {EXCESSIVE_PARAM_FACTOR}× the baseline net raise a
         warning only. Training is launched from <Link to="/training">ML ▸ Training</Link>, not here —
-        this view designs, estimates and exports. <span className="thugs">&#10214;THUGS&#10215;</span>
+        this view designs, estimates and exports. <span className="dim">SynapseIDS</span>
       </p>
     </div>
   )

@@ -152,6 +152,7 @@ func restartOnlyChanges(old, next config.Config) []string {
 		{"review", old.Review, next.Review},
 		{"live", old.Live, next.Live},
 		{"retention", old.Retention, next.Retention},
+		{"enrichment", old.Enrichment, next.Enrichment},
 	} {
 		if !reflect.DeepEqual(s.a, s.b) {
 			out = append(out, s.name)

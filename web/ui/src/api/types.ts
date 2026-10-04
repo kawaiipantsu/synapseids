@@ -153,6 +153,7 @@ export interface FlowTableStatus {
 export interface DaemonStatus {
   storage?: { flows?: number; classifications?: number; driver?: string }
   live?: { clients?: number }
+  inference?: { scored?: number; failures?: number; latency_p50_ms?: number; latency_p95_ms?: number; latency_p99_ms?: number; by_class?: Record<string, number> }
   flow?: FlowTableStatus
   events?: { published?: number; dropped?: number; subscribers?: number }
   replay?: ReplayStatus
@@ -519,7 +520,7 @@ export interface DatasetOutlierReport {
   threshold: number
   count: number
   cap: number
-  rows: DatasetOutlier[]
+  rows: DatasetOutlier[] | null
 }
 
 export interface DatasetPCAPoint {

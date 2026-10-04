@@ -522,8 +522,8 @@ export function Datasets() {
         <h3>Cut a dataset</h3>
 
         <div className="src-grid">
-          <Field label="id" hint="lowercase slug, optionally one &quot;/&quot; — e.g. thugs/lab-attacks-2026-08">
-            <input value={draft.id} onChange={(e) => set('id', e.target.value)} placeholder="thugs/lab-attacks-2026-08" />
+          <Field label="id" hint="lowercase slug, optionally one &quot;/&quot; — e.g. demo/lab-attacks">
+            <input value={draft.id} onChange={(e) => set('id', e.target.value)} placeholder="demo/lab-attacks" />
           </Field>
           <Field label="version" hint="blank = next v&lt;n&gt;; an existing version is never overwritten">
             <input value={draft.version} onChange={(e) => set('version', e.target.value)} placeholder="v1" />

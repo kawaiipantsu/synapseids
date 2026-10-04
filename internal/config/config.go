@@ -52,19 +52,20 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Config is the full daemon configuration.
 type Config struct {
-	Server    Server    `json:"server"`
-	Storage   Storage   `json:"storage"`
-	Capture   Capture   `json:"capture"`
-	Models    Models    `json:"models"`
-	Datasets  Datasets  `json:"datasets"`
-	Training  Training  `json:"training"`
-	Review    Review    `json:"review"`
-	Alerts    Alerts    `json:"alerts"`
-	Drift     Drift     `json:"drift"`
-	Logging   Logging   `json:"logging"`
-	Auth      Auth      `json:"auth"`
-	Live      Live      `json:"live"`
-	Retention Retention `json:"retention"`
+	Server     Server     `json:"server"`
+	Storage    Storage    `json:"storage"`
+	Capture    Capture    `json:"capture"`
+	Models     Models     `json:"models"`
+	Datasets   Datasets   `json:"datasets"`
+	Training   Training   `json:"training"`
+	Review     Review     `json:"review"`
+	Alerts     Alerts     `json:"alerts"`
+	Drift      Drift      `json:"drift"`
+	Logging    Logging    `json:"logging"`
+	Auth       Auth       `json:"auth"`
+	Live       Live       `json:"live"`
+	Retention  Retention  `json:"retention"`
+	Enrichment Enrichment `json:"enrichment"`
 }
 
 // Auth is the API access-control block (issue #58, PROJECT.md §21: "authenticate
@@ -347,10 +348,11 @@ func Default() Config {
 			SnapshotInterval: Duration(60 * time.Second),
 			MaxFlows:         200000,
 		},
-		Models:   Models{Directory: "./data/models"},
-		Datasets: Datasets{Directory: "./data/datasets"},
-		Training: Training{Directory: "./data/training"},
-		Review:   Review{Directory: "./data/review"},
+		Models:     Models{Directory: "./data/models"},
+		Datasets:   Datasets{Directory: "./data/datasets"},
+		Training:   Training{Directory: "./data/training"},
+		Review:     Review{Directory: "./data/review"},
+		Enrichment: DefaultEnrichment(),
 		Alerts: Alerts{
 			Enabled:               true,
 			MinConfidence:         0.70,
@@ -534,6 +536,9 @@ func (c Config) validate() error {
 	}
 	if err := ValidateLogging(c.Logging); err != nil {
 		return fmt.Errorf("config: logging: %w", err)
+	}
+	if err := ValidateEnrichment(c.Enrichment); err != nil {
+		return fmt.Errorf("config: enrichment: %w", err)
 	}
 	seen := make(map[string]bool, len(c.Capture.Sources))
 	for i, s := range c.Capture.Sources {

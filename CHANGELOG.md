@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Visual traffic workspace: refreshed console, Dashboard charts, interactive asset
+  graph, actual per-flow model inputs/scores and registered neural topology.
+- Guided classifier/anomaly training setup with pinned dataset versions, validated
+  recipes, dataset download and external worker commands.
+- Cached reverse DNS, geolocation flags and WHOIS/RDAP allocation context across
+  live views and Investigate. Opt-in, bounded asynchronous lookups, provider
+  cooldowns and configurable internal DNS/self-hosted geography.
+- Prometheus training, model, dataset and remote sensor record metrics, plus
+  portable Network Intelligence and Neural Network Grafana dashboards.
+- Comprehensive product wiki, synthetic screenshot gallery, deployment/training/
+  investigation guides, API/CLI references and operational runbooks. See
+  [visual workspace](docs/visual-workspace.md),
+  [IP context](docs/ip-context.md), [Prometheus](docs/prometheus.md) and
+  [ADR 0043](docs/adr/0043-visual-workspace-and-cached-ip-context.md).
+
+### Fixed
+
+- Dataset Explorer renders datasets with a null/empty outlier list.
+- Training progress supports environment-provided API authentication and refuses
+  cross-origin progress URLs or credential-bearing redirect forwarding.
+- Dashboard latency uses actual inference status fields; unavailable firewall
+  decisions, hidden activations and packet DNS relationships remain explicit.
+
 ## [0.3.1] - 2026-09-02
 
 ### Fixed

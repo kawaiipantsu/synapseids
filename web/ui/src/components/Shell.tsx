@@ -13,7 +13,7 @@ function NotFound({ path }: { path: string }) {
         No route matches <code>#{path}</code>.
       </p>
       <p>
-        <a href={`#${DEFAULT_ROUTE}`}>Go to the Flow Log</a>
+        <a href={`#${DEFAULT_ROUTE}`}>Go to the Dashboard</a>
       </p>
     </div>
   )

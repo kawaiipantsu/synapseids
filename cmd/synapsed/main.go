@@ -26,6 +26,7 @@ import (
 	"github.com/kawaiipantsu/synapseids/internal/capturewire"
 	"github.com/kawaiipantsu/synapseids/internal/config"
 	"github.com/kawaiipantsu/synapseids/internal/dataset"
+	"github.com/kawaiipantsu/synapseids/internal/enrichment"
 	"github.com/kawaiipantsu/synapseids/internal/events"
 	"github.com/kawaiipantsu/synapseids/internal/features"
 	"github.com/kawaiipantsu/synapseids/internal/flow"
@@ -330,6 +331,13 @@ func run(args []string) int {
 	// through an interface, which is exactly what makes them immune to that bug;
 	// every one of *alert.Store's methods is nil-receiver safe as well.
 	srv := api.New(cfg, bus, store, rt, reg, aud, dsm, rc, flowStats, capMgr, ins, trs, sensors, rvs, alerts)
+	contextCache := enrichment.New(enrichment.Options{
+		Enabled: cfg.Enrichment.Enabled, ReverseDNS: cfg.Enrichment.ReverseDNS, Geo: cfg.Enrichment.Geo, WHOIS: cfg.Enrichment.WHOIS,
+		GeoURL: cfg.Enrichment.GeoURL, Resolver: cfg.Enrichment.Resolver, TTL: time.Duration(cfg.Enrichment.CacheTTL),
+		NegativeTTL: time.Duration(cfg.Enrichment.NegativeTTL), Timeout: time.Duration(cfg.Enrichment.Timeout), MaxEntries: cfg.Enrichment.MaxEntries,
+	})
+	defer contextCache.Close()
+	srv.SetEnrichment(contextCache)
 	srv.SetMetrics(metrics)
 	if err := srv.SetAuth(cfg.Auth); err != nil {
 		log.Printf("config: auth: %v", err)

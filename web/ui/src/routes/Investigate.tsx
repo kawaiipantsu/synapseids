@@ -1,3 +1,4 @@
+import { IPLabel, HostContext } from '../components/IPContext'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getHost,
@@ -117,7 +118,7 @@ function SimilarHostsPanel({ host }: { host: string }) {
                 onClick={() => navigateWith('/investigate', { host: s.ip })}
                 style={{ cursor: 'pointer' }}
               >
-                <td className="mono">{s.ip}</td>
+                <td className="mono"><IPLabel ip={s.ip} /></td>
                 <td className="num">{s.cosine.toFixed(3)}</td>
                 <td className="num">{fmtInt(s.flow_count)}</td>
               </tr>
@@ -129,12 +130,12 @@ function SimilarHostsPanel({ host }: { host: string }) {
   )
 }
 
-function BarRow({ label, value, max, color }: { label: string; value: number; max: number; color?: string }) {
+function BarRow({ label, value, max, color, ip }: { label: string; value: number; max: number; color?: string; ip?: string }) {
   const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0
   return (
     <div className="barrow">
       <span title={label} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {label}
+        {ip ? <IPLabel ip={ip} /> : label}
       </span>
       <span className="track">
         <span className="fill" style={{ width: `${pct}%`, background: color ?? 'var(--accent)' }} />
@@ -232,7 +233,7 @@ function HostPicker() {
                 style={{ cursor: 'pointer' }}
                 onClick={() => navigateWith('/investigate', { host: h.ip })}
               >
-                <td className="mono">{h.ip}</td>
+                <td className="mono"><IPLabel ip={h.ip} /></td>
                 <td className="num">{fmtInt(h.flows)}</td>
                 <td className="num">{fmtBytes(h.bytes_in + h.bytes_out)}</td>
                 <td className="dim">{fmtAgo(h.last_seen)}</td>
@@ -373,6 +374,7 @@ export function Investigate() {
 
       {profile ? (
         <>
+          <HostContext ip={host} />
           <div className="cards">
             <Stat
               label="Flows"
@@ -428,7 +430,7 @@ export function Investigate() {
               {profile.top_peers && profile.top_peers.length > 0 ? (
                 profile.top_peers.map((p) => (
                   <div key={p.ip} onClick={() => navigateWith('/investigate', { host: p.ip })} style={{ cursor: 'pointer' }}>
-                    <BarRow label={p.ip} value={p.flows} max={peerMax} />
+                    <BarRow label={p.ip} ip={p.ip} value={p.flows} max={peerMax} />
                   </div>
                 ))
               ) : (
@@ -513,10 +515,10 @@ export function Investigate() {
                       <td className="dim">{fmtDateTime(c.ts)}</td>
                       <td>{c.proto}</td>
                       <td className="mono">
-                        {c.initiator_ip}:{c.initiator_port}
+                        <IPLabel ip={c.initiator_ip} port={c.initiator_port} />
                       </td>
                       <td className="mono">
-                        {c.responder_ip}:{c.responder_port}
+                        <IPLabel ip={c.responder_ip} port={c.responder_port} />
                       </td>
                       <td>
                         <span className="pill" style={{ background: classColor(c.result.class) }}>
@@ -557,10 +559,10 @@ export function Investigate() {
                       <td className="num mono">{f.id}</td>
                       <td>{f.proto}</td>
                       <td className="mono">
-                        {f.initiator_ip}:{f.initiator_port}
+                        <IPLabel ip={f.initiator_ip} port={f.initiator_port} />
                       </td>
                       <td className="mono">
-                        {f.responder_ip}:{f.responder_port}
+                        <IPLabel ip={f.responder_ip} port={f.responder_port} />
                       </td>
                       <td className="num">{fmtDuration(f.duration_sec)}</td>
                       <td className="num">{fmtInt(f.fwd_packets + f.bwd_packets)}</td>

@@ -1,0 +1,20 @@
+# Merge this job into the Prometheus server's scrape_configs list.
+# This loopback target assumes Prometheus runs on the daemon host.
+# For remote scraping, replace it with the daemon's reachable address/port.
+scrape_configs:
+  - job_name: synapseids
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['127.0.0.1:8080']
+    # When native API authentication is enabled, provision a viewer token file
+    # on the Prometheus host. Never place the token itself in this YAML.
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/secrets/synapseids.token
+    # For a TLS reverse proxy, set scheme: https and configure the matching
+    # server trust. Keep certificate verification enabled.
+    # tls_config:
+    #   ca_file: /etc/prometheus/certs/monitoring-ca.pem

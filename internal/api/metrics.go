@@ -15,8 +15,8 @@ import (
 // histogram snapshot.
 //
 // The endpoint sits at /metrics (not /api/v1/*) by Prometheus convention. It
-// carries no auth of its own; like the mutating routes it relies on the
-// loopback bind and the reverse proxy in front (issue #58, PROJECT.md §21).
+// is protected by the shared auth middleware when enabled: viewer is sufficient.
+// The configured loopback exemption also applies (issue #58, PROJECT.md §21).
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	p := obs.NewWriter(w)
@@ -129,6 +129,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	p.Counter("synapseids_insight_hosts_evicted_total", "Hosts evicted from the investigation index bound.", ins.HostsEvicted)
 	p.Counter("synapseids_insight_dropped_total", "Flow records the investigation ingest queue could not accept.", ins.Dropped)
 
+	if err := p.Err(); err != nil {
+		return
+	}
+	s.writeMLMetrics(p)
+	s.writeSensorMetrics(p)
 	if err := p.Err(); err != nil {
 		// The header and some body are already on the wire; nothing useful to do
 		// but stop. A scraper sees a truncated payload and retries.

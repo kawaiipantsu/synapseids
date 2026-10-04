@@ -5,6 +5,7 @@ import type { TrainingEpoch, TrainingFinal, TrainingPerClass, TrainingRun } from
 import { CLASS_NAMES } from '../lib/classes'
 import { fmtAgo, fmtDateTime, fmtDuration, fmtNum, fmtPct } from '../lib/format'
 import { usePersistedState } from '../lib/persist'
+import { TrainingSetup } from '../components/TrainingSetup'
 import { TrainingChart, type Series } from '../components/TrainingChart'
 
 // ML ▸ Training — the live training dashboard (PROJECT.md §19.8, issue #35).
@@ -410,14 +411,9 @@ export function Training() {
 
   return (
     <div className="tr">
-      <div className="page-h">
-        <h1>Training</h1>
-        <span className="sub">
-          live view of <code>synapse-trainer</code> runs reported to the daemon over HTTP —{' '}
-          <code>GET /api/v1/training</code> (§19.8, ADR 0019). The daemon mirrors progress; it does not
-          launch training.
-        </span>
-      </div>
+      <div className="page-h"><div><div className="eyebrow">ML / TRAINING STUDIO</div><h1>Turn traffic into understanding.</h1><p className="sub">Prepare a dataset, train a classifier, and evaluate its results before activation.</p></div></div>
+      <TrainingSetup />
+      <div className="section-heading"><h2>Training runs</h2><span>Live loss, accuracy, and evaluation metrics</span></div>
 
       {listErr ? <div className="src-msg err">run list unavailable — {listErr}</div> : null}
 
